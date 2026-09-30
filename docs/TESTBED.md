@@ -5,12 +5,12 @@ Starts a random-map match with 4 AI factions that already have armies, money and
 ## Use
 
 ```powershell
-ai-mod\mod.cmd testbed on      # game closed; re-run after editing scenario.json or patches/data.json
+ai-mod\mod.cmd testbed on      # game closed; re-run after editing scenario.json, patches/data.json or anything in tools/ (boot files are built only here)
 ai-mod\mod.cmd launch          # or start normally
 ```
 1. Main menu: press **O** → the match starts loading (no lobby).
 2. In game: press **P** once. You become AI too, every faction pair goes to War, speed x2.
-3. Watch: **Tab** / Shift+Tab to cycle factions (camera follows), **K** fog toggle, **L** drop a marker in the AI log (press it right when the AI does something dumb), **F9** speed 1, **F10** speed 4, `/` console.
+3. Watch: **L** drop a marker in the AI log (press it right when the AI does something dumb), **F9** / **K** / **F10** speed 1 / 2 / 4, `/` console. **Tab** / Shift+Tab take control of a faction and switch its AI off (`Player.onConnect` → `set_isAI(false)`; a Landsraad vote as the player can do the same): press **P** again to turn every AI back on. `mod log` prints `!AI OFF: <faction> <from>-<to>` right under its header for every such window (traced `ent.Faction.set_isAI`, `src` = caller); rules judged in that window mean nothing.
 
 `ai-mod\mod.cmd testbed off` restores vanilla (boot files from `backup/`, pack removed, prefs macros restored).
 
@@ -18,14 +18,14 @@ ai-mod\mod.cmd launch          # or start normally
 
 | Change | How |
 |---|---|
-| AI decision logging to `game.log` (`ai-log`) + AI rules (`aware-ai`: hunt, safe-heal, retreat-terrain, annex-spacing, turret/third-party sizing, discovery-gate, raid, busy-siege) | appended functions + redirected calls, both boot files |
+| AI decision logging to `game.log` (`ai-log`) + AI rules (`aware-ai`: hunt, safe-heal, retreat-terrain, annex-spacing, turret/third-party sizing, discovery-gate, siege-join, siege-engage, raid, strand, undeploy, ability-gate, memory, busy-siege) | appended functions + redirected calls, both boot files |
 | Dev console + admin hotkeys always on | 1 byte in `Main.initPrefs`, both boot files (`admin-always-on`) |
 | Skirmish factions limited to `factions` | data: `gameMode.Default.props.playableFactions` (also limits the normal Skirmish lobby) |
 | Map `AllFactions` resized to `mapCells` (vanilla 200; 130 ≈ Medium, for faster contact) | data: `mapType.AllFactions.props.numCells` |
 | Each main base spawns `armies[faction]` at start | data: `structure.<base>.startUnits` (after the ornithopter) |
 | Big starting stockpiles | data: `faction.startResources` (non-mode entries); applies to all modes while installed |
 | Your `patches/data.json` AI changes | same pack, so you test your mod |
-| O/P/K/L/F9/F10 macros (L = `info` = log marker), fog off | `prefs.sav` (`shortcutCommands`, `admin.noFog`) |
+| O/P/K/L/F9/F10 macros (L = `info` = log marker, F9/K/F10 = speed 1/2/4), fog off | `prefs.sav` (`shortcutCommands`, `admin.noFog`) |
 
 Seed stays random (`PREFS.seed = 0`). AI difficulty is **Insane** (hard-coded in `allFactionsNewGame`). Hegemony, political and economy victories are blocked, so matches run until military supremacy.
 

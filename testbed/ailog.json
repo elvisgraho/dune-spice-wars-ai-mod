@@ -14,6 +14,6 @@
     "logic.ai.AIController.requestTrade",
     "logic.ai.Trading.doTrade"
   ],
-  "trace_per_caller": [],
+  "trace_per_caller": ["ent.Faction.set_isAI"],
   "_avoid": "Per-tick/per-frame (flood the log): AIMilitary.checkStructures, Politics.checkAction, Spying.checkAssassinationTarget, AIMilitary.changeAggressiveness (via updateAggressiveness)., AIBattles.checkPeacefulAnnexation (~186/min), Spying.tryLaunchOperationFromOrder (~109/min, always False), Spying.tryLaunchOperation (~104/min, always False). `mod log` flags any fn logged >30x per game-minute."
 }

@@ -94,11 +94,29 @@ def build_turret_stats(cx, cover, silence, threat_stats, new_ids):
     return report
 
 
-def build_scoring(cx, new_ids):
-    """Bunker preference: the single tryAction -> $HScoring.structures(structures, faction, k, ...) call (target
-    scores for Annex / Liberate / Pillage / ...) -> wrapper: a positive score x BUNKER_W when the structure is
-    within COVER_R of one of our structures on our land (their turrets cover each other) or within BUNKER_R of our
-    main base. Original scores on any error."""
+def _recent_launch(fb, b, cx, s_e, t, recent):
+    """Jump to `recent` if vanilla launched a siege on s_e less than RETRY s ago (map 'alaunch', set by the
+    tryArmyAction wrapper)."""
+    last = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'alaunch'), fb.dyn(s_e))
+    old = _uid('old')
+    fb.op('JNull', reg=last, offset=old)
+    lf = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=lf, src=last)
+    fb.op('Sub', dst=lf, a=t, b=lf)
+    fb.op('JSLt', a=lf, b=b.const('f64', RETRY), offset=recent)
+    fb.label(old)
+
+
+def build_scoring(cx, new_ids, helpers):
+    """Target scores: the single tryAction -> $HScoring.structures(structures, faction, k, ...) call (target
+    scores for Annex / Liberate / Pillage / ...) -> wrapper:
+    - retry: a structure vanilla launched a siege on less than RETRY s ago is dropped. While its order runs vanilla
+      doesn't re-pick it, so a re-pick means that order ended at once: fillAttackSteps cancels in Waiting with
+      InsufficientSupply (the lowest army supply < AIOrders.estimateSupplyCost of the path) and the gauge, still
+      full, re-picked the same village every ~2.5 s (Fremen Pelmah x39). Logs `space` why retry (10 s throttle);
+    - bunker preference: a positive score x BUNKER_W when the structure is within COVER_R of one of our structures
+      on our land (their turrets cover each other) or within BUNKER_R of our main base.
+    Original scores on any error."""
     orig = cx.fn('logic.ai.$HScoring.structures')
     ft = cx.code.types[orig.type.value].definition
     args = [a.value for a in ft.args]
@@ -119,6 +137,7 @@ def build_scoring(cx, new_ids):
     cover, br, w = b.const('f64', COVER_R), b.const('f64', BUNKER_R), _ratio(fb, b, BUNKER_W)
     sc, r = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     se, te = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('ent.Entity'))
+    now = b.field(_state(fb, b, cx), 'time')
     b.loop_head('s')
     fb.op('JSGte', a=i, b=n, offset='end')
     s = b.cast(b.call('hl.types.ArrayObj.getDyn', 0, i), 'ent.Structure')
@@ -127,6 +146,7 @@ def build_scoring(cx, new_ids):
     fb.op('Mov', dst=se, src=s)
     v = b.call('haxe.ds.ObjectMap.get', res, fb.dyn(se))
     fb.op('JNull', reg=v, offset='s')
+    _recent_launch(fb, b, cx, se, now, 'retry')
     fb.op('SafeCast', dst=sc, src=v)
     fb.op('JSLte', a=sc, b=zero, offset='s')
     fb.op('Mov', dst=j, src=b.const('i32', 0))
@@ -148,11 +168,20 @@ def build_scoring(cx, new_ids):
     fb.op('Mul', dst=sc, a=sc, b=w)
     b.call('haxe.ds.ObjectMap.set', res, fb.dyn(se), fb.dyn(sc))
     fb.op('JAlways', offset='s')
+    fb.label('retry')
+    b.call('haxe.ds.ObjectMap.remove', res, fb.dyn(se))
+    _throttle(fb, b, cx, 'space', 1, 10, 's')
+    near = fb.reg(cx.t('ent.Entity'))
+    fb.op('Null', dst=near)
+    _log_ev(fb, b, cx, helpers, 'space', [('f', fb.get(1, 'kind')), ('k', 2), ('why', 'retry'), ('tgt', se),
+                                          ('near', near)])
+    fb.op('JAlways', offset='s')
     fb.label('end')
     fb.end_try(guard)
     fb.op('Ret', ret=res)
     wr = fb.build()
     new_ids.add(wr)
+    helpers['scores'] = wr  # raid ranks vanilla's Annex choices with the same scores
     return {'bunker-score': _redirect(cx, 'logic.ai.$HScoring.structures', ['logic.ai.AIMilitary.tryAction'], wr)}
 
 
@@ -168,7 +197,8 @@ def build_spacing(cx, helpers, defend):
        sieges side by side split the force) -> refuse (log `space`, why space).
     Refusal = onActionEnd(gauge(k), Dismiss, data): gauge un-paused, no decay, no onFailure blocks; `space` logged
     once per faction per 10 s (the gauge retries often). Otherwise (or on any error) the original with s (or the
-    bunker village)."""
+    bunker village), and the launch time is recorded per target (map 'alaunch'; the bunker skips a village launched
+    less than RETRY s ago, the scoring wrapper drops it)."""
     orig = cx.fn('logic.ai.AIMilitary.tryArmyAction')
     ft = cx.code.types[orig.type.value].definition
     args = [a.value for a in ft.args]
@@ -241,6 +271,7 @@ def build_spacing(cx, helpers, defend):
     fb.label('bfree')
     fb.op('Mov', dst=s_e, src=tgt)
     fb.op('JEq', a=ve, b=s_e, offset='spacing')  # vanilla picked it already
+    _recent_launch(fb, b, cx, ve, b.field(state, 'time'), 'bv')  # its last launch ended at once
     # skip it if one of our Military orders already targets it
     fb.op('Mov', dst=k, src=zi)
     b.loop_head('bo')
@@ -288,6 +319,12 @@ def build_spacing(cx, helpers, defend):
     fb.label('done')
     fb.end_try(guard)
     fb.op('JTrue', cond=blocked, offset='block')
+    guard3 = fb.try_()  # remember the launch (retry, in the scoring wrapper)
+    s_e3 = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=s_e3, src=tgt)
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'alaunch'), fb.dyn(s_e3),
+           fb.dyn(b.field(_state(fb, b, cx), 'time')))
+    fb.end_try(guard3)
     fb.op('Call4', dst=void, fun=orig.findex.value, arg0=0, arg1=1, arg2=tgt, arg3=3)
     fb.op('Ret', ret=void)
     fb.label('block')
@@ -314,6 +351,253 @@ def build_spacing(cx, helpers, defend):
         raise ValueError(f'annex-spacing: expected 1 tryArmyAction call in tryAction, found {len(sites)}')
     sites[0].df['fun'].value = w
     return w
+
+
+def _vfield(fb, b, obj, name):
+    """Field of a virtual (anonymous struct) register by name -> (register of the field's type, field index)."""
+    cx = fb.cx
+    fields = cx.code.types[fb.regs[obj]].definition.fields
+    idx = [i for i, f in enumerate(fields) if f.name.resolve(cx.code) == name]
+    if len(idx) != 1:
+        raise ValueError(f'siege-join: field {name} not found')
+    dst = fb.reg(fields[idx[0]].type.value)
+    fb.op('Field', dst=dst, obj=obj, field=idx[0])
+    return dst, idx[0]
+
+
+def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, new_ids):
+    """Siege launch sizing: the pickUnits call(s) in tryArmyAction (every vanilla siege launch after the gate).
+    Vanilla requires balance 1.0 flat for a neutral target and adds idle armies closest-first only until it is
+    reached, so a village gets 2 armies while more sit idle next to it: the militia fight drags on (~50 s), drains
+    supply the whole time and can kill one of the two (Fremen on Ashdak, 3 attempts, 18 bunker redirects, none taken).
+    1. neutral target (targetFaction null): requiredPowerBalance raised to NEUTRAL_REQ;
+    2. after the pick, the nearest other considered armies (vanilla getUnits idle list: life/supply >= 90%, not in
+       an order of the action's priority or higher, so Discovery/Patrol armies are taken as vanilla does) within
+       JOIN_R of the target with supok(a, land(target), SUP_ENTER) are appended one by one until our power there
+       (+ our turret cover) reaches JOIN_TO x (at-war threat within LOCAL + enemy turret cover + militia) / terrain:
+       a short militia fight, while the rest stays free for parallel captures (joining everyone sent 8 armies to a
+       33k militia at match start and made captures sequential).
+    Simulated picks (simulatePendingArmies: counts armies in recruitment) pass through unchanged. Logs `join` when
+    armies were added (H, M = the power after joining). Original result on any error."""
+    pick = cx.fn('logic.ai.AIUnits.pickUnits')
+    taa = cx.fn('logic.ai.AIMilitary.tryArmyAction')
+    ftypes = {f.findex.value: f.type.value for f in cx.code.functions}
+    sites = [op for op in taa.ops if op.op == 'Call2' and ftypes.get(op.df['fun'].value) == pick.type.value]
+    if len(sites) != 3:
+        raise ValueError(f'siege-join: expected 3 pickUnits calls in tryArmyAction, found {len(sites)}')
+    inner = {op.df['fun'].value for op in sites}
+    if len(inner) != 1:
+        raise ValueError(f'siege-join: pickUnits call sites differ ({inner})')
+    inner = inner.pop()  # the logging wrapper when installed (same signature)
+    ft = cx.code.types[pick.type.value].definition
+    args = [a.value for a in ft.args]
+    fb = FB(cx, args, ft.ret.value, fun_type=pick.type.value)
+    b = B(fb)
+    res = fb.reg(ft.ret.value)
+    req = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=req, src=b.const('f64', 0))
+    sim = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=sim, value=False)
+    # 1. required ratio for neutral targets
+    guard = fb.try_()
+    sp, _ = _vfield(fb, b, 1, 'simulatePendingArmies')
+    fb.op('JNull', reg=sp, offset='nosim')
+    fb.op('SafeCast', dst=sim, src=sp)
+    fb.label('nosim')
+    fb.op('JTrue', cond=sim, offset='req_done')
+    enter = _ratio(fb, b, NEUTRAL_REQ)
+    rq, ri = _vfield(fb, b, 1, 'requiredPowerBalance')
+    fb.op('JNull', reg=rq, offset='req_tf')
+    fb.op('SafeCast', dst=req, src=rq)
+    fb.label('req_tf')
+    tfac, _ = _vfield(fb, b, 1, 'targetFaction')
+    fb.op('JNotNull', reg=tfac, offset='req_done')
+    fb.op('JNull', reg=rq, offset='req_set')
+    fb.op('JSGte', a=req, b=enter, offset='req_done')
+    fb.label('req_set')
+    fb.op('Mov', dst=req, src=enter)
+    nr = fb.reg(fb.regs[rq])
+    fb.op('ToDyn', dst=nr, src=req)  # Null<Float>, the way the compiler boxes it
+    fb.op('SetField', obj=1, field=ri, src=nr)
+    fb.label('req_done')
+    fb.end_try(guard)
+    fb.op('Call2', dst=res, fun=inner, arg0=0, arg1=1)
+    # 2. idle armies near the target join
+    guard2 = fb.try_()
+    fb.op('JTrue', cond=sim, offset='done')
+    fb.op('JNull', reg=res, offset='done')
+    n0 = b.field(res, 'length')
+    fb.op('JSLte', a=n0, b=b.const('i32', 0), offset='done')
+    fac = b.field(b.field(0, 'controller'), 'owner')
+    fb.op('JNull', reg=fac, offset='done')
+    es, _ = _vfield(fb, b, 1, 'enemyStructure')
+    fb.op('JNull', reg=es, offset='done')
+    s = fb.reg(cx.t('ent.Entity'))
+    fb.op('SafeCast', dst=s, src=fb.dyn(es))
+    cu, _ = _vfield(fb, b, 1, 'consideredUnits')
+    fb.op('JNull', reg=cu, offset='done')
+    cand = fb.reg(cx.t('hl.types.ArrayObj'))
+    fb.op('SafeCast', dst=cand, src=fb.dyn(cu))
+    cn = b.field(cand, 'length')
+    d_home = fb.reg(cx.t('f64'))
+    fb.op('Call2', dst=d_home, fun=land, arg0=fac, arg1=s)
+    k = _ratio(fb, b, SUP_ENTER)
+    r = b.const('f64', JOIN_R)
+    added = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=added, src=b.const('i32', 0))
+    ok = fb.reg(cx.t('bool'))
+    ae = fb.reg(cx.t('ent.Entity'))
+    i = fb.reg(cx.t('i32'))
+    h, m, p, q, tf, dd, bd = (fb.reg(cx.t('f64')) for _ in range(7))
+    t_false, t_true = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=t_false, value=False)
+    fb.op('Bool', dst=t_true, value=True)
+    no_arr = fb.reg(cx.t('hl.types.ArrayObj'))
+    fb.op('Null', dst=no_arr)
+    st = b.cast(fb.dyn(s), 'ent.Structure')
+    # their side (same measure as siege-engage) and the power we want there: JOIN_TO x that / terrain
+    fb.op('Call3', dst=h, fun=threat, arg0=fac, arg1=s, arg2=b.const('f64', LOCAL))
+    fb.op('CallN', dst=q, fun=cover, args=[fac, s, s, t_false, no_arr])
+    fb.op('Add', dst=h, a=h, b=q)
+    fb.op('Call1', dst=q, fun=militia, arg0=st)
+    fb.op('Add', dst=h, a=h, b=q)
+    fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', s))
+    fb.op('Mul', dst=q, a=h, b=_ratio(fb, b, JOIN_TO))
+    fb.op('SDiv', dst=q, a=q, b=tf)
+    # ours: vanilla's pick (+ our turret cover there)
+    fb.op('CallN', dst=m, fun=cover, args=[fac, s, s, t_true, no_arr])
+    sa = _army_loop(fb, b, res, n0, i, 'sl', 'sdone')
+    fb.op('Call1', dst=p, fun=pw, arg0=sa)
+    fb.op('Add', dst=m, a=m, b=p)
+    fb.op('JAlways', offset='sl')
+    fb.label('sdone')
+    # add the nearest eligible idle army until we have q
+    best = fb.reg(cx.t('ent.Army'))
+    big = b.const('f64', 1 << 30)
+    b.loop_head('jo')
+    fb.op('JSGte', a=m, b=q, offset='jdone')
+    fb.op('Null', dst=best)
+    fb.op('Mov', dst=bd, src=big)
+    a = _army_loop(fb, b, cand, cn, i, 'jl', 'jpick')
+    fb.op('JFalse', cond=b.call('hl.types.ArrayObj.contains', res, fb.dyn(a)), offset='jnew')
+    fb.op('JAlways', offset='jl')
+    fb.label('jnew')
+    fb.op('Mov', dst=ae, src=a)
+    fb.op('Mov', dst=dd, src=b.call('ent.Entity.getDistTo', ae, s))
+    fb.op('JSGt', a=dd, b=r, offset='jl')
+    fb.op('JSGte', a=dd, b=bd, offset='jl')
+    fb.op('Call3', dst=ok, fun=supok, arg0=a, arg1=d_home, arg2=k)
+    fb.op('JFalse', cond=ok, offset='jl')
+    fb.op('Mov', dst=best, src=a)
+    fb.op('Mov', dst=bd, src=dd)
+    fb.op('JAlways', offset='jl')
+    fb.label('jpick')
+    fb.op('JNull', reg=best, offset='jdone')
+    b.call('hl.types.ArrayObj.push', res, fb.dyn(best))
+    fb.op('Incr', dst=added)
+    fb.op('Call1', dst=p, fun=pw, arg0=best)
+    fb.op('Add', dst=m, a=m, b=p)
+    fb.op('JAlways', offset='jo')
+    fb.label('jdone')
+    fb.op('JSLte', a=added, b=b.const('i32', 0), offset='done')
+    _log_ev(fb, b, cx, helpers, 'join', [('f', fb.get(fac, 'kind')), ('tgt', s), ('sel', n0), ('add', added),
+                                         ('req%', req), ('H', h), ('M', m), ('tf%', tf)])
+    fb.label('done')
+    fb.end_try(guard2)
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    new_ids.add(w)
+    for op in sites:
+        op.df['fun'].value = w
+    return {'siege-join': len(sites)}
+
+
+def build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain):
+    """aimod_sengage(mil, dt), every CHECK s: early Engage for our siege orders (Military on a Structure: vanilla
+    Annex/Pillage/Raze/..., `raid`). Vanilla Regroup waits until every order army reached the regroup point, so a
+    stack standing next to the target walked away from it towards a far member first (Fremen raid on Tuoron: 5 armies
+    36-55 from it went to 85-106 while a 6th came from home); siege-join makes far members common. An order in
+    Regroup moves on to Engage (nextPhase) once its armies within ENGAGE_R of the target (+ our turret cover) have
+    ENTER (NEUTRAL_REQ for a neutral target, as at launch) x (at-war threat within LOCAL + enemy turret cover +
+    militia) / terrain, and at least one army is there; the others walk straight in (policy §4 Gathering). Only
+    armies at the target count: armies strung out within LOCAL walked in one by one, the weakest first (Harkonnen
+    raid on Har-Al'sud lost H_Demo 2v3 before its third army arrived). Logs `sengage`. In a trap: nothing on error."""
+    fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
+    b = B(fb)
+    void = fb.reg(cx.t('void'))
+    guard = fb.try_()
+    ctrl = b.field(0, 'controller')
+    fac = b.field(ctrl, 'owner')
+    fb.op('JNull', reg=fac, offset='end')
+    t = b.field(_state(fb, b, cx), 'time')
+    _tick(fb, b, cx, t, CHECK, 'end')
+    orders = b.field(b.field(ctrl, 'aiOrders'), 'orders')
+    fb.op('JNull', reg=orders, offset='end')
+    on = b.field(orders, 'length')
+    zi, zero = b.const('i32', 0), b.const('f64', 0)
+    local, at = b.const('f64', LOCAL), b.const('f64', ENGAGE_R)
+    enter, nreq = _ratio(fb, b, ENTER), _ratio(fb, b, NEUTRAL_REQ)
+    t_false, t_true = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=t_false, value=False)
+    fb.op('Bool', dst=t_true, value=True)
+    no_arr = fb.reg(cx.t('hl.types.ArrayObj'))
+    fb.op('Null', dst=no_arr)
+    i, j, idx, near = (fb.reg(cx.t('i32')) for _ in range(4))
+    h, m, p, q, tf, req = (fb.reg(cx.t('f64')) for _ in range(6))
+    se = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=i, src=zi)
+    b.loop_head('o')
+    fb.op('JSGte', a=i, b=on, offset='end')
+    o = b.cast(b.call('hl.types.ArrayObj.getDyn', orders, i), 'logic.ai.AIOrder')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=o, offset='o')
+    fb.op('JNotEq', a=b.field(o, 'phase'), b=b.const('i32', REGROUP), offset='o')
+    fb.op('EnumIndex', dst=idx, value=b.field(o, 'type'))
+    fb.op('JNotEq', a=idx, b=b.const('i32', MILITARY), offset='o')
+    tt = b.field(o, 'targetType')
+    fb.op('JNull', reg=tt, offset='o')
+    fb.op('EnumIndex', dst=idx, value=tt)
+    fb.op('JNotEq', a=idx, b=b.const('i32', T_STRUCT), offset='o')
+    tg = b.call('logic.ai.AIOrder.getTarget', o)
+    fb.op('JNull', reg=tg, offset='o')
+    s = b.cast(fb.dyn(tg), 'ent.Structure')
+    fb.op('Mov', dst=se, src=s)
+    units = b.field(o, 'units')
+    fb.op('JNull', reg=units, offset='o')
+    un = b.field(units, 'length')
+    # ours near the target (+ our cover there)
+    fb.op('CallN', dst=m, fun=cover, args=[fac, se, se, t_true, no_arr])
+    fb.op('Mov', dst=near, src=zi)
+    u = _army_loop(fb, b, units, un, j, 'u', 'udone')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', u, se), b=at, offset='u')
+    fb.op('Call1', dst=p, fun=pw, arg0=u)
+    fb.op('Add', dst=m, a=m, b=p)
+    fb.op('Incr', dst=near)
+    fb.op('JAlways', offset='u')
+    fb.label('udone')
+    fb.op('JSLte', a=near, b=zi, offset='o')
+    # theirs: at-war armies in reach, turrets covering it (its own go silent under siege), its militia
+    fb.op('Call3', dst=h, fun=threat, arg0=fac, arg1=se, arg2=local)
+    fb.op('CallN', dst=q, fun=cover, args=[fac, se, se, t_false, no_arr])
+    fb.op('Add', dst=h, a=h, b=q)
+    fb.op('Call1', dst=q, fun=militia, arg0=s)
+    fb.op('Add', dst=h, a=h, b=q)
+    fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', se))
+    fb.op('Mov', dst=req, src=enter)
+    fb.op('JNotNull', reg=b.call('ent.Entity.get_owner', se), offset='owned')
+    fb.op('Mov', dst=req, src=nreq)
+    fb.label('owned')
+    fb.op('Mul', dst=q, a=h, b=req)
+    fb.op('SDiv', dst=q, a=q, b=tf)
+    fb.op('JSLt', a=m, b=q, offset='o')
+    fb.op('Call1', dst=void, fun=helpers.get('nextPhase', cx.fn('logic.ai.AIOrder.nextPhase').findex.value), arg0=o)
+    _log_ev(fb, b, cx, helpers, 'sengage', [('f', fb.get(fac, 'kind')), ('tgt', se), ('H', h), ('M', m),
+                                            ('near', near), ('n', un), ('tf%', tf)])
+    fb.op('JAlways', offset='o')
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=void)
+    return fb.build()
 
 
 def build_discovery(cx, helpers, threat, pw, terrain, new_ids):

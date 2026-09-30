@@ -1,5 +1,6 @@
-"""World model queries every rule reads (AI-POLICY §3): power, threat, terrain, own power, free armies, our land,
-supply budget, turret cover, siege state, defensive posture. Each builder appends one function and returns its findex."""
+"""World model queries every rule reads (AI-POLICY §3): power, threat (at-war armies + neutral raiders targeting
+us), neutral raiders, terrain, own power, free armies, our land, supply budget, turret cover, siege state,
+defensive posture. Each builder appends one function and returns its findex."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
 
 
@@ -11,11 +12,47 @@ def build_pw(cx):
     return fb.build()
 
 
-def build_threat(cx, pw, horizon_s=HORIZON, stats=False):
-    """aimod_threat(fac, p, r) -> at-war army power within r of p, or able to get there within horizon_s.
+def _raider_vs(fb, b, x, fac, yes, no):
+    """Jump to `yes` if army x (owner null) is a neutral raider whose raid targets fac (Raid.targetFaction; the
+    raid's own hostility test, Raid.isHostileWith), to `no` otherwise (not a raider, or raiding someone else)."""
+    rd = b.field(x, 'raid')
+    fb.op('JNull', reg=rd, offset=no)
+    fb.op('JEq', a=b.field(rd, 'targetFaction'), b=fac, offset=yes)
+    fb.op('JAlways', offset=no)
+
+
+def _approaching(fb, b, cx, x, p, d, skip):
+    """Fall through if mover x heads towards entity p (its path ends nearer to p than x is now, or no path is
+    known); jump to `skip` if it is moving elsewhere (e.g. milling around its own base)."""
+    pe = b.call('ent.MobileEntity.getCurrentPathEnd', x)
+    ok = f'appr{len(fb.ops)}'
+    fb.op('JNull', reg=pe, offset=ok)
+    dx, dy = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Sub', dst=dx, a=b.field(pe, 'x'), b=b.field(p, 'posx'))
+    fb.op('Sub', dst=dy, a=b.field(pe, 'y'), b=b.field(p, 'posy'))
+    fb.op('Mul', dst=dx, a=dx, b=dx)
+    fb.op('Mul', dst=dy, a=dy, b=dy)
+    fb.op('Add', dst=dx, a=dx, b=dy)
+    fb.op('Mul', dst=dy, a=d, b=d)
+    fb.op('JSGte', a=dx, b=dy, offset=skip)
+    fb.label(ok)
+
+
+def build_threat(cx, pw, horizon_s=HORIZON, stats=False, reach=None, prey=False):
+    """aimod_threat(fac, p, r) -> power of the armies hostile to fac within r of p, or heading there and able to
+    arrive within horizon_s (a mover whose path ends farther from p than it is now doesn't count). Hostile = owned
+    by a faction at war with fac, or a neutral raider (Army.raid: rebels, Fremen raids, marauders, ...) whose raid
+    targets fac.
     stats=True: aimod_threat_stats(fac, p, r, skip, res, zone), same armies minus those owned by `skip`, each also
-    pushed into res as unitSimulatedCombatStats(army, zone) (for vanilla power reports)."""
+    pushed into res as unitSimulatedCombatStats(army, zone) (for vanilla power reports).
+    reach=R: aimod_react(fac, p, r), also the armies within R that are free to answer: not fighting, not occupying or
+    contesting a structure, and idle or heading towards p (busy ones may never come; the fight retreat covers it).
+    prey=True: aimod_hthreat(fac, p, r, pf, dn), the hunt measure around prey faction pf (null: plain threat): pf's
+    armies as above; a third party at war with pf is skipped (it fights the prey too); one allied / at peace with pf
+    counts within max(r, dn + ALLY_WIN), dn = our nearest army's distance (it arrives before we finish the kill)."""
     extra = [cx.t('ent.Faction'), cx.t('hl.types.ArrayObj'), cx.t('ent.Zone')] if stats else []
+    if prey:
+        extra = [cx.t('ent.Faction'), cx.t('f64')]
     fb = FB(cx, [cx.t('ent.Faction'), cx.t('ent.Entity'), cx.t('f64')] + extra, cx.t('f64'))
     b = B(fb)
     tot = b.const('f64', 0)
@@ -32,19 +69,43 @@ def build_threat(cx, pw, horizon_s=HORIZON, stats=False):
     fb.op('Null', dst=noref)
     x = _army_loop(fb, b, armies, alen, i, 'loop', 'done')
     xo = b.call('ent.Entity.get_owner', x)
-    fb.op('JNull', reg=xo, offset='loop')
+    fb.op('JNotNull', reg=xo, offset='owned')
+    _raider_vs(fb, b, x, 0, 'near', 'loop')
+    fb.label('owned')
     fb.op('JEq', a=xo, b=0, offset='loop')
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, 0, xo), offset='loop')
     if stats:
         fb.op('JEq', a=xo, b=3, offset='loop')
+    if prey:
+        fb.op('JNull', reg=3, offset='near')
+        fb.op('JEq', a=xo, b=3, offset='near')  # the prey's own armies
+        fb.op('JTrue', cond=b.call('logic.state.State.areAtWar', state, 3, xo), offset='loop')  # the prey's rival
+        win = fb.reg(cx.t('f64'))
+        fb.op('Add', dst=win, a=4, b=b.const('f64', ALLY_WIN))
+        fb.op('JSGte', a=win, b=2, offset='winok')
+        fb.op('Mov', dst=win, src=2)
+        fb.label('winok')
+        fb.op('JSLte', a=b.call('ent.Entity.getDistTo', x, 1), b=win, offset='count')
+        fb.op('JAlways', offset='loop')
+    fb.label('near')
     fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', x, 1))
     fb.op('JSLte', a=d, b=2, offset='count')
+    if reach is not None:
+        fb.op('JSGt', a=d, b=b.const('f64', reach), offset='mv')
+        fb.op('JTrue', cond=b.call('ent.Entity.isFighting', x), offset='mv')
+        fb.op('JNotNull', reg=b.field(x, 'occupiedStructure'), offset='mv')
+        fb.op('JNotNull', reg=b.field(x, 'contestingStructure'), offset='mv')
+        fb.op('JFalse', cond=b.call('ent.Unit.isMoving', x), offset='count')
+        _approaching(fb, b, cx, x, 1, d, 'loop')
+        fb.op('JAlways', offset='count')
+        fb.label('mv')
     fb.op('JFalse', cond=b.call('ent.Unit.isMoving', x), offset='loop')
     spd = b.call('ent.Unit.getSpeed', x, noref)
     fb.op('JSLte', a=spd, b=zero, offset='loop')
     fb.op('Sub', dst=eta, a=d, b=2)
     fb.op('SDiv', dst=eta, a=eta, b=spd)
     fb.op('JSGt', a=eta, b=horizon, offset='loop')
+    _approaching(fb, b, cx, x, 1, d, 'loop')
     fb.label('count')
     fb.op('Call1', dst=p, fun=pw, arg0=x)
     fb.op('Add', dst=tot, a=tot, b=p)
@@ -55,6 +116,32 @@ def build_threat(cx, pw, horizon_s=HORIZON, stats=False):
         b.call('hl.types.ArrayObj.push', 4, fb.dyn(st))
     fb.op('JAlways', offset='loop')
     fb.label('done')
+    fb.label('end')
+    fb.op('Ret', ret=tot)
+    return fb.build()
+
+
+def build_neutral(cx, pw):
+    """aimod_neutral(fac, p, r) -> power of the neutral raiders within r of p that aimod_threat doesn't count
+    (raiding someone else: they ignore us, but fight back when we hunt them)."""
+    fb = FB(cx, [cx.t('ent.Faction'), cx.t('ent.Entity'), cx.t('f64')], cx.t('f64'))
+    b = B(fb)
+    tot = b.const('f64', 0)
+    fb.op('JNull', reg=0, offset='end')
+    fb.op('JNull', reg=1, offset='end')
+    armies = b.field(_state(fb, b, cx), 'armies')
+    alen = b.field(armies, 'length')
+    i = fb.reg(cx.t('i32'))
+    p = fb.reg(cx.t('f64'))
+    x = _army_loop(fb, b, armies, alen, i, 'loop', 'end')
+    fb.op('JNotNull', reg=b.call('ent.Entity.get_owner', x), offset='loop')
+    fb.op('JNull', reg=b.field(x, 'raid'), offset='loop')
+    _raider_vs(fb, b, x, 0, 'loop', 'other')
+    fb.label('other')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', x, 1), b=2, offset='loop')
+    fb.op('Call1', dst=p, fun=pw, arg0=x)
+    fb.op('Add', dst=tot, a=tot, b=p)
+    fb.op('JAlways', offset='loop')
     fb.label('end')
     fb.op('Ret', ret=tot)
     return fb.build()
@@ -102,12 +189,14 @@ def build_own(cx, pw):
     return fb.build()
 
 
-def build_free(cx, pw, min_life=MIN_LIFE, min_supply=MIN_SUPPLY, resupply_ok=False):
-    """aimod_free(a, orders): may join a hunt (alive, controllable, combat army, life and supply >= 90%, and in no
-    order except Patrol). Busy = in any non-Patrol order of `orders` (Army.aiOrder is not set for hunt orders),
+def build_free(cx, pw, min_life=MIN_LIFE, min_supply=MIN_SUPPLY, resupply_ok=False, patrol_ok=True):
+    """aimod_free(a, orders): may join a hunt (alive, controllable, combat army (not a harvester: Fremen harvesters
+    are armies with power, moved by direct commands, not orders), life and supply >= 90%, and in no order except
+    Patrol). Busy = in any non-Patrol order of `orders` (Army.aiOrder is not set for hunt orders),
     so Resupply/Discovery/hunts/sieges keep their armies (healing comes first, policy §5).
     Variant (raid): other life / supply floors, and a Resupply order doesn't count as busy (a raid that refills
-    supply beats walking home, when the supply budget allows it: aimod_raidsup)."""
+    supply beats walking home, when the supply budget allows it: aimod_raidsup).
+    Variant patrol_ok=False (strand): a Patrol order counts as busy too (idle = in no order at all)."""
     fb = FB(cx, [cx.t('ent.Army'), cx.t('hl.types.ArrayObj')], cx.t('bool'))
     b = B(fb)
     no, yes = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
@@ -118,6 +207,7 @@ def build_free(cx, pw, min_life=MIN_LIFE, min_supply=MIN_SUPPLY, resupply_ok=Fal
     fb.op('JFalse', cond=b.call('ent.Unit.hasControl', 0), offset='no')
     fb.op('JTrue', cond=b.field(0, 'isMilitia'), offset='no')
     fb.op('JTrue', cond=b.call('ent.Entity.isTransported', 0), offset='no')
+    fb.op('JNotNull', reg=b.field(0, 'harvestComponent'), offset='no')  # harvesters (Fremen: armies, pw > 0)
     fb.op('JSLt', a=b.call('ent.Entity.get_lifeRatio', 0), b=_ratio(fb, b, min_life), offset='no')
     ms = b.call('ent.Army.get_maxSupply', 0)
     zero = b.const('f64', 0)
@@ -137,7 +227,10 @@ def build_free(cx, pw, min_life=MIN_LIFE, min_supply=MIN_SUPPLY, resupply_ok=Fal
     fb.op('EnumIndex', dst=idx, value=b.field(o, 'type'))
     if resupply_ok:
         fb.op('JEq', a=idx, b=resupply, offset='orders')
-    fb.op('JNotEq', a=idx, b=patrol, offset='no')
+    if patrol_ok:
+        fb.op('JNotEq', a=idx, b=patrol, offset='no')
+    else:
+        fb.op('JAlways', offset='no')
     fb.label('orders')
     fb.op('JNull', reg=1, offset='yes')
     n = b.field(1, 'length')
@@ -149,7 +242,8 @@ def build_free(cx, pw, min_life=MIN_LIFE, min_supply=MIN_SUPPLY, resupply_ok=Fal
     fb.op('Incr', dst=i)
     fb.op('JNull', reg=oo, offset='ord')
     fb.op('EnumIndex', dst=idx, value=b.field(oo, 'type'))
-    fb.op('JEq', a=idx, b=patrol, offset='ord')
+    if patrol_ok:
+        fb.op('JEq', a=idx, b=patrol, offset='ord')
     if resupply_ok:
         fb.op('JEq', a=idx, b=resupply, offset='ord')
     units = b.field(oo, 'units')
@@ -189,6 +283,54 @@ def build_land(cx):
     fb.op('JAlways', offset='loop')
     fb.label('end')
     fb.op('Ret', ret=best)
+    return fb.build()
+
+
+def build_home(cx, pw, land, own=False):
+    """aimod_home(fac, d) -> power of the hostile armies (at war with fac, or raiders targeting it) within d of our
+    land (aimod_land) that are free to strike it: not fighting, not occupying or contesting a structure. With armies
+    of ours d away, these reach our land first (same speed).
+    own=True: aimod_homeown(fac, d, exclude) -> power of our combat armies (no harvesters) within d of our land that
+    are not in `exclude` (an order's units): who is home before them."""
+    extra = [cx.t('hl.types.ArrayObj')] if own else []
+    fb = FB(cx, [cx.t('ent.Faction'), cx.t('f64')] + extra, cx.t('f64'))
+    b = B(fb)
+    tot = b.const('f64', 0)
+    fb.op('JNull', reg=0, offset='end')
+    i = fb.reg(cx.t('i32'))
+    p, d = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    if own:
+        arr, alen = _my_armies(fb, b, 0, 'end')
+    else:
+        state = _state(fb, b, cx)
+        arr = b.field(state, 'armies')
+        alen = b.field(arr, 'length')
+    x = _army_loop(fb, b, arr, alen, i, 'loop', 'end')
+    if own:
+        fb.op('JNotNull', reg=b.field(x, 'harvestComponent'), offset='loop')
+        fb.op('JNull', reg=2, offset='mine')
+        fb.op('JTrue', cond=b.call('hl.types.ArrayObj.contains', 2, fb.dyn(x)), offset='loop')
+        fb.label('mine')
+    else:
+        xo = b.call('ent.Entity.get_owner', x)
+        fb.op('JNotNull', reg=xo, offset='owned')
+        _raider_vs(fb, b, x, 0, 'hostile', 'loop')
+        fb.label('owned')
+        fb.op('JEq', a=xo, b=0, offset='loop')
+        fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, 0, xo), offset='loop')
+        fb.label('hostile')
+        fb.op('JTrue', cond=b.call('ent.Entity.isFighting', x), offset='loop')
+        fb.op('JNotNull', reg=b.field(x, 'occupiedStructure'), offset='loop')
+        fb.op('JNotNull', reg=b.field(x, 'contestingStructure'), offset='loop')
+    xe = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=xe, src=x)
+    fb.op('Call2', dst=d, fun=land, arg0=0, arg1=xe)
+    fb.op('JSGt', a=d, b=1, offset='loop')
+    fb.op('Call1', dst=p, fun=pw, arg0=x)
+    fb.op('Add', dst=tot, a=tot, b=p)
+    fb.op('JAlways', offset='loop')
+    fb.label('end')
+    fb.op('Ret', ret=tot)
     return fb.build()
 
 

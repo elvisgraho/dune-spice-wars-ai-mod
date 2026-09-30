@@ -21,7 +21,7 @@
   "macros": {
     "O":   ["allFactionsNewGame {humanSlot}"],
     "P":   ["ai true", "{WAR_ALL}", "speed 2"],
-    "K":   ["fog"],
+    "K":   ["speed 2"],
     "L":   ["info"],
     "F9":  ["speed 1"],
     "F10": ["speed 4"]

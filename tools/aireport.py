@@ -13,7 +13,7 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
   snap  : aggr, gauges, armies, structs (daily per AI faction)
   aw    : n, en, mine, a=[{o,k,x,y,pw,hp,sup,ms,ls,hz,zo,sand,worm,vis,mv,d,near,sa,ty,tgt,oc,ct}] (tools/aware.py:
           every 10 s per AI faction: hostile armies within 600 of its structures or armies, or visible; da/na/nsa/nty/ntgt = our nearest army and its task)
-  hunt  : act (start|abort|engage), why (abort: gone truce leash home supply drift lost weak turret objective defend), T
+  hunt  : act (start|abort|engage), why (abort: gone truce leash home supply drift lost weak turret objective defend chase), T
           (enemy turret cover at the anchor / group, power units; included in H), tgt (prey / first
           member; the village for a contest), H, M, n, ng (group size), ok, sd (dist to our land), dn (our nearest order
           army), dm (start: our nearest free army), anc (start: the besieged village for a contest, else the prey),
@@ -21,18 +21,32 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
           army or contest of a siege; H = threat around it, M = our free power in reach (abort: order power), n armies
           sent; the order itself is a Military ArmyFight order). engage: the order left Regroup early because the
           armies within LOCAL of the core (member nearest our land) already pass the entry test (M = their power)
-  retreat: act (retreat|hold), raw, tf, sf, adj (fight balance x100: vanilla, terrain factor, supply factor, adjusted;
+  retreat: act (retreat|hold|recall|pursuit), raw, tf, sf, adj (fight balance x100: vanilla, terrain factor, supply factor,
+          adjusted; recall = every army of ours there short of supply and none in a Military order: balance 0; pursuit =
+          none of ours there in a Military order and the enemy there (en, power within CONTACT) lost < 10% for 15 s:
+          balance 0 (chasing a fleeing army); stranded = held
+          while dm (power of short armies that can't pay the walk home) > 0: they get no supply penalty;
           logged when raw or adj <= RETREAT, once per warzone per 5 s), x, y
   heal  : act (stay|flee|detour|avoid), s (healing structure), a (asking army), h, m (hostile / own power near s), d
           (army to s); once per structure per 3 s. stay/flee = army at s (<= AT_HOME_R); detour/avoid = key penalty
-  space : k, why (defend|space), tgt, near (siege action on tgt refused: defend = our structure `near` is besieged;
-          space = we already target `near` within ADJ_R); once per faction per 10 s
+  space : k, why (defend|space|retry), tgt, near (siege action on tgt refused: defend = our structure `near` is
+          besieged; space = we already target `near` within ADJ_R; retry = tgt's last launch ended at once, dropped
+          from the target scores for RETRY s); once per faction per 10 s
   bunker: k, tgt, was, mb (Annex redirected from `was` to the village tgt next to our main base mb)
   disc  : tgt, army, H, M, tf (world-event Discovery trip refused: the lone army's power M < ENTER x at-war threat H
           around the event / terrain tf x100)
-  raid  : tgt, H, M, n, dm, sd, ok (opportunistic pillage launched: H = at-war threat + enemy turret cover + militia at
-          the village, M = our raid-ready power within RAID_R (+ our cover), n armies, dm = nearest, sd = village to
-          our land; the order itself is a Military ArmySiege Pillage row)
+  strand: a, s, d, ok (idle army on hostile land sent home: Patrol Move to our structure s, d = its distance)
+  undeploy: a, ok, nm, sup (installed turret not fighting on hostile land uninstalled; nm = order move blocks removed)
+  mem   : k, a (faction memory event: k harvester = our harvester a fighting, its zone stamped dangerous)
+  hfield: a, s, dg (harvester a's field choice: field s penalised, dg = zone danger x100; once per field per 10 s)
+  raid  : act start: tgt, H, M, n, dm, sd, hh, ms, ax, nc, ok (pillage launched: H = at-war threat + enemy turret
+          cover + militia at the village, M = the sized raid force (+ our cover), n armies, dm = nearest, sd = village
+          to our land, hh / ms = hostile / our power within sd + HOME_M of our land (ms minus the raid), ax = the
+          vanilla Annex choice kept out, nc = vanilla pillage candidates; the order itself is a Military ArmySiege
+          Pillage row). act refuse (nearest candidate with our armies within RAID_R, once per faction per 30 s): why
+          (ready|weak|home), H armies, C turrets, Mi militia, M, tf (x100), nr armies near / n raid-ready, dm, sd, hh,
+          ms, ax, nc. act abort (any Pillage order of ours): why (defend|home|weak), tgt, H, M, ph phase, pr progress
+          (x100), sd, n units
   call  : fn, a<i>, r, src  (generic traces from testbed/ailog.json)
   mark  : player pressed L
 """
@@ -200,6 +214,25 @@ def around(events, center, window=60):
     return '\n'.join(out)
 
 
+def ai_control(events, t0, span):
+    """`!AI OFF` lines from the traced `ent.Faction.set_isAI` calls: a faction whose AI is off (the player's own
+    faction after Player.onConnect, e.g. a Landsraad vote or taking control) does nothing, so judge no rule there."""
+    sw = [e for e in events if e.get('e') == 'call' and str(e.get('fn', '')).endswith('set_isAI')]
+    off, out = {}, []
+    for e in sw:
+        f = e.get('f') if isinstance(e.get('f'), str) else str(e.get('f'))
+        on = e.get('r') if isinstance(e.get('r'), bool) else bool(e.get('a1'))
+        at = when(e, t0)
+        if not on and f not in off:
+            off[f] = (at, e.get('src') or '-')
+        elif on and f in off:
+            start, src = off.pop(f)
+            out.append(f'!AI OFF: {f} {clock(start)}-{clock(at)} (off by {src}, on by {e.get("src") or "-"})')
+    for f, (start, src) in off.items():
+        out.append(f'!AI OFF: {f} since {clock(start)}, still off at {clock(span)} (off by {src}): press P or `ai true`')
+    return out
+
+
 def summarize(events, faction=None, all_orders=False):
     if not events:
         return 'No AIMOD events. Is the testbed on (`mod testbed on`) and did a match run?'
@@ -210,6 +243,7 @@ def summarize(events, faction=None, all_orders=False):
     minutes = max(span / 60, 1)
     out = [f'# AI log: {len(events)} events, {clock(span)} game time ({", ".join(f"{k}={v}" for k, v in kinds.most_common())})',
            f'factions: {", ".join(facs)}. Times = game mm:ss. {LEGEND}']
+    out += ai_control(events, t0, span)
 
     orders, open_orders, marks = [], defaultdict(list), []
     last_pw, last_fpw, last_pick, last_stop = None, None, {}, {}
@@ -352,7 +386,7 @@ def summarize(events, faction=None, all_orders=False):
 
     if hunts:
         out.append('\n## Hunts (tools/rules): faction start / engage (left Regroup early) / abort reasons '
-                   '(gone truce leash home supply drift lost weak turret objective defend)')
+                   '(gone truce leash home supply drift lost weak turret objective defend chase)')
         for f in sorted({k[0] for k in hunts}, key=str):
             out.append(f'{f}: ' + ', '.join(f"{a}{('-' + w) if w else ''} x{n}" for (ff, a, w), n in sorted(hunts.items(), key=str) if ff == f))
 
@@ -363,13 +397,14 @@ def summarize(events, faction=None, all_orders=False):
         for e in retreats:
             raw, adj = e.get('raw') or 0, e.get('adj') or 0
             tadj = raw * (e.get('tf') or 100) / 100  # terrain only
-            flip = ('held by terrain' if raw <= 65 < adj else 'retreat by terrain' if tadj <= 65 < raw
+            flip = ('' if e.get('act') == 'pursuit' else 'held by terrain' if raw <= 65 < adj
+                    else 'retreat by terrain' if tadj <= 65 < raw
                     else 'retreat by supply' if adj <= 65 < tadj else '')
             c[(e.get('f'), e.get('act'), flip)] += 1
         out += [f'{f} {a}{(" (" + fl + ")") if fl else ""} x{n}' for (f, a, fl), n in sorted(c.items(), key=str)]
         for e in retreats[-12:]:
             out.append(f"  {clock(e['_t'])} {e.get('f')} {e.get('act')} raw{e.get('raw')} tf{e.get('tf')} "
-                       f"sf{e.get('sf', 100)} adj{e.get('adj')} at ({e.get('x')},{e.get('y')})")
+                       f"sf{e.get('sf', 100)} adj{e.get('adj')} en{kpw(e.get('en'))} at ({e.get('x')},{e.get('y')})")
 
     if heals:
         out.append('\n## Heal target choices (tools/rules): stay/flee = army at its structure, '
@@ -382,7 +417,8 @@ def summarize(events, faction=None, all_orders=False):
 
     if spaced:
         out.append('\n## Refused siege launches (tools/rules; logged once per faction per 10 s): faction why kind '
-                   'target <- reason structure (defend = ours under siege, space = one we already run nearby), count')
+                   'target <- reason structure (defend = ours under siege, space = one we already run nearby, '
+                   'retry = its last launch ended at once), count')
         out += [f'{f} {w} {kk} {tg} <- {nr} x{n}' for (f, w, kk, tg, nr), n in spaced.most_common(12)]
 
     if bunkers:
@@ -392,11 +428,36 @@ def summarize(events, faction=None, all_orders=False):
         out += [f'{f} {tg} (was {w}) x{n}' for (f, tg, w), n in c.most_common(12)]
 
     if raids:
-        out.append('\n## Raids (tools/rules/raid.py): opportunistic pillage next to our armies; '
-                   'h = their threat+cover+militia, m = our raid force')
-        for e in raids[-12:]:
+        out.append('\n## Raids (tools/rules/raid.py): pillage with idle armies (neutral or at-war villages, not the '
+                   'next Annex); h = their threat+cover+militia, m = our raid force, hh/ms = hostile/our power near home')
+        starts = [e for e in raids if e.get('act') == 'start']
+        refused = [e for e in raids if e.get('act') == 'refuse']
+        aborts = [e for e in raids if e.get('act') == 'abort']
+        for e in starts[-12:]:
             out.append(f"  {clock(e['_t'])} {e.get('f')} {ent(e.get('tgt'))[:22]:<22} n{e.get('n')} dm{e.get('dm')} "
-                       f"sd{e.get('sd')} h{kpw(e.get('H'))} m{kpw(e.get('M'))}{'' if e.get('ok') is not False else ' REFUSED'}")
+                       f"sd{e.get('sd')} h{kpw(e.get('H'))} m{kpw(e.get('M'))} hh{kpw(e.get('hh'))} "
+                       f"ms{kpw(e.get('ms'))} ax {ent(e.get('ax'))[:16]}"
+                       f"{'' if e.get('ok') is not False else ' REFUSED'}")
+        if aborts:
+            c = Counter((e.get('f'), e.get('why')) for e in aborts)
+            out.append('Aborted pillages (defend = our besieged structure needs the armies, home = hostiles nearer our '
+                       'land than the raid, weak = relief at the target): '
+                       + ', '.join(f'{f} {w} x{n}' for (f, w), n in c.most_common(10)))
+            for e in aborts[-10:]:
+                out.append(f"  {clock(e['_t'])} {e.get('f')} {e.get('why'):<6} {ent(e.get('tgt'))[:20]:<20} "
+                           f"ph{e.get('ph')} pr{e.get('pr')}% n{e.get('n')} sd{num(e.get('sd'), 0)} "
+                           f"h{kpw(e.get('H'))} m{kpw(e.get('M'))}")
+        if refused:
+            c = Counter((e.get('f'), e.get('why'), ent(e.get('tgt'))) for e in refused)
+            out.append('Refused (nearest candidate, once per faction per 30 s; ready = no army passes life/supply, '
+                       'weak = M < 1.5 x (H armies + C turrets + Mi militia) / tf, home = ms x 1.3 < 1.5 x hh): '
+                       + ', '.join(f'{f} {w} {tg} x{n}' for (f, w, tg), n in c.most_common(10)))
+            for e in refused[-10:]:
+                out.append(f"  {clock(e['_t'])} {e.get('f')} {e.get('why'):<5} {ent(e.get('tgt'))[:20]:<20} "
+                           f"n{num(e.get('n'), 0)}/{num(e.get('nr'), 0)} dm{num(e.get('dm'), 0)} sd{num(e.get('sd'), 0)} "
+                           f"h{kpw(e.get('H'))} c{kpw(e.get('C'))} mi{kpw(e.get('Mi'))} m{kpw(e.get('M'))} "
+                           f"tf{num(e.get('tf'), 0)} hh{kpw(e.get('hh'))} ms{kpw(e.get('ms'))} "
+                           f"ax {ent(e.get('ax'))[:16]} nc{num(e.get('nc'), 0)}")
 
     if discs:
         out.append('\n## Refused Discovery trips (tools/rules): lone army vs at-war threat at the world event; '

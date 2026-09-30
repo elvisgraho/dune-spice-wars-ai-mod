@@ -22,7 +22,7 @@
       "scope": "testbed",
       "function": "tools/behave.py (installed as part of ai-log)",
       "problem": "Vanilla AI has no army awareness: never attacks or contests exposed armies, retreats/heals by distance only, re-rolls its retreat threshold every tick, sieges adjacent villages in parallel; its getUnits busy filter crashes on non-structure Military orders",
-      "change": "tools/behave.py rules: hunt (Military ArmyFight on an AIEntityGroup; chases and contests of village sieges near our land; supply budget; objective switch), safe-heal (3 healing-key closures wrapped), retreat-terrain (2 getWarzonePowerBalance calls wrapped; balance x terrain x supply), annex-spacing (tryAction->tryArmyAction wrapped), busy-siege (1 op NullCheck->JNull in the getUnits busy closure); added ObjectMap globals for state",
+      "change": "tools/behave.py rules: hunt (Military ArmyFight on an AIEntityGroup; chases and contests of village sieges near our land; supply budget; objective switch), safe-heal (3 healing-key closures wrapped), retreat-terrain (2 getWarzonePowerBalance calls wrapped; balance x terrain x supply), annex-spacing (tryAction->tryArmyAction wrapped), busy-siege (1 op NullCheck->JNull in the getUnits busy closure); undeploy (installed F_Special_2 on hostile land: tryUndeploy(false) + stale noMoveAbilities removed); ability-gate (3 tryUseOrderAbilities balance calls wrapped: 1.0 = no enemy -> no emergency abilities); added ObjectMap globals for state",
       "validation": []
     }
   ]

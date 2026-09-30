@@ -30,11 +30,10 @@ One-time setup: `powershell -ExecutionPolicy Bypass -File ai-mod\setup.ps1`
 | Key | Where | Does |
 |---|---|---|
 | **O** | Main menu | Start the test match (4 AIs, random map) |
-| **P** | In game | You become AI too, all factions at war, speed x2 (press once) |
+| **P** | In game | You become AI too, all factions at war, speed x2. Press again after anything that took control of a faction (Tab, a Landsraad vote): it turns every AI back on |
 | **L** | In game | Drop a marker in the AI log. Press it when the AI does something dumb |
-| **K** | In game | Toggle fog of war |
-| **F9** / **F10** | In game | Speed 1 / speed 4 |
-| **Tab** / Shift+Tab | In game | Switch to the next / previous faction (camera follows) |
+| **F9** / **K** / **F10** | In game | Speed 1 / 2 / 4 (fog stays off from the testbed prefs; `/fog` toggles it) |
+| **Tab** / Shift+Tab | In game | Take control of the next / previous faction: **its AI turns off** (`mod log` prints `!AI OFF`); P turns it back on |
 | **`** (backtick) | Menu / game | Repeat the last console command |
 | **/** | Menu / game | Open the dev console |
 | Ctrl+Alt+X | In game | Spawn a sandworm |

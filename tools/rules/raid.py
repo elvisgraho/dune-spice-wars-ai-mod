@@ -1,24 +1,47 @@
-"""Raid: opportunistic pillage of an at-war village next to our armies (AI-POLICY §5a goal 5b).
+"""Raid: pillage for loot with armies that have nothing better to do (AI-POLICY §5a goal 5b), and give pillages up when
+something more important needs their armies.
 
 Vanilla pillages only from its Pillage gauge, which barely rises, and only with idle armies at >= 90% supply: a
-stack standing next to a weakly held enemy village walked home to resupply instead (Fremen at Od-lulah). A pillage
-refills OCC_REFILL of max supply and occupying doesn't drain, so a raid on the way home is often cheaper than the walk.
+stack standing next to a weakly held enemy village walked home to resupply instead (Fremen at Od-lulah), and a stack
+that can't annex (Smugglers short of authority) sat at home for minutes. A pillage loots the village's production,
+refills OCC_REFILL of max supply and occupying doesn't drain. Its costs: the village is Devastated for 20 days
+(production halved, no siege action possible) and the pillager's Annex authority cost there is doubled (trait
+Pillaged), so the villages vanilla would annex next are never raided.
 
-Every START s per faction, at most one launch per RAID_GAP s, never while defending (aimod_defend):
-- candidates: villages owned by a faction at war with us, not besieged, not a main base, "Pillage" among
-  SiegeComponent.getAvailableOccupationActions(us) (faction rules, e.g. Atreides can't pillage), and no Military order
-  of ours on it;
-- force: our armies within RAID_R that are free for a raid (aimod_free variant: life >= RAID_LIFE, any supply, a
+Abort pass, every CHECK s, over every Military ArmySiege "Pillage" order of ours (raid's and vanilla's), unless it is
+in Action at RAID_DONE progress or more (finish it). First trigger wins, stop(Cancel):
+- defend: our structure is besieged (aimod_defend) within RECALL_R of the target, our armies already at it (within
+  LOCAL, any task) + free ones within GATHER_R (+ our cover) are short of ENTER x (threat + enemy cover) / terrain there, and the raid has armies fit to defend
+  (life and supply >= MIN_LIFE / MIN_SUPPLY, what the contest hunt and vanilla defense take);
+- home: hostile armies free to strike are closer to our land than the target + HOME_M (aimod_home) and our armies
+  at home without the raid's (aimod_homeown) x OWN_T fall below ABORT x them;
+- weak (still walking, phase < Engage): raid power + our cover < ABORT x (aimod_react + enemy cover + militia) /
+  terrain at the target (relief arrived; in the fight the vanilla fight retreat decides).
+
+Launch pass, every START s per faction, at most one launch per RAID_GAP s, never while defending:
+- candidates: vanilla's own pillage list (AIMilitary.getSiegeableVillages "Pillage": pillage allowed for us, not
+  Devastated, no order on it, in supply range, sandstorms, ...), owned by nobody or by a faction at war with us, not
+  a main base, not besieged; minus the vanilla Annex choices (getSiegeableVillages "Annex" with tryAnnexation's
+  aggressiveness gate, target scores, pickMapBest over AI_StructureScore_BestStructuresCount) and villages within
+  BUNKER_R of our main base (the bunker redirect annexes them first), villages with our own Underworld HQ (our
+  income there) and villages our raid launched on less than RAID_RETRY s ago (aborted / cancelled at once: no loop);
+- force: our armies within RAID_R, not fighting (micro holds them; as a mission they'd escape the `pursuit` exit),
+  that are free for a raid (aimod_free variant: life >= RAID_LIFE, any supply, a
   Resupply order doesn't count as busy) and pass the raid supply budget (aimod_raidsup);
-- test: their power (+ our turret cover) >= ENTER x (at-war threat within LOCAL + enemy turret cover + the village's
-  militia) / terrain: "no real threat" in the policy's own measure;
-- pick: the candidate nearest to one of our armies; order = Military prio 1 (Pillage aiPrio) ArmySiege "Pillage",
-  all those armies. Vanilla then runs it like its own pillage (phases, fight retreat, cancel on peace).
-Logs `raid` (starts). Fails safe: in a trap, nothing launched on error."""
+- test: their power (+ our cover) >= ENTER x (aimod_react + enemy cover + militia) / terrain, and the home race: our
+  armies within (target's distance to our land + HOME_M) of our land, minus what the raid takes, x OWN_T >= ENTER x
+  the hostile armies as close (aimod_home). Enemy near home = only raids closer to home than it;
+- pick: the candidate nearest to one of our armies; its nearest raid-ready armies join until RAID_TO x their side
+  (at least one army). Order = Military prio 1 (Pillage aiPrio) ArmySiege "Pillage"; vanilla runs it like its own.
+Logs `raid` act=start / abort (why defend | home | weak), or once per RAID_GAP per faction act=refuse for the nearest
+candidate with our armies within RAID_R: why ready (no army passes life / supply budget), weak (H armies, C
+turrets, Mi militia vs M, tf terrain) or home (hh hostile vs ms ours near home). ax = the excluded Annex choice,
+nc = vanilla candidates. Fails safe: in a trap, nothing launched or cancelled on error."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
 
 
-def build_raid(cx, helpers, pw, raidable, threat, land, terrain, raidsup, cover, defend, militia):
+def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, defend, militia, threat, free, home,
+               homeown, scores):
     """aimod_raid(mil, dt) (see module doc)."""
     fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
     b = B(fb)
@@ -29,9 +52,155 @@ def build_raid(cx, helpers, pw, raidable, threat, land, terrain, raidsup, cover,
     fb.op('JNull', reg=fac, offset='end')
     state = _state(fb, b, cx)
     t = b.field(state, 'time')
+    orders_obj = b.field(ctrl, 'aiOrders')
+    orders = b.field(orders_obj, 'orders')
+    fb.op('JNull', reg=orders, offset='end')
+    my_armies, mlen = _my_armies(fb, b, fac, 'end')
+
+    zi, zero, big = b.const('i32', 0), b.const('f64', 0), b.const('f64', 1 << 30)
+    one = b.const('i32', 1)
+    raid_r, local = b.const('f64', RAID_R), b.const('f64', LOCAL)
+    home_m, recall_r, gather_r = b.const('f64', HOME_M), b.const('f64', RECALL_R), b.const('f64', GATHER_R)
+    enter, abort, own_t = _ratio(fb, b, ENTER), _ratio(fb, b, ABORT), _ratio(fb, b, OWN_T)
+    raid_to, done_r = _ratio(fb, b, RAID_TO), _ratio(fb, b, RAID_DONE)
+    min_life, min_sup = _ratio(fb, b, MIN_LIFE), _ratio(fb, b, MIN_SUPPLY)
+    t_false, t_true = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=t_false, value=False)
+    fb.op('Bool', dst=t_true, value=True)
+    no_arr = fb.reg(cx.t('hl.types.ArrayObj'))
+    fb.op('Null', dst=no_arr)
+    pillage_s = fb.string('Pillage')
+    pillage = fb.dyn(pillage_s)
+    i, j, k, idx, ph = (fb.reg(cx.t('i32')) for _ in range(5))
+    h, m, p, q, r, sd, lim, dy, tf, pr, hh, ms, hp = (fb.reg(cx.t('f64')) for _ in range(13))
+    ok = fb.reg(cx.t('bool'))
+    ve, de = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('ent.Entity'))
+    ye = fb.reg(cx.t('ent.Entity'))
+
+    def cover_at(dst, at, own):
+        fb.op('CallN', dst=dst, fun=cover, args=[fac, at, at, t_true if own else t_false, no_arr])
+
+    def their_side(dst, s):
+        """dst = at-war armies in reach + enemy turret cover + militia at structure s (entity reg ve)."""
+        fb.op('Call3', dst=dst, fun=react, arg0=fac, arg1=ve, arg2=local)
+        cover_at(q, ve, False)
+        fb.op('Add', dst=dst, a=dst, b=q)
+        fb.op('Call1', dst=q, fun=militia, arg0=s)
+        fb.op('Add', dst=dst, a=dst, b=q)
+
+    # ---- 1. abort pass: re-check running pillages (backwards: stop() removes the order from the list)
+    _tick(fb, b, cx, t, CHECK, 'new')
+    dfs = fb.reg(cx.t('ent.Structure'))
+    fb.op('Call1', dst=dfs, fun=defend, arg0=fac)
+    reason = cx.code.types[cx.fn('logic.ai.AIOrder.stop').type.value].definition.args[1].value
+    cancel = fb.reg(reason)
+    fb.op('MakeEnum', dst=cancel, construct=CANCEL, args=[])
+    fb.op('Mov', dst=i, src=b.field(orders, 'length'))
+    b.loop_head('ord')
+    fb.op('JSLte', a=i, b=zi, offset='new')
+    fb.op('Sub', dst=i, a=i, b=one)
+    o = b.cast(b.call('hl.types.ArrayObj.getDyn', orders, i), 'logic.ai.AIOrder')
+    fb.op('JNull', reg=o, offset='ord')
+    fb.op('EnumIndex', dst=idx, value=b.field(o, 'type'))
+    fb.op('JNotEq', a=idx, b=b.const('i32', MILITARY), offset='ord')
+    tt = b.field(o, 'targetType')
+    fb.op('JNull', reg=tt, offset='ord')
+    fb.op('EnumIndex', dst=idx, value=tt)
+    fb.op('JNotEq', a=idx, b=b.const('i32', T_STRUCT), offset='ord')
+    sa = b.cast(fb.get(o, 'siegeAction'), 'String')
+    fb.op('JNull', reg=sa, offset='ord')
+    fb.op('JNotEq', a=b.call('String.__compare', sa, pillage), b=zi, offset='ord')
+    ov = b.cast(b.call('logic.ai.AIOrder.getTarget', o), 'ent.Structure')
+    fb.op('JNull', reg=ov, offset='ord')
+    fb.op('Mov', dst=ve, src=ov)
+    fb.op('Mov', dst=ph, src=b.field(o, 'phase'))
+    fb.op('Mov', dst=pr, src=zero)
+    osg = b.field(ov, 'siege')
+    fb.op('JNull', reg=osg, offset='noprog')
+    fb.op('Mov', dst=pr, src=b.call('ent.comp.SiegeComponent.getOccupationActionProgress', osg))
+    fb.label('noprog')
+    fb.op('JNotEq', a=ph, b=b.const('i32', ACTION), offset='running')
+    fb.op('JSGte', a=pr, b=done_r, offset='ord')  # nearly done: finish it
+    fb.label('running')
+    units = b.field(o, 'units')
+    fb.op('JNull', reg=units, offset='ord')
+    un = b.field(units, 'length')
+    # raid power, and the part of it fit to defend (what the contest hunt / vanilla defense would take)
+    fb.op('Mov', dst=m, src=zero)
+    fb.op('Mov', dst=hp, src=zero)
+    u = _army_loop(fb, b, units, un, j, 'u', 'udone')
+    fb.op('Call1', dst=p, fun=pw, arg0=u)
+    fb.op('Add', dst=m, a=m, b=p)
+    fb.op('JSLt', a=b.call('ent.Entity.get_lifeRatio', u), b=min_life, offset='u')
+    ums = b.call('ent.Army.get_maxSupply', u)
+    fb.op('JSLte', a=ums, b=zero, offset='ufit')
+    fb.op('SDiv', dst=q, a=b.call('ent.Army.get_supply', u), b=ums)
+    fb.op('JSLt', a=q, b=min_sup, offset='u')
+    fb.label('ufit')
+    fb.op('Add', dst=hp, a=hp, b=p)
+    fb.op('JAlways', offset='u')
+    fb.label('udone')
+    fb.op('Call2', dst=sd, fun=land, arg0=fac, arg1=ve)
+    # defend: our besieged structure near the raid needs armies its free defenders lack
+    fb.op('JNull', reg=dfs, offset='a_home')
+    fb.op('JSLte', a=hp, b=zero, offset='a_home')
+    fb.op('Mov', dst=de, src=dfs)
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', ve, de), b=recall_r, offset='a_home')
+    fb.op('Call3', dst=h, fun=threat, arg0=fac, arg1=de, arg2=local)
+    cover_at(q, de, False)
+    fb.op('Add', dst=h, a=h, b=q)
+    cover_at(r, de, True)
+    y = _army_loop(fb, b, my_armies, mlen, k, 'df', 'dfdone')
+    fb.op('JTrue', cond=b.call('hl.types.ArrayObj.contains', units, fb.dyn(y)), offset='df')
+    fb.op('Mov', dst=dy, src=b.call('ent.Entity.getDistTo', y, de))
+    fb.op('JSGt', a=dy, b=gather_r, offset='df')
+    fb.op('JNotNull', reg=b.field(y, 'harvestComponent'), offset='df')
+    fb.op('JSLte', a=dy, b=local, offset='dfin')  # already there (defending, in a contest hunt or idle)
+    fb.op('Call2', dst=ok, fun=free, arg0=y, arg1=orders)
+    fb.op('JFalse', cond=ok, offset='df')
+    fb.label('dfin')
+    fb.op('Call1', dst=p, fun=pw, arg0=y)
+    fb.op('Add', dst=r, a=r, b=p)
+    fb.op('JAlways', offset='df')
+    fb.label('dfdone')
+    fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', de))
+    fb.op('Mul', dst=q, a=h, b=enter)
+    fb.op('SDiv', dst=q, a=q, b=tf)
+    fb.op('JSLt', a=r, b=q, offset='ab_defend')
+    # home: hostile armies closer to our land than the raid, and too few of ours at home without it
+    fb.label('a_home')
+    fb.op('Add', dst=lim, a=sd, b=home_m)
+    fb.op('Call2', dst=hh, fun=home, arg0=fac, arg1=lim)
+    fb.op('JSLte', a=hh, b=zero, offset='a_weak')
+    fb.op('Call3', dst=ms, fun=homeown, arg0=fac, arg1=lim, arg2=units)
+    fb.op('Mul', dst=q, a=ms, b=own_t)
+    fb.op('Mul', dst=r, a=hh, b=abort)
+    fb.op('JSLt', a=q, b=r, offset='ab_home')
+    # weak: still walking and relief arrived at the target (in the fight the vanilla fight retreat decides)
+    fb.label('a_weak')
+    fb.op('JSGte', a=ph, b=b.const('i32', REGROUP + 1), offset='ord')
+    their_side(h, ov)
+    cover_at(q, ve, True)
+    fb.op('Add', dst=r, a=m, b=q)
+    fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', ve))
+    fb.op('Mul', dst=q, a=h, b=abort)
+    fb.op('SDiv', dst=q, a=q, b=tf)
+    fb.op('JSLt', a=r, b=q, offset='ab_weak')
+    fb.op('JAlways', offset='ord')
+    for why, hr, mr in (('defend', h, r), ('home', hh, ms), ('weak', h, r)):
+        fb.label(f'ab_{why}')
+        b.call('logic.ai.AIOrder.stop', o, cancel)
+        _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', 'abort'), ('why', why),
+                                             ('tgt', ve), ('H', hr), ('M', mr), ('ph', ph), ('pr%', pr),
+                                             ('sd', sd), ('n', un)])
+        fb.op('JAlways', offset='ord')
+
+    # ---- 2. launch pass: at most one new raid
+    fb.label('new')
     _tick(fb, b, cx, t, START, 'end')
     # commit gap and defensive posture
     lastmap = _global_map(fb, b, cx, 'raid')
+    retrymap = _global_map(fb, b, cx, 'rlaunch')  # village -> last raid launch on it
     last = b.call('haxe.ds.ObjectMap.get', lastmap, fb.dyn(fac))
     lastf = fb.reg(cx.t('f64'))
     fb.op('JNull', reg=last, offset='gapok')
@@ -39,126 +208,275 @@ def build_raid(cx, helpers, pw, raidable, threat, land, terrain, raidsup, cover,
     fb.op('Sub', dst=lastf, a=t, b=lastf)
     fb.op('JSLt', a=lastf, b=b.const('f64', RAID_GAP), offset='end')
     fb.label('gapok')
-    dfs = fb.reg(cx.t('ent.Structure'))
     fb.op('Call1', dst=dfs, fun=defend, arg0=fac)
     fb.op('JNotNull', reg=dfs, offset='end')
-    orders_obj = b.field(ctrl, 'aiOrders')
-    orders = b.field(orders_obj, 'orders')
-    fb.op('JNull', reg=orders, offset='end')
     on = b.field(orders, 'length')
-    villages = b.field(state, 'villages')
-    fb.op('JNull', reg=villages, offset='end')
-    vn = b.field(villages, 'length')
-    my_armies, mlen = _my_armies(fb, b, fac, 'end')
+    structs = b.cast(fb.get(fac, 'structures', 'array'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=structs, offset='end')
+    sn = b.field(structs, 'length')
+    # vanilla's pillage candidates
+    cands = _new_array(fb, b, cx)
+    b.call('logic.ai.$AIMilitary.getSiegeableVillages', cands, pillage_s, fac,
+           b.call('$HAI.getDefaultStructureArgs', pillage_s))
+    vn = b.field(cands, 'length')
+    # vanilla's next Annex choices (as tryAnnexation -> tryAction picks them): never raided
+    annex_s = fb.string('Annex')
+    aargs = b.call('$HAI.getDefaultStructureArgs', annex_s)
+    fb.op('JNotLt', a=b.call('logic.ai.AIMilitary.get_aggressiveness', 0),
+          b=b.call('logic.ai.AIMilitary.getActionRequiredAggressivenessByKind', 0, fb.string('Annexation')),
+          offset='aggr')
+    fb.op('SetField', obj=aargs, field=cx.field(fb.regs[aargs], 'allowEnemy'), src=t_false)
+    fb.label('aggr')
+    ann = _new_array(fb, b, cx)
+    b.call('logic.ai.$AIMilitary.getSiegeableVillages', ann, annex_s, fac, aargs)
+    choices = fb.reg(cx.t('hl.types.ArrayObj'))
+    fb.op('Null', dst=choices)
+    ax = fb.reg(cx.t('ent.Entity'))
+    fb.op('Null', dst=ax)
+    fb.op('JSLte', a=b.field(ann, 'length'), b=zi, offset='noannex')
+    sfn = cx.fn('logic.ai.$HScoring.structures')
+    sat = [a.value for a in cx.code.types[sfn.type.value].definition.args]
+    snull = []
+    for n in (3, 4, 5):
+        rr = fb.reg(sat[n])
+        fb.op('Null', dst=rr)
+        snull.append(rr)
+    sc = fb.reg(cx.code.types[sfn.type.value].definition.ret.value)
+    fb.op('CallN', dst=sc, fun=scores, args=[ann, fac, annex_s] + snull)
+    fb.op('JNull', reg=sc, offset='noannex')
+    pmb = cx.fn('lib.$Extensions_pickMapBest_ent_Structure.pickMapBest')
+    pat = [a.value for a in cx.code.types[pmb.type.value].definition.args]
+    cnt, pnull = fb.reg(pat[1]), fb.reg(pat[2])
+    fb.op('ToDyn', dst=cnt, src=_fcache_int(fb, b, cx, BEST_COUNT, fac))
+    fb.op('Null', dst=pnull)
+    fb.op('Call3', dst=choices, fun=pmb.findex.value, arg0=sc, arg1=cnt, arg2=pnull)
+    fb.op('JNull', reg=choices, offset='noannex')
+    fb.op('JSLte', a=b.field(choices, 'length'), b=zi, offset='noannex')
+    fb.op('Mov', dst=ax, src=b.cast(b.call('hl.types.ArrayObj.getDyn', choices, zi), 'ent.Entity'))
+    fb.label('noannex')
 
-    zi, zero, big = b.const('i32', 0), b.const('f64', 0), b.const('f64', 1 << 30)
-    raid_r, local = b.const('f64', RAID_R), b.const('f64', LOCAL)
-    enter = _ratio(fb, b, ENTER)
-    t_false, t_true = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
-    fb.op('Bool', dst=t_false, value=False)
-    fb.op('Bool', dst=t_true, value=True)
-    no_arr = fb.reg(cx.t('hl.types.ArrayObj'))
-    fb.op('Null', dst=no_arr)
-    pillage = fb.dyn(fb.string('Pillage'))
-    i, j, k, idx = (fb.reg(cx.t('i32')) for _ in range(4))
-    h, m, p, q, sd, dmin, dy, tf = (fb.reg(cx.t('f64')) for _ in range(8))
-    ok = fb.reg(cx.t('bool'))
-    ve = fb.reg(cx.t('ent.Entity'))
+    need, dmin, dall, mh, ly = (fb.reg(cx.t('f64')) for _ in range(5))
+    nr, nready = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
     best = fb.reg(cx.t('ent.Entity'))
     fb.op('Null', dst=best)
-    best_d, best_h, best_m, best_sd = b.const('f64', 1 << 30), b.const('f64', 0), b.const('f64', 0), b.const('f64', 0)
+    best_d, best_h, best_sd, best_tf = b.const('f64', 1 << 30), b.const('f64', 0), b.const('f64', 0), \
+        b.const('f64', 1)
+    best_hh, best_ms = b.const('f64', 0), b.const('f64', 0)
+    # nearest refused candidate (logged when nothing launches): why, their armies / turrets / militia, our power
+    hq, cq, mq = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    rej = fb.reg(cx.t('ent.Entity'))
+    fb.op('Null', dst=rej)
+    rej_d = b.const('f64', 1 << 30)
+    rej_h, rej_c, rej_mi, rej_m, rej_tf, rej_sd, rej_hh, rej_ms = (b.const('f64', 0) for _ in range(8))
+    rej_nr, rej_n = b.const('i32', 0), b.const('i32', 0)
+    rej_why, rej_why_c = fb.reg(cx.t('String')), fb.reg(cx.t('String'))
+    why_ready, why_weak, why_home = fb.string('ready'), fb.string('weak'), fb.string('home')
+    fb.op('Mov', dst=rej_why, src=why_ready)
 
     fb.op('Mov', dst=i, src=zi)
     b.loop_head('v')
     fb.op('JSGte', a=i, b=vn, offset='vdone')
-    v = b.cast(b.call('hl.types.ArrayObj.getDyn', villages, i), 'ent.Structure')
+    v = b.cast(b.call('hl.types.ArrayObj.getDyn', cands, i), 'ent.Structure')
     fb.op('Incr', dst=i)
     fb.op('JNull', reg=v, offset='v')
     fb.op('Mov', dst=ve, src=v)
-    # an at-war faction's village, not a main base, nobody besieging it
+    # neutral or at war with us, not a main base, nobody besieging it
     vo = b.call('ent.Entity.get_owner', ve)
-    fb.op('JNull', reg=vo, offset='v')
+    fb.op('JNull', reg=vo, offset='owner_ok')
     fb.op('JEq', a=vo, b=fac, offset='v')
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, fac, vo), offset='v')
+    fb.label('owner_ok')
     fb.op('JTrue', cond=b.call('ent.Structure.get_isMainBase', v), offset='v')
     sg = b.field(v, 'siege')
     fb.op('JNull', reg=sg, offset='v')
     fb.op('JNotNull', reg=b.field(sg, 'besiegingFaction'), offset='v')
-    # the game lets us pillage it (faction rules: Atreides can't)
-    acts = b.call('ent.comp.SiegeComponent.getAvailableOccupationActions', sg, fac)
-    fb.op('JNull', reg=acts, offset='v')
-    an = b.field(acts, 'length')
+    # not one our raid left less than RAID_RETRY s ago (aborted, or cancelled at once by vanilla)
+    rl = b.call('haxe.ds.ObjectMap.get', retrymap, fb.dyn(ve))
+    fb.op('JNull', reg=rl, offset='notrecent')
+    fb.op('SafeCast', dst=q, src=rl)
+    fb.op('Sub', dst=q, a=t, b=q)
+    fb.op('JSLt', a=q, b=b.const('f64', RAID_RETRY), offset='v')
+    fb.label('notrecent')
+    # not a village our own Underworld HQ exploits (a pillage devastates our income there)
+    fb.op('JTrue', cond=b.call('ent.Structure.hasUWHeadquarters', v, fac), offset='v')
+    # not what we annex next
+    fb.op('JNull', reg=choices, offset='nochoice')
+    fb.op('JTrue', cond=b.call('hl.types.ArrayObj.contains', choices, fb.dyn(ve)), offset='v')
+    fb.label('nochoice')
     fb.op('Mov', dst=j, src=zi)
-    b.loop_head('act')
-    fb.op('JSGte', a=j, b=an, offset='v')
-    a_s = b.cast(b.call('hl.types.ArrayObj.getDyn', acts, j), 'String')
+    b.loop_head('mb')
+    fb.op('JSGte', a=j, b=sn, offset='mbdone')
+    st = b.cast(b.call('hl.types.ArrayObj.getDyn', structs, j), 'ent.Structure')
     fb.op('Incr', dst=j)
-    fb.op('JNull', reg=a_s, offset='act')
-    fb.op('JNotEq', a=b.call('String.__compare', a_s, pillage), b=zi, offset='act')
+    fb.op('JNull', reg=st, offset='mb')
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', st), offset='mb')
+    fb.op('Mov', dst=de, src=st)
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', ve, de), b=b.const('f64', BUNKER_R), offset='v')
+    fb.op('JAlways', offset='mb')
+    fb.label('mbdone')
     # not already one of our Military targets
     fb.op('Mov', dst=j, src=zi)
     b.loop_head('o')
     fb.op('JSGte', a=j, b=on, offset='odone')
-    o = b.cast(b.call('hl.types.ArrayObj.getDyn', orders, j), 'logic.ai.AIOrder')
+    o2 = b.cast(b.call('hl.types.ArrayObj.getDyn', orders, j), 'logic.ai.AIOrder')
     fb.op('Incr', dst=j)
-    fb.op('JNull', reg=o, offset='o')
-    fb.op('EnumIndex', dst=idx, value=b.field(o, 'type'))
+    fb.op('JNull', reg=o2, offset='o')
+    fb.op('EnumIndex', dst=idx, value=b.field(o2, 'type'))
     fb.op('JNotEq', a=idx, b=b.const('i32', MILITARY), offset='o')
-    tt = b.field(o, 'targetType')
-    fb.op('JNull', reg=tt, offset='o')
-    fb.op('EnumIndex', dst=idx, value=tt)
+    tt2 = b.field(o2, 'targetType')
+    fb.op('JNull', reg=tt2, offset='o')
+    fb.op('EnumIndex', dst=idx, value=tt2)
     fb.op('JNotEq', a=idx, b=b.const('i32', T_STRUCT), offset='o')
-    fb.op('JEq', a=b.call('logic.ai.AIOrder.getTarget', o), b=ve, offset='v')
+    fb.op('JEq', a=b.call('logic.ai.AIOrder.getTarget', o2), b=ve, offset='v')
     fb.op('JAlways', offset='o')
     fb.label('odone')
-    # our raid force there (+ our turret cover), with the supply for the raid and the way home
+    # our raid force there (+ our turret cover), with the supply for the raid and the way home; our armies at home
     fb.op('Call2', dst=sd, fun=land, arg0=fac, arg1=ve)
-    fb.op('CallN', dst=m, fun=cover, args=[fac, ve, ve, t_true, no_arr])
+    fb.op('Add', dst=lim, a=sd, b=home_m)
+    cover_at(m, ve, True)
+    fb.op('Mov', dst=ms, src=zero)
     fb.op('Mov', dst=dmin, src=big)
+    fb.op('Mov', dst=dall, src=big)
+    fb.op('Mov', dst=nr, src=zi)
+    fb.op('Mov', dst=nready, src=zi)
+    fb.op('Mov', dst=mh, src=zero)
     y = _army_loop(fb, b, my_armies, mlen, k, 'y', 'ydone')
+    fb.op('Mov', dst=ye, src=y)
+    fb.op('Mov', dst=ly, src=big)
+    fb.op('JNotNull', reg=b.field(y, 'harvestComponent'), offset='yraid')
+    fb.op('Call2', dst=ly, fun=land, arg0=fac, arg1=ye)
+    fb.op('JSGt', a=ly, b=lim, offset='yraid')
+    fb.op('Call1', dst=p, fun=pw, arg0=y)
+    fb.op('Add', dst=ms, a=ms, b=p)
+    fb.label('yraid')
     fb.op('Mov', dst=dy, src=b.call('ent.Entity.getDistTo', y, ve))
     fb.op('JSGt', a=dy, b=raid_r, offset='y')
+    fb.op('Incr', dst=nr)
+    fb.op('JSGte', a=dy, b=dall, offset='yall')
+    fb.op('Mov', dst=dall, src=dy)
+    fb.label('yall')
+    # in a fight: micro holds it (a new order stalls in Regroup and, being a mission, keeps it chasing)
+    fb.op('JTrue', cond=b.call('ent.Entity.isFighting', y), offset='y')
     fb.op('Call2', dst=ok, fun=raidable, arg0=y, arg1=orders)
     fb.op('JFalse', cond=ok, offset='y')
     fb.op('Call3', dst=ok, fun=raidsup, arg0=y, arg1=dy, arg2=sd)
     fb.op('JFalse', cond=ok, offset='y')
     fb.op('Call1', dst=p, fun=pw, arg0=y)
     fb.op('Add', dst=m, a=m, b=p)
+    fb.op('Incr', dst=nready)
+    fb.op('JSGt', a=ly, b=lim, offset='ynh')
+    fb.op('Add', dst=mh, a=mh, b=p)  # raid-ready and at home: leaves home if it joins
+    fb.label('ynh')
     fb.op('JSGte', a=dy, b=dmin, offset='y')
     fb.op('Mov', dst=dmin, src=dy)
     fb.op('JAlways', offset='y')
     fb.label('ydone')
-    fb.op('JSGte', a=dmin, b=big, offset='v')
+    fb.op('JSLte', a=nr, b=zi, offset='v')  # none of ours near it
+    fb.op('Mov', dst=hq, src=zero)
+    fb.op('Mov', dst=cq, src=zero)
+    fb.op('Mov', dst=mq, src=zero)
+    fb.op('Mov', dst=hh, src=zero)
+    fb.op('Mov', dst=tf, src=b.const('f64', 1))
+    fb.op('Mov', dst=rej_why_c, src=why_ready)
+    fb.op('JSGte', a=dmin, b=big, offset='refuse')  # armies near it, none raid-ready (life / supply budget)
     # their side: armies in reach, turrets covering it, its militia
-    fb.op('Call3', dst=h, fun=threat, arg0=fac, arg1=ve, arg2=local)
-    fb.op('CallN', dst=q, fun=cover, args=[fac, ve, ve, t_false, no_arr])
-    fb.op('Add', dst=h, a=h, b=q)
-    fb.op('Call1', dst=q, fun=militia, arg0=v)
-    fb.op('Add', dst=h, a=h, b=q)
+    fb.op('Call3', dst=hq, fun=react, arg0=fac, arg1=ve, arg2=local)
+    cover_at(cq, ve, False)
+    fb.op('Call1', dst=mq, fun=militia, arg0=v)
+    fb.op('Add', dst=h, a=hq, b=cq)
+    fb.op('Add', dst=h, a=h, b=mq)
     fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', ve))
     fb.op('Mul', dst=q, a=h, b=enter)
     fb.op('SDiv', dst=q, a=q, b=tf)
-    fb.op('JSLt', a=m, b=q, offset='v')
+    fb.op('Mov', dst=rej_why_c, src=why_weak)
+    fb.op('JSLt', a=m, b=q, offset='refuse')
+    # home race: hostile armies nearer our land than the raid must be held by what stays home. The raid takes
+    # about RAID_TO x their side (the launch sizing), at most the raid-ready power standing at home (mh); the
+    # launch re-checks with the armies actually picked
+    fb.op('Call2', dst=hh, fun=home, arg0=fac, arg1=lim)
+    fb.op('JSLte', a=hh, b=zero, offset='pass')
+    fb.op('Mul', dst=need, a=h, b=raid_to)
+    fb.op('SDiv', dst=need, a=need, b=tf)
+    fb.op('JSLte', a=need, b=mh, offset='take')
+    fb.op('Mov', dst=need, src=mh)
+    fb.label('take')
+    fb.op('Sub', dst=ms, a=ms, b=need)
+    fb.op('JSGte', a=ms, b=zero, offset='msok')
+    fb.op('Mov', dst=ms, src=zero)
+    fb.label('msok')
+    fb.op('Mul', dst=q, a=ms, b=own_t)
+    fb.op('Mul', dst=r, a=hh, b=enter)
+    fb.op('Mov', dst=rej_why_c, src=why_home)
+    fb.op('JSLt', a=q, b=r, offset='refuse')
+    fb.label('pass')
     fb.op('JSGte', a=dmin, b=best_d, offset='v')
-    for dst, src in ((best, ve), (best_d, dmin), (best_h, h), (best_m, m), (best_sd, sd)):
+    for dst, src in ((best, ve), (best_d, dmin), (best_h, h), (best_sd, sd), (best_tf, tf),
+                     (best_hh, hh), (best_ms, ms)):
+        fb.op('Mov', dst=dst, src=src)
+    fb.op('JAlways', offset='v')
+    fb.label('refuse')
+    fb.op('JSGte', a=dall, b=rej_d, offset='v')
+    for dst, src in ((rej, ve), (rej_d, dall), (rej_h, hq), (rej_c, cq), (rej_mi, mq), (rej_m, m), (rej_tf, tf),
+                     (rej_sd, sd), (rej_nr, nr), (rej_n, nready), (rej_why, rej_why_c), (rej_hh, hh),
+                     (rej_ms, ms)):
         fb.op('Mov', dst=dst, src=src)
     fb.op('JAlways', offset='v')
     fb.label('vdone')
-    fb.op('JNull', reg=best, offset='end')
+    fb.op('JNotNull', reg=best, offset='launch')
+    fb.op('JNull', reg=rej, offset='end')
+    _throttle(fb, b, cx, 'raidx', fac, RAID_GAP, 'end')
+    _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', 'refuse'), ('why', rej_why),
+                                         ('tgt', rej), ('H', rej_h), ('C', rej_c), ('Mi', rej_mi), ('M', rej_m),
+                                         ('tf%', rej_tf), ('nr', rej_nr), ('n', rej_n), ('dm', rej_d),
+                                         ('sd', rej_sd), ('hh', rej_hh), ('ms', rej_ms), ('ax', ax), ('nc', vn)])
+    fb.op('JAlways', offset='end')
+    fb.label('launch')
 
-    # launch: every raid-ready army in reach of the chosen village
+    # launch: the nearest raid-ready armies in reach until RAID_TO x their side (at least one)
+    fb.op('Mul', dst=need, a=best_h, b=raid_to)
+    fb.op('SDiv', dst=need, a=need, b=best_tf)
+    cover_at(m, best, True)
     arr = _new_array(fb, b, cx)
+    ny = fb.reg(cx.t('ent.Army'))
+    nd = fb.reg(cx.t('f64'))
+    b.loop_head('sel')
+    fb.op('Null', dst=ny)
+    fb.op('Mov', dst=nd, src=big)
     y = _army_loop(fb, b, my_armies, mlen, k, 'g', 'gdone')
     fb.op('Mov', dst=dy, src=b.call('ent.Entity.getDistTo', y, best))
     fb.op('JSGt', a=dy, b=raid_r, offset='g')
+    fb.op('JSGte', a=dy, b=nd, offset='g')
+    fb.op('JTrue', cond=b.call('hl.types.ArrayObj.contains', arr, fb.dyn(y)), offset='g')
+    fb.op('JTrue', cond=b.call('ent.Entity.isFighting', y), offset='g')
     fb.op('Call2', dst=ok, fun=raidable, arg0=y, arg1=orders)
     fb.op('JFalse', cond=ok, offset='g')
     fb.op('Call3', dst=ok, fun=raidsup, arg0=y, arg1=dy, arg2=best_sd)
     fb.op('JFalse', cond=ok, offset='g')
-    b.call('hl.types.ArrayObj.push', arr, fb.dyn(y))
+    fb.op('Mov', dst=ny, src=y)
+    fb.op('Mov', dst=nd, src=dy)
     fb.op('JAlways', offset='g')
     fb.label('gdone')
+    fb.op('JNull', reg=ny, offset='seldone')
+    b.call('hl.types.ArrayObj.push', arr, fb.dyn(ny))
+    fb.op('Call1', dst=p, fun=pw, arg0=ny)
+    fb.op('Add', dst=m, a=m, b=p)
+    fb.op('JSLt', a=m, b=need, offset='sel')
+    fb.label('seldone')
     fb.op('JSLte', a=b.field(arr, 'length'), b=zi, offset='end')
+    # home race with the armies actually picked (the candidate test estimated them)
+    fb.op('JSLte', a=best_hh, b=zero, offset='homeok')
+    fb.op('Add', dst=lim, a=best_sd, b=home_m)
+    fb.op('Call3', dst=best_ms, fun=homeown, arg0=fac, arg1=lim, arg2=arr)
+    fb.op('Mul', dst=q, a=best_ms, b=own_t)
+    fb.op('Mul', dst=r, a=best_hh, b=enter)
+    fb.op('JSGte', a=q, b=r, offset='homeok')
+    _throttle(fb, b, cx, 'raidx', fac, RAID_GAP, 'end')
+    _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', 'refuse'), ('why', 'home'),
+                                         ('tgt', best), ('H', best_h), ('M', m), ('n', b.field(arr, 'length')),
+                                         ('dm', best_d), ('sd', best_sd), ('hh', best_hh), ('ms', best_ms),
+                                         ('ax', ax), ('nc', vn)])
+    fb.op('JAlways', offset='end')
+    fb.label('homeok')
     add = cx.fn('logic.ai.AIOrders.addOrder')
     at = [a.value for a in cx.code.types[add.type.value].definition.args]
     kind = fb.reg(cx.t('logic.ai.AIOrderType'))
@@ -166,20 +484,23 @@ def build_raid(cx, helpers, pw, raidable, threat, land, terrain, raidsup, cover,
     mm, om = _new_array(fb, b, cx), _new_array(fb, b, cx)  # no missions (vanilla iterates these arrays)
     nulls = []
     for n in (9, 10):  # data, onComplete (null-checked by addOrder's completion closure)
-        r = fb.reg(at[n])
-        fb.op('Null', dst=r)
-        nulls.append(r)
+        rr = fb.reg(at[n])
+        fb.op('Null', dst=rr)
+        nulls.append(rr)
     res = fb.reg(cx.t('logic.ai.AIOrder'))
     fb.op('CallN', dst=res, fun=helpers.get('addOrder', add.findex.value),
-          args=[orders_obj, kind, b.const('i32', 1), arr, best, fb.string('ArmySiege'), fb.string('Pillage'),
+          args=[orders_obj, kind, b.const('i32', 1), arr, best, fb.string('ArmySiege'), pillage_s,
                 mm, om] + nulls)
     fb.op('Bool', dst=ok, value=False)
     fb.op('JNull', reg=res, offset='fail')
     fb.op('Bool', dst=ok, value=True)
     b.call('haxe.ds.ObjectMap.set', lastmap, fb.dyn(fac), fb.dyn(t))
+    b.call('haxe.ds.ObjectMap.set', retrymap, fb.dyn(best), fb.dyn(t))
     fb.label('fail')
-    _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('tgt', best), ('H', best_h), ('M', best_m),
-                                         ('n', b.field(arr, 'length')), ('dm', best_d), ('sd', best_sd), ('ok', ok)])
+    _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', 'start'), ('tgt', best), ('H', best_h),
+                                         ('M', m), ('n', b.field(arr, 'length')), ('dm', best_d),
+                                         ('sd', best_sd), ('hh', best_hh), ('ms', best_ms), ('ax', ax),
+                                         ('nc', vn), ('ok', ok)])
     fb.label('end')
     fb.end_try(guard)
     fb.op('Ret', ret=void)

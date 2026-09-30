@@ -35,6 +35,10 @@ MIN_SUPPLY = 0.9   # free army supply ratio (= vanilla getUnits minSupply)
 SUP_U = 0.35       # supply budget per map unit to our land: drain 50/day (data Army_Supply_DailyDrain, 30 s day)
                    # = 1.67/s at ~6 u/s = 0.28/u, x1.25 margin
 SUP_RES = 0.1      # ... plus this share of max supply in reserve. `short` = losing supply and below the budget
+SUP_WALK = 0.28    # raw drain per map unit walked (SUP_U without the margin). Fight retreat: a short army with
+                   # supply < SUP_WALK x distance to our land is `stranded`: fleeing starves it on the way anyway (and
+                   # gets it shot in the back), so it isn't penalised and keeps a fight it is winning (Atreides left a
+                   # 1.9:1 fight at 0 supply 250 from home: 4 of 5 armies died fleeing)
 SUP_ENTER = 1.25   # hunt start: joining armies need this x the budget at the target (hysteresis vs abort `supply`)
 SUP_PEN = 0.6      # fight retreat: balance x (1 - SUP_PEN x share of our fight power that is short on supply)
 COVER_R = 130      # turret cover: a structure's turrets / main base guns reach this far from its centre (data: range
@@ -52,13 +56,69 @@ MILITARY, RESUPPLY, PATROL = 1, 4, 6  # AIOrderType: Basic Military Defense Prot
 ADJ_R = 100        # annex-spacing: no second siege on a structure this close to one we already target
                    # (village nearest-neighbour median 110-155)
 T_STRUCT, T_GROUP = 5, 6  # AIOrderTargetType: Entity Unit Army Ornithopter Harvester Structure Group
-RAID_R = 250       # raid: our armies within this of an enemy village may pillage it
+RAID_R = 400       # raid: our armies within this of a village may pillage it (~65 s walk; the supply budget and the
+                   # home race bound it further). 250 left an army stack idle at home next to pillageable villages
+RAID_TO = KILL     # raid force: nearest raid-ready armies first, until they have this x (threat + cover + militia)
+                   # / terrain there (at least ENTER); the rest stays home or raids elsewhere
+HOME_M = 100       # raid home race: hostile armies within (target's distance to our land + this) of our land get
+                   # there before the raiders could return (~17 s reaction margin)
+RECALL_R = DEFEND_R  # raid abort `defend`: a pillage this close to our besieged structure yields its armies
+RAID_DONE = 0.5    # a pillage in Action at this progress (0-1, getOccupationActionProgress) is finished, never
+                   # aborted (~30 s left of 2 days; the pillage also refills 50% supply)
 RAID_GAP = 30      # s between two raid launches of one faction (commit, like HUNT_GAP)
 RAID_LIFE = 0.6    # raid army life floor (a pillage is short; vanilla sieges want 0.9 and a full refill)
 RAID_ARRIVE = 0.25  # raid: supply share an army must still have on arrival (militia fight drains)
+REACT_R = 480      # raid: idle at-war armies this close can reach the village before a pillage ends (militia fight
+                   # ~20 s + 2 days = 60 s, at ~6 u/s); fighting, besieging or elsewhere-bound ones don't count
+DANGER_T = 180     # faction memory: a zone where our harvester was attacked stays dangerous this long (6 game days),
+                   # linearly fading (cooldown); longer would strand good fields, shorter re-sends into the same raiders
+DANGER_KEY = 600 * 600  # harvester field choice: squared-distance penalty at full danger (a field up to ~600 farther wins)
+ALLY_WIN = 150    # hunt: a third party allied / at peace with the prey counts only if it is within our nearest army's
+                   # distance + this (~25 s of fight at ~6 u/s): farther ones arrive after the kill. A third party at
+                   # war with the prey doesn't count (it fights the prey too). Log: Harkonnen hunt on 3 Fremen next
+                   # to an Atreides stack at war with both
+ENGAGE_R = 100    # siege-engage: order armies this close to the target are at it (in the militia fight); farther
+                   # ones are still walking and would arrive one by one (Harkonnen raid on Har-Al'sud)
 OCC_REFILL = 0.5   # = data Army_Supply_Resupply_OccupationRatio: share of max supply a finished pillage refills
-CANCEL = 2        # ent.ActionEndReason: Success Fail Cancel Override
+NEUTRAL_REQ = 1.25 # siege launch: required ratio on a neutral target (vanilla 1.0). Below ENTER: militia is known and
+                   # never reinforced, and siege-join adds the idle armies nearby on top
+JOIN_R = HUNT_R    # siege launch: idle armies this close to the target may join (vanilla sends the minimum) ...
+JOIN_TO = KILL    # ... nearest first, until we have this x their power there (KILL: a fight over in seconds)
+RETRY = 30         # s: a vanilla siege target launched again this soon after its last launch ended at once
+                   # (e.g. InsufficientSupply at +0 s) is dropped from the target scores until then
+PURSUIT_T = 15    # s without progress that end a chase (hunt abort `chase`) or a mission-less fight (fight retreat
+                   # `pursuit`): a fleeing army at our speed keeps its distance forever (~90 units per 15 s)
+PROGRESS = 0.1     # progress = the enemy there lost this share of its power since the last progress ...
+CLOSE = 30         # ... or (hunt) our nearest army got this much closer to the prey (~5 s of walking)
+PURSUIT_STALE = 3  # s: a warzone record not refreshed for this long belongs to an earlier fight (the balance is read
+                   # every tick while the fight runs)
+GIVEUP_T = 90      # s: an army a chase gave up on (`chase` abort) isn't chased again for this long (it outruns us;
+                   # a new chase would end the same way 45 s later)
+RAID_RETRY = 60    # s: a village our raid left (aborted, or cancelled at once by vanilla) isn't raided again this soon
+CANCEL = 2       # ent.ActionEndReason: Success Fail Cancel Override
 REGROUP = 3        # AIOrder.phase: Paused Waiting Preparation Regroup Engage Action Retreat
+ACTION = 5
+BEST_COUNT = 877   # Const.fValuesCache index of AI_StructureScore_BestStructuresCount: vanilla picks its siege
+                   # target at random among this many best scores (Insane 2 ... Easy 5)
+
+
+def _fcache_int(fb, b, cx, idx, fac):
+    """i32 = Const.fValuesCache[idx][fac.aiDifficulty] (per-difficulty data constant, read as tryAction does)."""
+    c = fb.reg(cx.t('$Const'))
+    fb.op('GetGlobal', dst=c, **{'global': cx.global_of('$Const')})
+    out = b.const('i32', 0)
+    done = _uid('fc')
+    cache = b.field(c, 'fValuesCache')
+    fb.op('JNull', reg=cache, offset=done)
+    row = b.cast(b.call('hl.types.ArrayObj.getDyn', cache, b.const('i32', idx)), 'hl.types.ArrayBytes_Float')
+    fb.op('JNull', reg=row, offset=done)
+    v = b.call('hl.types.ArrayBytes_Float.getDyn', row, b.call('ent.Faction.get_aiDifficulty', fac))
+    fb.op('JNull', reg=v, offset=done)
+    f = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=f, src=v)
+    fb.op('ToInt', dst=out, src=f)
+    fb.label(done)
+    return out
 
 
 def _alloc_fn(cx):
