@@ -1,0 +1,29 @@
+{
+  "_doc": "AI data changes. Entry: {\"sheet\":\"constant\",\"id\":\"AI_Army_StuckTime\",\"path\":[\"value\"],\"expected\":5,\"value\":4,\"why\":\"...\"}. 'expected' is checked against vanilla; path indexes into the row (e.g. [\"values\",3,\"val\"] = Insane).",
+  "changes": [
+    {
+      "sheet": "constant",
+      "id": "AI_WarzonePowerEstimation_RetreatRatio",
+      "path": [
+        "values",
+        0,
+        "val"
+      ],
+      "expected": 0.5,
+      "value": 0.65,
+      "why": "Vanilla re-rolls the retreat ratio every tick in [0.5,0.8], so any fight below ~0.8 retreats within a second (6 vs 8 armies always ran). Fixed 0.65; tools/behave.py multiplies the fight balance by the terrain factor (own land 1.3, enemy land 0.8) before the check."
+    },
+    {
+      "sheet": "constant",
+      "id": "AI_WarzonePowerEstimation_RetreatRatio",
+      "path": [
+        "values",
+        1,
+        "val"
+      ],
+      "expected": 0.8,
+      "value": 0.65,
+      "why": "see previous entry"
+    }
+  ]
+}

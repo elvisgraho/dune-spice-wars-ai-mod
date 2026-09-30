@@ -1,0 +1,29 @@
+{
+  "_doc": "Combat testbed. Applied by `mod testbed on`; see docs/TESTBED.md. Edit, then re-run `mod testbed on` (game closed).",
+  "factions": ["Atreides", "Harkonnen", "Smugglers", "Fremen"],
+  "humanSlot": 0,
+  "mapCells": 130,
+  "noFog": true,
+  "startResources": {
+    "Solari": 15000, "Plascrete": 4000, "Manpower": 1200,
+    "Authority": 400, "Influence": 400, "Intel": 200, "GuildFavor": 200
+  },
+  "armies": {
+    "Atreides":  ["A_Trooper", "A_Trooper", "A_Trooper", "A_Soldier", "A_Soldier", "A_Soldier", "A_Demo", "A_Elite"],
+    "Harkonnen": ["H_Trooper", "H_Trooper", "H_Trooper", "H_Soldier", "H_Soldier", "H_Soldier", "H_Demo", "H_Elite"],
+    "Smugglers": ["S_Trooper", "S_Trooper", "S_Trooper", "S_Sneak", "S_Sneak", "S_Sneak", "S_Demo", "S_Elite"],
+    "Fremen":    ["F_Trooper", "F_Trooper", "F_Trooper", "F_Sneak", "F_Sneak", "F_Special", "F_Demo", "F_Elite"],
+    "Corrino":   ["C_Trooper", "C_Trooper", "C_Trooper", "C_Soldier", "C_Soldier", "C_Soldier", "C_Special", "C_Elite"],
+    "Ecaz":      ["E_Trooper", "E_Trooper", "E_Trooper", "E_Soldier", "E_Soldier", "E_Soldier", "E_Special", "E_Elite"],
+    "Vernius":   ["V_Soldier", "V_Soldier", "V_Soldier", "V_Trooper", "V_Trooper", "V_Special", "V_Elite", "V_Elite"]
+  },
+  "constants": {},
+  "macros": {
+    "O":   ["allFactionsNewGame {humanSlot}"],
+    "P":   ["ai true", "{WAR_ALL}", "speed 2"],
+    "K":   ["fog"],
+    "L":   ["info"],
+    "F9":  ["speed 1"],
+    "F10": ["speed 4"]
+  }
+}

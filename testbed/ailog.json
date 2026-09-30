@@ -1,0 +1,19 @@
+{
+  "_doc": "Extra AI calls to log (event 'call'), args/results described automatically. Full names from `mod find`. Only direct call sites are traced (virtual/closure calls are reported as untraceable). Avoid per-tick functions (huge logs). Re-run `mod testbed on` after editing.",
+  "trace": [
+    "logic.ai.AIMilitary.tryGauge",
+    "logic.ai.AIMilitary.tryAction",
+    "logic.ai.AIMilitary.onActionEnd",
+    "logic.ai.AIBattles.checkMainBaseDeployment",
+    "logic.ai.Spying.tryDefaultLaunchOperation",
+    "logic.ai.Politics.checkSpeaker",
+    "logic.ai.Politics.checkResolutionDecisions",
+    "logic.ai.Politics.checkVotingResolutions",
+    "logic.ai.Politics.placeVotes",
+    "logic.ai.AIController.tradeRequestReceived",
+    "logic.ai.AIController.requestTrade",
+    "logic.ai.Trading.doTrade"
+  ],
+  "trace_per_caller": [],
+  "_avoid": "Per-tick/per-frame (flood the log): AIMilitary.checkStructures, Politics.checkAction, Spying.checkAssassinationTarget, AIMilitary.changeAggressiveness (via updateAggressiveness)., AIBattles.checkPeacefulAnnexation (~186/min), Spying.tryLaunchOperationFromOrder (~109/min, always False), Spying.tryLaunchOperation (~104/min, always False). `mod log` flags any fn logged >30x per game-minute."
+}
