@@ -97,6 +97,8 @@ class FB:
         self.ops.append(o)
 
     def label(self, name):
+        if name in self.labels:  # a reused name would silently retarget every jump to it
+            raise ValueError(f'duplicate label {name!r}')
         self.labels[name] = len(self.ops)
 
     def string(self, text):

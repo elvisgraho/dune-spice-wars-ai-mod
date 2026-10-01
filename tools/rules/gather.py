@@ -6,7 +6,7 @@ nearest fights alone (Harkonnen hunt at Annaha: the H_Elite fought the A_Demo ~1
 H_Demo and H_Soldier arrived; Harkonnen Annex of Tuo-lon: one H_Trooper fought the militia ~20 s alone, hp 100 -> 40).
 
 Every GATHER_T s per faction: our Military orders in Engage (phase 4); target = getTarget() (village, or hunt
-group). Armies of the order within GATHER_R of the target count (farther ones are stragglers: not waited for);
+group). Armies of the order within GATHER_ORD_R of the target count (farther ones are stragglers: not waited for);
 dmax = the farthest of them. An army more than GATHER_GAP closer than dmax, not fighting and more than GATHER_MIN
 from the target (out of contact: never stopped next to the prey or the militia) and not draining in the deep desert
 (desert-step moves that one onto the village's side), on a hunt whose moving prey isn't heading towards it (a
@@ -37,7 +37,7 @@ def build_gather(cx, helpers):
     zi = b.const('i32', 0)
     i, j, idx, cnt = (fb.reg(cx.t('i32')) for _ in range(4))
     d, dmax, q, gs = (fb.reg(cx.t('f64')) for _ in range(4))
-    gr, gmin, gap = b.const('f64', GATHER_R), b.const('f64', GATHER_MIN), b.const('f64', GATHER_GAP)
+    gr, gmin, gap = b.const('f64', GATHER_ORD_R), b.const('f64', GATHER_MIN), b.const('f64', GATHER_GAP)
     tgt = fb.reg(cx.t('ent.Entity'))
     fb.op('Mov', dst=i, src=b.field(orders, 'length'))
     b.loop_head('o')

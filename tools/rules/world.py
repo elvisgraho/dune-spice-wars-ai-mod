@@ -38,7 +38,7 @@ def _approaching(fb, b, cx, x, p, d, skip):
     fb.label(ok)
 
 
-def build_threat(cx, pw, horizon_s=HORIZON, stats=False, reach=None, prey=False):
+def build_threat(cx, pw, horizon_s=HORIZON, stats=False, reach=None, prey=False, discount=True):
     """aimod_threat(fac, p, r) -> power of the armies hostile to fac within r of p, or heading there and able to
     arrive within horizon_s (a mover whose path ends farther from p than it is now doesn't count). Hostile = owned
     by a faction at war with fac, or a neutral raider (Army.raid: rebels, Fremen raids, marauders, ...) whose raid
@@ -50,7 +50,10 @@ def build_threat(cx, pw, horizon_s=HORIZON, stats=False, reach=None, prey=False)
     Atreides at their harvester).
     prey=True: aimod_hthreat(fac, p, r, pf, dn), the hunt measure around prey faction pf (null: plain threat): pf's
     armies as above; a third party at war with pf is skipped (it fights the prey too); one allied / at peace with pf
-    counts within max(r, dn + ALLY_WIN), dn = our nearest army's distance (it arrives before we finish the kill)."""
+    counts within max(r, dn + ALLY_WIN), dn = our nearest army's distance (it arrives before we finish the kill).
+    discount=False (heal / retreat / strand safety: where an army rests, it is still there when the capture ends or
+    the stack walks in): no BUSY_W / OCC_W / OUT_W, every army at full power (Atreides retreated at 0 supply to
+    Ars-sud 92 from 4 Fremen armies annexing Sindalus, counted at 25%, and lost 180k there)."""
     extra = [cx.t('ent.Faction'), cx.t('hl.types.ArrayObj'), cx.t('ent.Zone')] if stats else []
     if prey:
         extra = [cx.t('ent.Faction'), cx.t('f64')]
@@ -115,7 +118,48 @@ def build_threat(cx, pw, horizon_s=HORIZON, stats=False, reach=None, prey=False)
         fb.op('Add', dst=tot, a=tot, b=p)
         fb.op('JAlways', offset='loop')
     fb.label('count')
+    if not discount:
+        fb.op('Call1', dst=p, fun=pw, arg0=x)
+        fb.op('Add', dst=tot, a=tot, b=p)
+        fb.op('JAlways', offset='loop')
+    # busy capturing a structure away from p (> BUSY_R): counts BUSY_W, not pushed as stats; at its own capture
+    # (a contest, a hunt on it) full (Atreides held every defender in `rally` at Qal-nit for 12 Fremen armies
+    # occupying Halnah 133-157 away, and let neutral attackers hit Qal-nit)
+    full = _uid('full')
+    occ = b.field(x, 'occupiedStructure')
+    fb.op('JNull', reg=occ, offset=full)
+    oe = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=oe, src=occ)
+    fb.op('JEq', a=b.call('ent.Entity.get_owner', oe), b=b.call('ent.Entity.get_owner', x), offset=full)  # resting home
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', oe, 1), b=b.const('f64', BUSY_R), offset=full)
     fb.op('Call1', dst=p, fun=pw, arg0=x)
+    # defending (p on our land): BUSY_W; an offensive (p off our land: hunt / raid / press target): OCC_W, the
+    # break-off weight, so a busy stack next door still deters attacks on it
+    bw = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=bw, src=_ratio(fb, b, OCC_W))
+    bz = b.call('ent.Entity.get_zone', 1)
+    fb.op('JNull', reg=bz, offset=full + 'w')
+    fb.op('JNotEq', a=b.field(bz, 'owner'), b=0, offset=full + 'w')
+    fb.op('Mov', dst=bw, src=_ratio(fb, b, BUSY_W))
+    fb.label(full + 'w')
+    fb.op('Mul', dst=p, a=p, b=bw)
+    fb.op('Add', dst=tot, a=tot, b=p)
+    fb.op('JAlways', offset='loop')
+    fb.label(full)
+    fb.op('Call1', dst=p, fun=pw, arg0=x)
+    # p on our land, the army off it and not moving: OUT_W (it has to walk in first; Atreides should defend inside
+    # their land while Fremen stand liberating outside it)
+    inl = _uid('inl')
+    qz = b.call('ent.Entity.get_zone', 1)
+    fb.op('JNull', reg=qz, offset=inl)
+    fb.op('JNotEq', a=b.field(qz, 'owner'), b=0, offset=inl)
+    xz = b.call('ent.Entity.get_zone', x)
+    fb.op('JNull', reg=xz, offset=inl)
+    fb.op('JEq', a=b.field(xz, 'owner'), b=0, offset=inl)
+    fb.op('JTrue', cond=b.call('ent.Unit.isMoving', x), offset=inl)
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', x, 1), b=b.const('f64', OUT_R), offset=inl)  # at the border
+    fb.op('Mul', dst=p, a=p, b=_ratio(fb, b, OUT_W))
+    fb.label(inl)
     fb.op('Add', dst=tot, a=tot, b=p)
     if stats:
         fb.op('JNull', reg=4, offset='loop')
@@ -573,8 +617,37 @@ def build_silence(cx):
     return fb.build()
 
 
-def build_defend(cx, sieged):
-    """aimod_defend(fac) -> one of fac's villages or main bases besieged by an at-war faction, else null.
+def _renegades_at(fb, b, cx, s, yes):
+    """Jump to `yes` when a renegade drop army (owner null, raid kind Renegade_Drop: vanilla Raids.regularUpdate
+    spawnRaid("Renegade_Drop", null, village)) is within RENEGADE_R of s: its Takeover (siege action InstallHub)
+    turns the village into a RenegadeBase for good, unlike a raider's pillage."""
+    armies = b.field(_state(fb, b, cx), 'armies')
+    k = fb.reg(cx.t('i32'))
+    se = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=se, src=s)
+    no = _uid('rgn')
+    fb.op('JNull', reg=armies, offset=no)
+    x = _army_loop(fb, b, armies, b.field(armies, 'length'), k, no + 'l', no)
+    fb.op('JNotNull', reg=b.call('ent.Entity.get_owner', x), offset=no + 'l')
+    rd = b.field(x, 'raid')
+    fb.op('JNull', reg=rd, offset=no + 'l')
+    rk = b.field(rd, 'kind')
+    fb.op('JNull', reg=rk, offset=no + 'l')
+    fb.op('JNotEq', a=b.call('String.__compare', fb.dyn(rk), fb.dyn(fb.string('Renegade_Drop'))), b=b.const('i32', 0),
+          offset=no + 'l')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', x, se), b=b.const('f64', RENEGADE_R), offset=no + 'l')
+    fb.op('JAlways', offset=yes)
+    fb.label(no)
+
+
+def build_defend(cx, sieged, helpers, threat, neutral, own, cover, terrain):
+    """aimod_defend(fac) -> one of fac's villages or main bases besieged by an at-war faction, else a neutral village
+    within HOME_RING_R of one of fac's active main bases besieged / occupied by one (our home ring: a player groups
+    up to stop it; Harkonnen annexed Gurlab while Smugglers annexed Zadak 177 from Carthag), else null. Renegades
+    taking a village over count like a faction (_renegades_at); other raider sieges are the contest hunt's.
+    Hopeless ones are skipped: our armies within GATHER_R (+ our cover) x terrain below DEF_HOPE_IN x (threat +
+    other raiders + enemy cover) there, left at DEF_HOPE_OUT (map `dhl` structure -> when last hopeless, 30 s, log `dhope`): a lost
+    cause must not freeze every offensive (Atreides at Adnih / Tuonah vs 600-900k Fremen sat 4.5 min doing nothing).
     Non-null = defensive posture: no new offensives (vanilla siege actions, chases) until it is resolved."""
     st_t = cx.t('ent.Structure')
     fb = FB(cx, [cx.t('ent.Faction')], st_t)
@@ -582,6 +655,66 @@ def build_defend(cx, sieged):
     res = fb.reg(st_t)
     fb.op('Null', dst=res)
     fb.op('JNull', reg=0, offset='end')
+    he, hn = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('ent.Entity'))
+    hh, hm, hq, hl = (fb.reg(cx.t('f64')) for _ in range(4))
+    hx = fb.reg(cx.t('ent.Army'))
+    fb.op('Null', dst=hx)
+    fb.op('Null', dst=hn)
+    hf, ht, harr = fb.reg(cx.t('bool')), fb.reg(cx.t('bool')), fb.reg(cx.t('hl.types.ArrayObj'))
+    hop = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=hf, value=False)
+    fb.op('Bool', dst=ht, value=True)
+    fb.op('Null', dst=harr)
+    dhl = _global_map(fb, b, cx, 'dhl')
+
+    def hopeless(s, skip):
+        """Jump to `skip` when the defense of s is hopeless (hysteresis in map `dhl`) or the rally conceded it (map
+        `rlygu` within RALLY_COOL); a main base never. The power sums run in a trap (callers like the spacing
+        wrapper run inside vanilla calls): on error s counts as defended."""
+        fb.op('Mov', dst=he, src=s)
+        mbk, gok, lin, lout, lend = (_uid(n) for n in ('hmb', 'hgu', 'hpi', 'hpo', 'hpe'))
+        fb.op('JTrue', cond=b.call('ent.Structure.get_isMainBase', b.cast(fb.dyn(he), 'ent.Structure')), offset=mbk)
+        gu = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rlygu'), fb.dyn(he))
+        fb.op('JNull', reg=gu, offset=gok)
+        fb.op('SafeCast', dst=hq, src=gu)
+        fb.op('Sub', dst=hq, a=b.field(_state(fb, b, cx), 'time'), b=hq)
+        fb.op('JSLt', a=hq, b=b.const('f64', RALLY_COOL), offset=skip)
+        fb.label(gok)
+        fb.op('Bool', dst=hop, value=False)
+        g = fb.try_()
+        loc = b.const('f64', LOCAL)
+        fb.op('Call3', dst=hh, fun=threat, arg0=0, arg1=he, arg2=loc)
+        fb.op('Call3', dst=hq, fun=neutral, arg0=0, arg1=he, arg2=loc)
+        fb.op('Add', dst=hh, a=hh, b=hq)
+        fb.op('CallN', dst=hq, fun=cover, args=[0, he, he, hf, harr])
+        fb.op('Add', dst=hh, a=hh, b=hq)
+        fb.op('CallN', dst=hm, fun=own, args=[0, he, b.const('f64', GATHER_R), hx])
+        fb.op('CallN', dst=hq, fun=cover, args=[0, he, he, ht, harr])
+        fb.op('Add', dst=hm, a=hm, b=hq)
+        fb.op('Call2', dst=hq, fun=terrain, arg0=0, arg1=b.call('ent.Entity.get_zone', he))
+        fb.op('Mul', dst=hm, a=hm, b=hq)
+        fb.op('Mov', dst=hl, src=_ratio(fb, b, DEF_HOPE_IN))
+        dv = b.call('haxe.ds.ObjectMap.get', dhl, fb.dyn(he))  # hopeless at this time, kept while re-judged
+        fb.op('JNull', reg=dv, offset=lin)
+        fb.op('SafeCast', dst=hq, src=dv)
+        fb.op('Sub', dst=hq, a=b.field(_state(fb, b, cx), 'time'), b=hq)
+        fb.op('JSGt', a=hq, b=b.const('f64', 30), offset=lin)  # stale (an old siege): fresh judgment
+        fb.op('Mov', dst=hl, src=_ratio(fb, b, DEF_HOPE_OUT))
+        fb.label(lin)
+        fb.op('Mul', dst=hl, a=hl, b=hh)
+        fb.op('JSGte', a=hm, b=hl, offset=lout)
+        fb.op('Bool', dst=hop, value=True)
+        b.call('haxe.ds.ObjectMap.set', dhl, fb.dyn(he), fb.dyn(b.field(_state(fb, b, cx), 'time')))
+        fb.op('JAlways', offset=lend)
+        fb.label(lout)
+        b.call('haxe.ds.ObjectMap.remove', dhl, fb.dyn(he))
+        fb.label(lend)
+        fb.end_try(g)
+        fb.op('JFalse', cond=hop, offset=mbk)
+        _throttle(fb, b, cx, 'dhope', he, 10, skip)
+        _log_ev(fb, b, cx, helpers, 'dhope', [('f', fb.get(0, 'kind')), ('s', he), ('H', hh), ('M', hm)])
+        fb.op('JAlways', offset=skip)
+        fb.label(mbk)
     ok = fb.reg(cx.t('bool'))
     i = fb.reg(cx.t('i32'))
     villages = b.field(_state(fb, b, cx), 'villages')
@@ -599,16 +732,60 @@ def build_defend(cx, sieged):
         fb.op('JNotEq', a=b.call('ent.Entity.get_owner', s), b=0, offset=name)
         fb.op('Call2', dst=ok, fun=sieged, arg0=0, arg1=s)
         fb.op('JFalse', cond=ok, offset=name)
+        # a raider-only siege (no faction) is the contest hunt's, not a reason for a defensive posture, unless
+        # renegades are taking the village over (a permanent loss, like a capture)
+        sgd = b.field(s, 'siege')
+        fb.op('JNotNull', reg=b.field(sgd, 'besiegingFaction'), offset=f'{name}f')
+        fb.op('JNotNull', reg=b.call('ent.comp.SiegeComponent.getOccupierFaction', sgd), offset=f'{name}f')
+        _renegades_at(fb, b, cx, s, f'{name}f')
+        fb.op('JAlways', offset=name)
+        fb.label(f'{name}f')
+        hopeless(s, name)
         fb.op('Mov', dst=res, src=s)
         fb.op('JAlways', offset='end')
         fb.label(done)
+    # home ring: a neutral village next to one of our active main bases under an at-war faction's siege
+    fb.op('JNull', reg=villages, offset='hdone')
+    fb.op('JNull', reg=bases, offset='hdone')
+    j = fb.reg(cx.t('i32'))
+    se, me = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=i, src=b.const('i32', 0))
+    b.loop_head('h')
+    fb.op('JSGte', a=i, b=b.field(villages, 'length'), offset='hdone')
+    s = b.cast(b.call('hl.types.ArrayObj.getDyn', villages, i), 'ent.Structure')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=s, offset='h')
+    fb.op('JNotNull', reg=b.call('ent.Entity.get_owner', s), offset='h')
+    fb.op('Call2', dst=ok, fun=sieged, arg0=0, arg1=s)
+    fb.op('JFalse', cond=ok, offset='h')
+    sgd = b.field(s, 'siege')
+    fb.op('JNotNull', reg=b.field(sgd, 'besiegingFaction'), offset='hf')
+    fb.op('JNotNull', reg=b.call('ent.comp.SiegeComponent.getOccupierFaction', sgd), offset='hf')
+    _renegades_at(fb, b, cx, s, 'hf')  # renegade Takeover: ours to stop (Haykus 244 from Tabr)
+    fb.op('JAlways', offset='h')  # other raiders: hunt's
+    fb.label('hf')
+    fb.op('Mov', dst=se, src=s)
+    fb.op('Mov', dst=j, src=b.const('i32', 0))
+    b.loop_head('hb')
+    fb.op('JSGte', a=j, b=b.field(bases, 'length'), offset='h')
+    mb = b.cast(b.call('hl.types.ArrayObj.getDyn', bases, j), 'ent.Structure')
+    fb.op('Incr', dst=j)
+    fb.op('JNull', reg=mb, offset='hb')
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', mb), offset='hb')
+    fb.op('Mov', dst=me, src=mb)
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', se, me), b=b.const('f64', HOME_RING_R), offset='hb')
+    hopeless(se, 'h')
+    fb.op('Mov', dst=res, src=s)
+    fb.op('JAlways', offset='end')
+    fb.label('hdone')
     fb.label('end')
     fb.op('Ret', ret=res)
     return fb.build()
 
 
 def build_sieged(cx):
-    """aimod_sieged(fac, s) -> s is besieged or occupied by a faction at war with fac, and s is neutral, ours, or
+    """aimod_sieged(fac, s) -> s is besieged or occupied by a faction at war with fac (or by neutral raiders: no
+    faction set), and s is neutral, ours, or
     belongs to a faction not at war with us (a capture we want to stop). Reads the structure's own siege state
     (as vanilla micro does), so it sees human and AI sieges alike (Army.aiOrder is often null on besiegers)."""
     fb = FB(cx, [cx.t('ent.Faction'), cx.t('ent.Structure')], cx.t('bool'))
@@ -623,11 +800,18 @@ def build_sieged(cx):
     fb.op('Mov', dst=bf, src=b.field(sg, 'besiegingFaction'))
     fb.op('JNotNull', reg=bf, offset='have')
     fb.op('Mov', dst=bf, src=b.call('ent.comp.SiegeComponent.getOccupierFaction', sg))
-    fb.op('JNull', reg=bf, offset='end')
+    fb.op('JNotNull', reg=bf, offset='have')
+    # no faction: a neutral raider besieging / occupying it (liberating, pillaging) blocks every faction's Annex /
+    # Pillage / Liberate there until it dies (Raider_Ranged liberating Qal-nit)
+    fb.op('JTrue', cond=b.field(sg, 'isUnderSiege'), offset='own')
+    fb.op('JNull', reg=b.field(sg, 'occupier'), offset='end')
+    fb.op('JAlways', offset='own')
     fb.label('have')
     fb.op('JEq', a=bf, b=0, offset='end')
     state = _state(fb, b, cx)
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, 0, bf), offset='end')
+    fb.label('own')
+    state = _state(fb, b, cx)
     o = b.call('ent.Entity.get_owner', 1)
     fb.op('JNull', reg=o, offset='yes')
     fb.op('JEq', a=o, b=0, offset='yes')

@@ -37,6 +37,7 @@ from rules.desert import *  # noqa: F401,F403
 from rules.gather import *  # noqa: F401,F403
 from rules.rally import *  # noqa: F401,F403
 from rules.spos import *  # noqa: F401,F403
+from rules.tension import *  # noqa: F401,F403
 
 
 def install(cx, helpers, new_ids):
@@ -50,18 +51,20 @@ def install(cx, helpers, new_ids):
     own = build_own(cx, pw)
     free = build_free(cx, pw)
     terrain = build_terrain(cx)
-    threat_now = build_threat(cx, pw, FLEE_ETA)
-    unsafe = build_unsafe(cx, threat, own, pw, terrain)
+    # heal / retreat / strand safety: full threat, no busy / outside discounts (an army rests there)
+    hsafe = build_threat(cx, pw, discount=False)
+    threat_now = build_threat(cx, pw, FLEE_ETA, discount=False)
+    unsafe = build_unsafe(cx, hsafe, own, pw, terrain)
     land = build_land(cx)
     supok = build_supok(cx)
     short = build_short(cx, land, supok)
     sieged = build_sieged(cx)
     cover = build_cover(cx)
     silence = build_silence(cx)
-    defend = build_defend(cx, sieged)
-    new_ids.update({pw, threat, neutral, own, free, unsafe, land, terrain, threat_now, supok, short, sieged, cover, silence,
+    defend = build_defend(cx, sieged, helpers, threat, neutral, own, cover, terrain)
+    new_ids.update({pw, threat, hsafe, neutral, own, free, unsafe, land, terrain, threat_now, supok, short, sieged, cover, silence,
                     defend})
-    report = safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers)
+    report = safe_heal(cx, unsafe, new_ids, threat_now, own, pw, hsafe, helpers)
     mission = build_mission(cx)
     new_ids.add(mission)
     report.update(build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land))
@@ -69,7 +72,9 @@ def install(cx, helpers, new_ids):
     helpers['ddclean'] = build_ddclean(cx)  # Fremen ring test: raid / pillage-press exclusion
     helpers['ddhold'] = build_ddclean(cx, strict=True)  # ... strict: Annex hold, launch-gate tries
     new_ids.update({helpers['ddclean'], helpers['ddhold']})
-    spacing = build_spacing(cx, helpers, defend)
+    home = build_home(cx, pw, land)
+    homeown = build_home(cx, pw, land, own=True)
+    spacing = build_spacing(cx, helpers, defend, land, home, homeown)
     new_ids.add(spacing)
     report['annex-spacing'] = 1
     threat_stats = build_threat(cx, pw, stats=True)
@@ -79,24 +84,26 @@ def install(cx, helpers, new_ids):
     threat_far = build_threat(cx, pw, DISC_HORIZON)
     discabort = build_disc_abort(cx, helpers, pw, threat_far, terrain)
     militia = build_militia(cx)
-    report.update(build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, new_ids))
+    report.update(build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, new_ids, neutral))
+    helpers['tension'] = build_tension(cx)  # contact tension query (rules/tension.py): scoring, hunt, strat
+    new_ids.add(helpers['tension'])
     report.update(build_scoring(cx, new_ids, helpers))
     hthreat = build_threat(cx, pw, prey=True)
     react = build_threat(cx, pw, reach=REACT_R)
+    ttick = build_tension_tick(cx, helpers, threat)
+    new_ids.add(ttick)
     hunt = build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieged, cover, defend, neutral,
                       react)
     raidable = build_free(cx, pw, RAID_LIFE, 0, resupply_ok=True)
     raidsup = build_raidsup(cx)
-    home = build_home(cx, pw, land)
-    homeown = build_home(cx, pw, land, own=True)
     raid = build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, defend, militia, threat, free,
-                      home, homeown, helpers['scores'])
+                      home, homeown, helpers['scores'], neutral)
     fpow = build_fpow(cx, pw)
     strat = build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, defend, militia, home,
-                        short)
+                        short, neutral)
     report.update(strat_levers(cx, new_ids))
     report.update(build_peace_gate(cx, helpers, defend, new_ids))
-    sengage = build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain)
+    sengage = build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain, neutral)
     idle = build_free(cx, pw, 0, 0, patrol_ok=False)
     helpers['wormheld'] = build_wormheld(cx)  # worm-flee hold: out of vanilla's Resupply / mission picks
     new_ids.add(helpers['wormheld'])
@@ -114,8 +121,9 @@ def install(cx, helpers, new_ids):
     gather = build_gather(cx, helpers)
     rally = build_rally(cx, helpers, pw, react, threat, terrain, cover, mission)
     spos = build_spos(cx, helpers, cover)
+    report.update(build_keep_capture(cx, helpers, new_ids))
     report.update(gather_busy(cx, new_ids))
-    tick = build_chain(cx, [memory, wormflee, strat, hunt, raid, rally, sengage, gather, spos, dstep, discabort, undeploy, strand])
+    tick = build_chain(cx, [memory, wormflee, ttick, strat, hunt, raid, rally, sengage, gather, spos, dstep, discabort, undeploy, strand])
     new_ids.update({hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, gather, rally, spos,
                     memory, tick})
     report['strand'] = 1

@@ -95,15 +95,21 @@ def build_turret_stats(cx, cover, silence, threat_stats, new_ids):
 
 
 def _recent_launch(fb, b, cx, s_e, t, recent):
-    """Jump to `recent` if vanilla launched a siege on s_e less than RETRY s ago (map 'alaunch', set by the
-    tryArmyAction wrapper)."""
+    """Jump to `recent` if vanilla launched a siege on s_e less than its block ago (map 'alaunch', set by the
+    tryArmyAction wrapper; block = map 'ablk', RETRY doubling up to RETRY_MAX for a target relaunched right after
+    its block ran out)."""
     last = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'alaunch'), fb.dyn(s_e))
     old = _uid('old')
     fb.op('JNull', reg=last, offset=old)
-    lf = fb.reg(cx.t('f64'))
+    lf, bl = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     fb.op('SafeCast', dst=lf, src=last)
     fb.op('Sub', dst=lf, a=t, b=lf)
-    fb.op('JSLt', a=lf, b=b.const('f64', RETRY), offset=recent)
+    fb.op('Mov', dst=bl, src=b.const('f64', RETRY))
+    bv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'ablk'), fb.dyn(s_e))
+    fb.op('JNull', reg=bv, offset=old + 'b')
+    fb.op('SafeCast', dst=bl, src=bv)
+    fb.label(old + 'b')
+    fb.op('JSLt', a=lf, b=bl, offset=recent)
     fb.label(old)
 
 
@@ -217,7 +223,7 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     resource fields in the zone (SpiceArea 40, others 10), region aiWeight (specials 20, Pole 40), main-base
     proximity x Outpost_DistanceCost_MRatio, owned neighbours x 10, +100 for a spice village while we own none; no
     annex cost at all, and tryAction then reserves Authority and waits when the pick is unaffordable). For each
-    positive score: + ANNEX_SPECIAL in a special region; SPICE_ANY factions lose vanilla's first-spice +100;
+    positive score: + ANNEX_SPECIAL in a special region, + ANNEX_SIETCH with a sietch in the zone (Zone.getSietch); SPICE_ANY factions lose vanilla's first-spice +100;
     factions with distance annex costs x the NEAR_W compactness factor (distance to our nearest structure on our
     land); x cmin / cost (real Authority cost: siege.getOccupationActionCost("Annex"), cmin = cheapest candidate:
     a village costing 2 cheap ones counts half); a spice village while we own none x ANNEX_SPICE1 (not SPICE_ANY);
@@ -226,8 +232,11 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     deserts next to the candidate of chance / (1 + neighbours still missing after it))), w = DD_W with the
     attribute, DD_W_PRE for Fremen before it; chance x DD_ENEMY per missing neighbour owned by another faction and
     per one within DD_BASE_R of another faction's main base; 0 when another faction's main base zone borders it;
-    x DD_LINK when the candidate borders none of our non-deep-desert zones (reaching it means crossing desert).
-    floor ANNEX_FLOOR. Ring hold (same factions): a candidate next to an unowned deep desert is a ring village (map
+    x DD_LINK when the candidate borders none of our non-deep-desert zones (reaching it means crossing desert);
+    then + DD_ADD x best chance x w (x DD_LINK, x cmin / cost): a flat bonus like ANNEX_SPECIAL. floor ANNEX_FLOOR.
+    Top 3: when the best scored is unaffordable now (AIController.getMissingResources of its cost at priority 3 non-empty)
+    and the 2nd or 3rd is affordable, the unaffordable ones above it get 0.99 / 0.98 x its score (log `aswap` from, to,
+    s); none affordable: unchanged (vanilla reserves Authority and waits on the best). Never the pressed village. Ring hold (same factions): a candidate next to an unowned deep desert is a ring village (map
     'dring' -> now); when a candidate is on an uncontested ring in progress (aimod_ddhold) with fewer than DD_TRIES
     Annex launches (map 'dtries', counted by the launch gate), or one of our armies runs an Annex order on such a
     village, every candidate that isn't a ring village is dropped (Fremen Adur: the spice village was annexed while
@@ -270,7 +279,7 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('SafeCast', dst=nsp, src=nsd)
     fb.label('an_nsp')
     # Fremen deep desert weight: DD_W with DeepDesert_Surounded_GainControl, DD_W_PRE for Fremen before it
-    ddw, dd, con, miss, bdd = (fb.reg(cx.t('f64')) for _ in range(5))
+    ddw, dd, con, miss, bdd, cmx = (fb.reg(cx.t('f64')) for _ in range(6))
     fb.op('Mov', dst=ddw, src=zero)
     fb.op('Mov', dst=dd, src=zero)
     fb.op('Mov', dst=bdd, src=zero)
@@ -308,6 +317,64 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JNotEq', a=b.call('String.__compare', kd, fb.dyn(fb.string('Fremen'))), b=zi, offset='an_dw')
     fb.op('Mov', dst=ddw, src=_ratio(fb, b, DD_W_PRE))
     fb.label('an_dw')
+    # the ring we work on: fewest zone hops to our main base among unowned deep deserts next to a village that no
+    # other faction's main base borders and whose missing villages are all neutral (a held one stalls the ring: it
+    # must not halve a clean one); tie: fewest villages missing; the others count x DD_FAR (one ring at a time, not
+    # two half-done). No such desert: no focus penalty (hmin 999)
+    gdb = cx.fn('ent.Zone.getDistanceToPlayerBase')
+    gnull = fb.reg(cx.code.types[gdb.type.value].definition.args[2].value)
+    fb.op('Null', dst=gnull)
+    hmin, hz = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=hmin, src=b.const('i32', 999))
+    mmin, hmis = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))  # tie on hops: fewest villages still missing
+    fb.op('Mov', dst=mmin, src=big)
+    fb.op('JSLte', a=ddw, b=zero, offset='an_hm')
+    hvl = b.field(_state(fb, b, cx), 'villages')
+    fb.op('JNull', reg=hvl, offset='an_hm')
+    fb.op('Mov', dst=k1, src=zi)
+    b.loop_head('an_hv')
+    fb.op('JSGte', a=k1, b=b.field(hvl, 'length'), offset='an_hm')
+    hv = b.cast(b.call('hl.types.ArrayObj.getDyn', hvl, k1), 'ent.Entity')
+    fb.op('Incr', dst=k1)
+    fb.op('JNull', reg=hv, offset='an_hv')
+    hvz = b.call('ent.Entity.get_zone', hv)
+    fb.op('JNull', reg=hvz, offset='an_hv')
+    hvn = b.field(hvz, 'neighbors')
+    fb.op('JNull', reg=hvn, offset='an_hv')
+    fb.op('Mov', dst=k2, src=zi)
+    b.loop_head('an_hw')
+    fb.op('JSGte', a=k2, b=b.field(hvn, 'length'), offset='an_hv')
+    hdz = b.cast(b.call('hl.types.ArrayObj.getDyn', hvn, k2), 'ent.Zone')
+    fb.op('Incr', dst=k2)
+    fb.op('JNull', reg=hdz, offset='an_hw')
+    fb.op('JFalse', cond=b.call('ent.Zone.isDeepDesert', hdz), offset='an_hw')
+    fb.op('JEq', a=b.field(hdz, 'owner'), b=fac, offset='an_hw')
+    fb.op('Call3', dst=hz, fun=gdb.findex.value, arg0=hdz, arg1=fac, arg2=gnull)
+    fb.op('JSGt', a=hz, b=hmin, offset='an_hw')
+    hdn = b.field(hdz, 'neighbors')
+    fb.op('JNull', reg=hdn, offset='an_hw')
+    fb.op('Mov', dst=hmis, src=zero)
+    fb.op('Mov', dst=k3, src=zi)
+    b.loop_head('an_hx')
+    fb.op('JSGte', a=k3, b=b.field(hdn, 'length'), offset='an_hok')
+    hmz = b.cast(b.call('hl.types.ArrayObj.getDyn', hdn, k3), 'ent.Zone')
+    fb.op('Incr', dst=k3)
+    fb.op('JNull', reg=hmz, offset='an_hx')
+    fb.op('JEq', a=b.field(hmz, 'owner'), b=fac, offset='an_hx')
+    fb.op('Call2', dst=hm, fun=hmb.findex.value, arg0=hmz, arg1=hnull)
+    fb.op('JTrue', cond=hm, offset='an_hw')
+    fb.op('JNull', reg=b.call('ent.Zone.getVillage', hmz), offset='an_hx')
+    fb.op('JNotNull', reg=b.field(hmz, 'owner'), offset='an_hw')  # another faction holds one: stalled, no focus
+    fb.op('Add', dst=hmis, a=hmis, b=one_f)
+    fb.op('JAlways', offset='an_hx')
+    fb.label('an_hok')
+    fb.op('JSLt', a=hz, b=hmin, offset='an_hset')
+    fb.op('JSGte', a=hmis, b=mmin, offset='an_hw')
+    fb.label('an_hset')
+    fb.op('Mov', dst=hmin, src=hz)
+    fb.op('Mov', dst=mmin, src=hmis)
+    fb.op('JAlways', offset='an_hw')
+    fb.label('an_hm')
     facs = b.cast(fb.get(_state(fb, b, cx), 'factions', 'array'), 'hl.types.ArrayObj')
     oc = cx.fn('ent.comp.SiegeComponent.getOccupationActionCost')
     oat = [a.value for a in cx.code.types[oc.type.value].definition.args]
@@ -389,6 +456,10 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JSLt', a=aw, b=b.const('f64', 20), offset='an_nsx')
     fb.op('Add', dst=sc, a=sc, b=b.const('f64', ANNEX_SPECIAL))
     fb.label('an_nsx')
+    # a sietch in the zone (neutral / hostile / ancient / accursed): a small flat bonus
+    fb.op('JNull', reg=b.call('ent.Zone.getSietch', z), offset='an_nsi')
+    fb.op('Add', dst=sc, a=sc, b=b.const('f64', ANNEX_SIETCH))
+    fb.label('an_nsi')
     # first spice village: SPICE_ANY factions lose vanilla's +100
     fb.op('Mov', dst=hs, src=b.call('ent.Zone.hasSpice', z))
     fb.op('JFalse', cond=hs, offset='an_nsp1')
@@ -437,6 +508,20 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('Mul', dst=sc, a=sc, b=cmin)
     fb.op('SDiv', dst=sc, a=sc, b=c)
     fb.label('an_nc')
+    # neutral village under our main base's guns (BUNKER_R): x BUNKER_MB (no longer a hard redirect)
+    mbs0 = b.field(fac, 'mainBases')
+    fb.op('JNull', reg=mbs0, offset='an_mb')
+    fb.op('Mov', dst=j, src=zi)
+    b.loop_head('an_mbl')
+    fb.op('JSGte', a=j, b=b.field(mbs0, 'length'), offset='an_mb')
+    mb0 = b.cast(b.call('hl.types.ArrayObj.getDyn', mbs0, j), 'ent.Structure')
+    fb.op('Incr', dst=j)
+    fb.op('JNull', reg=mb0, offset='an_mbl')
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', mb0), offset='an_mbl')
+    fb.op('Mov', dst=te, src=mb0)
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', se, te), b=b.const('f64', BUNKER_R), offset='an_mbl')
+    fb.op('Mul', dst=sc, a=sc, b=_ratio(fb, b, BUNKER_MB))
+    fb.label('an_mb')
     # opening: a spice field first
     fb.op('JFalse', cond=hs, offset='an_s1')
     fb.op('JSGte', a=nsp, b=b.const('i32', 1), offset='an_s1')
@@ -447,6 +532,7 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('Bool', dst=isr, value=False)
     fb.op('JSLte', a=ddw, b=zero, offset='an_dd')
     fb.op('Mov', dst=dd, src=zero)
+    fb.op('Mov', dst=cmx, src=zero)
     zn = b.field(z, 'neighbors')
     fb.op('JNull', reg=zn, offset='an_ddx')
     fb.op('Mov', dst=k1, src=zi)
@@ -458,6 +544,7 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JFalse', cond=b.call('ent.Zone.isDeepDesert', dz), offset='an_d')
     fb.op('JEq', a=b.field(dz, 'owner'), b=fac, offset='an_d')
     fb.op('Mov', dst=con, src=_ratio(fb, b, 1))
+    fb.op('Call3', dst=hz, fun=gdb.findex.value, arg0=dz, arg1=fac, arg2=gnull)
     fb.op('Mov', dst=miss, src=zero)
     dn = b.field(dz, 'neighbors')
     fb.op('JNull', reg=dn, offset='an_d')
@@ -502,6 +589,16 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JAlways', offset='an_e')  # once per missing neighbour
     fb.label('an_ed')
     fb.op('Add', dst=miss, a=miss, b=one_f)
+    # not the focus ring (more hops, or as many hops but more villages missing): x DD_FAR
+    fb.op('JSLt', a=hz, b=hmin, offset='an_dnear')
+    fb.op('JSGt', a=hz, b=hmin, offset='an_dfar')
+    fb.op('JSLte', a=miss, b=mmin, offset='an_dnear')
+    fb.label('an_dfar')
+    fb.op('Mul', dst=con, a=con, b=_ratio(fb, b, DD_FAR))
+    fb.label('an_dnear')
+    fb.op('JSLte', a=con, b=cmx, offset='an_cmx')  # best ring chance (flat bonus)
+    fb.op('Mov', dst=cmx, src=con)
+    fb.label('an_cmx')
     fb.op('SDiv', dst=con, a=con, b=miss)
     fb.op('Add', dst=dd, a=dd, b=con)
     fb.op('JAlways', offset='an_d')
@@ -533,6 +630,7 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JAlways', offset='an_lk')
     fb.label('an_unl')
     fb.op('Mul', dst=dd, a=dd, b=_ratio(fb, b, DD_LINK))
+    fb.op('Mul', dst=cmx, a=cmx, b=_ratio(fb, b, DD_LINK))
     fb.label('an_lk')
     fb.op('JSLte', a=dd, b=b.const('f64', DD_CAP), offset='an_ddc')
     fb.op('Mov', dst=dd, src=b.const('f64', DD_CAP))
@@ -540,7 +638,19 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('Mul', dst=q, a=dd, b=ddw)
     fb.op('Add', dst=q, a=q, b=one_f)
     fb.op('Mul', dst=sc, a=sc, b=q)
+    # flat ring bonus: DD_ADD x best chance x weight, per cost like the rest
+    fb.op('Mul', dst=q, a=cmx, b=ddw)
+    fb.op('Mul', dst=q, a=q, b=b.const('f64', DD_ADD))
+    fb.op('JSLte', a=c, b=zero, offset='an_dda')
+    fb.op('Mul', dst=q, a=q, b=cmin)
+    fb.op('SDiv', dst=q, a=q, b=c)
+    fb.label('an_dda')
+    fb.op('Add', dst=sc, a=sc, b=q)
     fb.label('an_dd')
+    # contact tension (AI-POLICY §5c step 2): x (1 + T) for a village within TEN_R of ours that has rubbed
+    fb.op('Call2', dst=q, fun=helpers['tension'], arg0=fac, arg1=se)
+    fb.op('Add', dst=q, a=q, b=one_f)
+    fb.op('Mul', dst=sc, a=sc, b=q)
     floor = _ratio(fb, b, ANNEX_FLOOR)
     fb.op('JSGte', a=sc, b=floor, offset='an_fl')
     fb.op('Mov', dst=sc, src=floor)
@@ -560,6 +670,33 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('Mov', dst=best, src=se)
     fb.op('JAlways', offset='an2')
     fb.label('an2d')
+    # lone candidate: past the opening (we own > EARLY_VILLAGES structures), vanilla's only candidate is taken only
+    # if it adds something (ring / special region / spice); else dropped: no Annex now, the armies stay free and
+    # the supply range grows (Fremen annexed Ur-Al'nun, 181 from Tabr, the sole candidate, 30 s before ring
+    # villages entered range)
+    fb.op('JNotEq', a=n, b=b.const('i32', 1), offset='an_lone')
+    fb.op('JSLte', a=mn, b=b.const('i32', EARLY_VILLAGES), offset='an_lone')
+    fb.op('JNull', reg=best, offset='an_lone')
+    fb.op('JSGt', a=bdd, b=zero, offset='an_lone')
+    fb.op('Call2', dst=q, fun=helpers['tension'], arg0=fac, arg1=best)
+    fb.op('JSGt', a=q, b=zero, offset='an_lone')  # a contact village is never 'plain'
+    fb.op('JEq', a=fb.dyn(best), b=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'spv'), fb.dyn(fac)),
+          offset='an_lone')  # the director's pressed village stands
+    lz = b.call('ent.Entity.get_zone', best)
+    fb.op('JNull', reg=lz, offset='an_lone')
+    fb.op('JTrue', cond=b.call('ent.Zone.hasSpice', lz), offset='an_lone')
+    law = fb.get(lz, 'inf', 'props', 'aiWeight')
+    fb.op('JNull', reg=law, offset='an_lnx')
+    fb.op('SafeCast', dst=aw, src=law)
+    fb.op('JSGte', a=aw, b=b.const('f64', 20), offset='an_lone')
+    fb.label('an_lnx')
+    b.call('haxe.ds.ObjectMap.remove', res, fb.dyn(best))
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'alonev'), fb.dyn(best),
+           fb.dyn(b.field(_state(fb, b, cx), 'time')))  # raid leaves it alone (rules/raid.py)
+    _throttle(fb, b, cx, 'alone', fac, ASCORE_T, 'end')
+    _log_ev(fb, b, cx, helpers, 'alone', [('f', fb.get(fac, 'kind')), ('tgt', best), ('s', bs), ('c', bc)])
+    fb.op('JAlways', offset='end')
+    fb.label('an_lone')
     # ring hold: also while one of our armies runs an Annex order on an uncontested ring village (it isn't a
     # candidate then)
     fb.op('JSLte', a=ddw, b=zero, offset='an_h3')
@@ -613,6 +750,85 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('Mov', dst=bc, src=brc)
     fb.op('Mov', dst=bdd, src=brdd)
     fb.label('an_h3')
+    # top 3: the best is unaffordable now (vanilla reserves Authority and waits on it; our retry block then walks the
+    # list one pick at a time) and the 2nd or 3rd is affordable -> the unaffordable ones above it drop just below it
+    # (Harkonnen: Aynnah MissingResources, Gun-ur retried, then the Liberation gauge sent 9 armies across the map)
+    t1, t2, t3 = (fb.reg(cx.t('ent.Entity')) for _ in range(3))
+    s1, s2, s3 = (fb.reg(cx.t('f64')) for _ in range(3))
+    for tr in (t1, t2, t3):
+        fb.op('Null', dst=tr)
+    for sr in (s1, s2, s3):
+        fb.op('Mov', dst=sr, src=zero)
+    fb.op('Mov', dst=i, src=zi)
+    b.loop_head('tp')
+    fb.op('JSGte', a=i, b=n, offset='tpd')
+    s4 = b.cast(b.call('hl.types.ArrayObj.getDyn', 0, i), 'ent.Structure')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=s4, offset='tp')
+    fb.op('Mov', dst=se, src=s4)
+    tv = b.call('haxe.ds.ObjectMap.get', res, fb.dyn(se))
+    fb.op('JNull', reg=tv, offset='tp')
+    fb.op('SafeCast', dst=q, src=tv)
+    fb.op('JSLte', a=q, b=s3, offset='tp')
+    fb.op('Mov', dst=s3, src=q)
+    fb.op('Mov', dst=t3, src=se)
+    fb.op('JSLte', a=s3, b=s2, offset='tp')  # bubble up
+    for (ta, sa), (tb_, sb) in (((t2, s2), (t3, s3)), ((t1, s1), (t2, s2))):
+        fb.op('Mov', dst=q, src=sa)
+        fb.op('Mov', dst=sa, src=sb)
+        fb.op('Mov', dst=sb, src=q)
+        tmp = fb.reg(cx.t('ent.Entity'))
+        fb.op('Mov', dst=tmp, src=ta)
+        fb.op('Mov', dst=ta, src=tb_)
+        fb.op('Mov', dst=tb_, src=tmp)
+        if ta is t2:
+            fb.op('JSLte', a=s2, b=s1, offset='tp')
+    fb.op('JAlways', offset='tp')
+    fb.label('tpd')
+    ctl = b.field(fac, 'aiController')
+    fb.op('JNull', reg=ctl, offset='an_lgb0')
+    aff = fb.reg(cx.t('bool'))
+    prio3 = fb.dyn(b.const('i32', 3))
+
+    def affordable(st, lbl_no):
+        """Fall through when st's Annex cost is affordable now, else jump to lbl_no."""
+        sg = b.field(b.cast(fb.dyn(st), 'ent.Structure'), 'siege')
+        fb.op('JNull', reg=sg, offset=lbl_no)
+        arr = fb.reg(cx.code.types[oc.type.value].definition.ret.value)
+        fb.op('Call4', dst=arr, fun=oc.findex.value, arg0=sg, arg1=annex, arg2=onull, arg3=fac)
+        fb.op('JNull', reg=arr, offset=lbl_no)
+        miss = b.call('logic.ai.AIController.getMissingResources', ctl, arr, prio3)
+        ok_ = _uid('afy')
+        fb.op('JNull', reg=miss, offset=ok_)
+        fb.op('JSGt', a=b.field(miss, 'length'), b=zi, offset=lbl_no)
+        fb.label(ok_)
+
+    fb.op('JNull', reg=t1, offset='an_lgb0')
+    fb.op('JNull', reg=t2, offset='an_lgb0')
+    prs2 = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'spv'), fb.dyn(fac))
+    fb.op('JEq', a=fb.dyn(t1), b=prs2, offset='an_lgb0')  # the director's pressed village stands
+    affordable(t1, 'af1no')
+    fb.op('JAlways', offset='an_lgb0')  # the best is affordable: vanilla takes it
+    fb.label('af1no')
+    pick, ps_ = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=pick, src=t2)
+    fb.op('Mov', dst=ps_, src=s2)
+    affordable(t2, 'af2no')
+    fb.op('JAlways', offset='afswap')
+    fb.label('af2no')
+    fb.op('JNull', reg=t3, offset='an_lgb0')
+    fb.op('Mov', dst=pick, src=t3)
+    fb.op('Mov', dst=ps_, src=s3)
+    affordable(t3, 'an_lgb0')
+    # t2 unaffordable and above t3: below t3 too
+    fb.op('Mul', dst=q, a=ps_, b=_ratio(fb, b, 0.98))
+    b.call('haxe.ds.ObjectMap.set', res, fb.dyn(t2), fb.dyn(q))
+    fb.label('afswap')
+    fb.op('Mul', dst=q, a=ps_, b=_ratio(fb, b, 0.99))
+    b.call('haxe.ds.ObjectMap.set', res, fb.dyn(t1), fb.dyn(q))
+    _throttle(fb, b, cx, 'aswap', fac, ASCORE_T, 'an_lgb0')
+    _log_ev(fb, b, cx, helpers, 'aswap', [('f', fb.get(fac, 'kind')), ('from', t1), ('to', pick), ('s', ps_)])
+    fb.label('an_lgb0')
     fb.op('JNotNull', reg=best, offset='an_lgb')
     fb.op('JSLte', a=nh, b=zi, offset='end')  # held with no ring candidate (its Annex runs): still logged
     fb.label('an_lgb')
@@ -629,16 +845,20 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.label('an_cm')
     _log_ev(fb, b, cx, helpers, 'ascore', [('f', fb.get(fac, 'kind')), ('tgt', best), ('s', bs), ('c', bc),
                                            ('cmin', cmin), ('vb', vb), ('v0', v0), ('vs', vs), ('n', n),
-                                           ('dd%', bdd), ('hold', nh)])
+                                           ('dd%', bdd), ('hold', nh), ('rt', brest), ('rs', brs),
+                                           ('rdd%', brdd), ('ddh', hmin)])
 
 
 def build_scoring(cx, new_ids, helpers):
     """Target scores: the single tryAction -> $HScoring.structures(structures, faction, k, ...) call (target
     scores for Annex / Liberate / Pillage / ...) -> wrapper:
-    - retry: a structure vanilla launched a siege on less than RETRY s ago is dropped. While its order runs vanilla
+    - retry: a structure vanilla launched a siege on less than its block ago is dropped (RETRY, doubled up to
+      RETRY_MAX per relaunch right after the block ran out: a launch that keeps failing at once backs off). While its order runs vanilla
       doesn't re-pick it, so a re-pick means that order ended at once: fillAttackSteps cancels in Waiting with
       InsufficientSupply (the lowest army supply < AIOrders.estimateSupplyCost of the path) and the gauge, still
       full, re-picked the same village every ~2.5 s (Fremen Pelmah x39). Logs `space` why retry (10 s throttle);
+    - stuck: FAIL_N launches on it within FAIL_WIN that created no order while an army of ours was free to go (map
+      `afu` blocked-until, set by the launch wrapper) -> dropped for FAIL_BLOCK..FAIL_MAX s, logs `space` why stuck;
     - bunker preference: a positive score x BUNKER_W when the structure is within COVER_R of one of our structures
       on our land (their turrets cover each other) or within BUNKER_R of our main base.
     Original scores on any error."""
@@ -691,6 +911,38 @@ def build_scoring(cx, new_ids, helpers):
     b.call('haxe.ds.ObjectMap.remove', res, fb.dyn(pse))
     fb.op('JAlways', offset='ps')
     fb.label('nopress')
+    # tension lift (strat_levers): an at-war owner vanilla doesn't target (desiredStatus 0) keeps only the villages
+    # that are our contact partners at TEN_GATE (Smugglers' Shariyah / Atreides' Hadnin 113 apart, at war, T at the
+    # cap: neither ever listed the other's village)
+    dipf = b.field(b.field(1, 'aiController'), 'diplomacy')
+    fb.op('JNull', reg=dipf, offset='tgdone')
+    tst = _state(fb, b, cx)
+    tpf = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'spf'), fb.dyn(1))
+    gi, gds = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    gq = fb.reg(cx.t('f64'))
+    gse = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=gi, src=b.const('i32', 0))
+    b.loop_head('tg')
+    fb.op('JSGte', a=gi, b=n, offset='tgdone')
+    gst = b.cast(b.call('hl.types.ArrayObj.getDyn', 0, gi), 'ent.Structure')
+    fb.op('Incr', dst=gi)
+    fb.op('JNull', reg=gst, offset='tg')
+    fb.op('Mov', dst=gse, src=gst)
+    go = b.call('ent.Entity.get_owner', gse)
+    fb.op('JNull', reg=go, offset='tg')
+    fb.op('JEq', a=go, b=1, offset='tg')
+    fb.op('JEq', a=fb.dyn(go), b=tpf, offset='tg')  # the press owner: handled above
+    fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', tst, 1, go), offset='tg')
+    fb.op('Int', dst=gds, ptr=cx.code.add_i32(1).value)
+    gg = fb.try_()  # throws for a faction the diplomacy module doesn't track
+    fb.op('Mov', dst=gds, src=b.call('logic.ai.Diplomacy.getTargetStatus', dipf, go))
+    fb.end_try(gg)
+    fb.op('JSGte', a=gds, b=b.const('i32', 1), offset='tg')  # vanilla targets it anyway
+    fb.op('Call2', dst=gq, fun=helpers['tension'], arg0=1, arg1=gse)
+    fb.op('JSGte', a=gq, b=_ratio(fb, b, TEN_GATE), offset='tg')
+    b.call('haxe.ds.ObjectMap.remove', res, fb.dyn(gse))
+    fb.op('JAlways', offset='tg')
+    fb.label('tgdone')
     mine = b.cast(fb.get(1, 'structures', 'array'), 'hl.types.ArrayObj')
     fb.op('JNull', reg=mine, offset='end')
     mn = b.field(mine, 'length')
@@ -710,6 +962,12 @@ def build_scoring(cx, new_ids, helpers):
     v = b.call('haxe.ds.ObjectMap.get', res, fb.dyn(se))
     fb.op('JNull', reg=v, offset='s')
     _recent_launch(fb, b, cx, se, now, 'retry')
+    # stuck: launches here kept ending without an order (map `afu` = blocked until)
+    afu = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'afu'), fb.dyn(se))
+    fb.op('JNull', reg=afu, offset='nstk')
+    fb.op('SafeCast', dst=r, src=afu)
+    fb.op('JSLt', a=now, b=r, offset='stuck')
+    fb.label('nstk')
     fb.op('SafeCast', dst=sc, src=v)
     fb.op('JSLte', a=sc, b=zero, offset='s')
     fb.op('Mov', dst=j, src=b.const('i32', 0))
@@ -739,6 +997,14 @@ def build_scoring(cx, new_ids, helpers):
     _log_ev(fb, b, cx, helpers, 'space', [('f', fb.get(1, 'kind')), ('k', 2), ('why', 'retry'), ('tgt', se),
                                           ('near', near)])
     fb.op('JAlways', offset='s')
+    fb.label('stuck')
+    b.call('haxe.ds.ObjectMap.remove', res, fb.dyn(se))
+    _throttle(fb, b, cx, 'space', 1, 10, 's')
+    near2 = fb.reg(cx.t('ent.Entity'))
+    fb.op('Null', dst=near2)
+    _log_ev(fb, b, cx, helpers, 'space', [('f', fb.get(1, 'kind')), ('k', 2), ('why', 'stuck'), ('tgt', se),
+                                          ('near', near2)])
+    fb.op('JAlways', offset='s')
     fb.label('annex')
     _annex_value(fb, b, cx, helpers, res, mine, mn)
     fb.label('end')
@@ -750,14 +1016,22 @@ def build_scoring(cx, new_ids, helpers):
     return {'bunker-score': _redirect(cx, 'logic.ai.$HScoring.structures', ['logic.ai.AIMilitary.tryAction'], wr)}
 
 
-def build_spacing(cx, helpers, defend):
+def build_spacing(cx, helpers, defend, land, home, homeown):
     """Wrapper for the single tryAction -> tryArmyAction(k, s, data) call (every vanilla siege launch: Annex,
     Pillage, Raze, ...), strategic order of checks:
     1. defend: one of our structures is besieged (aimod_defend) -> no new offensive: refuse (log `space`, why defend,
        near = our besieged structure).
-    2. bunker: an Annex goes first to a village within BUNKER_R of our active main base that we don't own (lost or
-       never taken; neutral or at war with us) and no Military order of ours targets yet: s is replaced (log
-       `bunker`). Bypasses vanilla's target score and aggressiveness gate on purpose.
+    2. bunker: an Annex goes first to a village within BUNKER_R of our active main base that an at-war faction took
+       (lost) and no Military order of ours targets yet: s is replaced (log `bunker`). Bypasses vanilla's target
+       score and aggressiveness gate on purpose. Neutral ones aren't redirected (it beat deep-desert ring villages
+       and everything else): the Annex value scores them x BUNKER_MB.
+    1b. trip cost of a Liberate / Raze (d = its target's distance to our land; not the director's pressed village,
+       map `spv`): (a) beyond LOCAL while our Annex is pending (Annexation gauge >= RAID_GAUGE, full for less than
+       RAID_GAUGE_T: raid's map `rgauge`, read only) -> refuse, why annex (the armies are about to have better work
+       at home); (b) the at-war armies free to reach our land before we are back (aimod_home(d)) x ENTER above
+       LIB_KEEP x our armies within d of our land (aimod_homeown) x OWN_T -> refuse, why exposed (the farther, the
+       more of them count). Judged at launch only: a running order is never re-judged (no flip-flop). Pillage is
+       raid's; Annex has its own value per cost.
     3. annex-spacing: one of our Military orders already targets another structure within ADJ_R of s (two thin
        sieges side by side split the force) -> refuse (log `space`, why space).
     Refusal = onActionEnd(gauge(k), Dismiss, data): gauge un-paused, no decay, no onFailure blocks; `space` logged
@@ -799,8 +1073,59 @@ def build_spacing(cx, helpers, defend):
     fb.op('Bool', dst=blocked, value=True)
     fb.op('JAlways', offset='done')
 
-    # 2. bunker: Annex only
+    # 1b. trip cost of a Liberate / Raze (Harkonnen sent 9 of 11 armies to liberate Atreides' Marwan 694 from its
+    # land while its Annex waited on Authority; affordable 2 min later, it failed NotEnoughArmies / NoAvailableArmy)
     fb.label('bunker')
+    fb.op('JEq', a=b.call('String.__compare', 1, fb.dyn(fb.string('Liberate'))), b=zi, offset='farchk')
+    fb.op('JNotEq', a=b.call('String.__compare', 1, fb.dyn(fb.string('Raze'))), b=zi, offset='bunker2')
+    fb.label('farchk')
+    fb.op('JEq', a=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'spv'), fb.dyn(fac)), b=fb.dyn(2),
+          offset='bunker2')  # the pressed village
+    fdis, fq, fh = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=s_e, src=2)
+    fb.op('Call2', dst=fdis, fun=land, arg0=fac, arg1=s_e)
+    # (a) our Annex is pending: work at home first
+    fb.op('JSLte', a=fdis, b=b.const('f64', LOCAL), offset='fexp')
+    gauges = b.cast(fb.get(0, 'gauges'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=gauges, offset='fexp')
+    gk = fb.reg(cx.t('String'))
+    gi = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=gi, src=zi)
+    b.loop_head('fgl')
+    fb.op('JSGte', a=gi, b=b.field(gauges, 'length'), offset='fexp')
+    gg = b.call('hl.types.ArrayObj.getDyn', gauges, gi)
+    fb.op('Incr', dst=gi)
+    fb.op('JNull', reg=gg, offset='fgl')
+    fb.op('DynGet', dst=gk, obj=gg, field=cx.s('kind'))
+    fb.op('JNull', reg=gk, offset='fgl')
+    fb.op('JNotEq', a=b.call('String.__compare', gk, fb.dyn(fb.string('Annexation'))), b=zi, offset='fgl')
+    fb.op('DynGet', dst=fq, obj=gg, field=cx.s('value'))
+    fb.op('JSLt', a=fq, b=b.const('f64', RAID_GAUGE), offset='fexp')
+    rgv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rgauge'), fb.dyn(fac))
+    fb.op('JNull', reg=rgv, offset='fann')  # full, not yet timed: pending
+    fb.op('SafeCast', dst=fq, src=rgv)
+    fb.op('Sub', dst=fq, a=b.field(_state(fb, b, cx), 'time'), b=fq)
+    fb.op('JSGte', a=fq, b=b.const('f64', RAID_GAUGE_T), offset='fexp')  # stuck full: its Annex isn't coming
+    fb.label('fann')
+    fb.op('Mov', dst=why, src=fb.string('annex'))
+    fb.op('Bool', dst=blocked, value=True)
+    fb.op('JAlways', offset='done')
+    # (b) home exposure over the trip
+    fb.label('fexp')
+    fnul = fb.reg(cx.t('hl.types.ArrayObj'))
+    fb.op('Null', dst=fnul)
+    fb.op('Call2', dst=fh, fun=home, arg0=fac, arg1=fdis)
+    fb.op('JSLte', a=fh, b=b.const('f64', 0), offset='bunker2')
+    fb.op('Call3', dst=fq, fun=homeown, arg0=fac, arg1=fdis, arg2=fnul)
+    fb.op('Mul', dst=fq, a=fq, b=_ratio(fb, b, LIB_KEEP * OWN_T))
+    fb.op('Mul', dst=fh, a=fh, b=_ratio(fb, b, ENTER))
+    fb.op('JSLte', a=fh, b=fq, offset='bunker2')
+    fb.op('Mov', dst=why, src=fb.string('exposed'))
+    fb.op('Bool', dst=blocked, value=True)
+    fb.op('JAlways', offset='done')
+
+    # 2. bunker: Annex only
+    fb.label('bunker2')
     cmp = b.call('String.__compare', 1, fb.dyn(fb.string('Annex')))
     fb.op('JNotEq', a=cmp, b=zi, offset='spacing')
     state = _state(fb, b, cx)
@@ -830,7 +1155,7 @@ def build_spacing(cx, helpers, defend):
     fb.op('Mov', dst=ve, src=v)
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', ve, mbe), b=br, offset='bv')
     vo = b.call('ent.Entity.get_owner', ve)
-    fb.op('JNull', reg=vo, offset='bfree')
+    fb.op('JNull', reg=vo, offset='bv')  # neutral: no redirect, its Annex score x BUNKER_MB instead
     fb.op('JEq', a=vo, b=fac, offset='bv')
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, fac, vo), offset='bv')
     fb.label('bfree')
@@ -898,7 +1223,7 @@ def build_spacing(cx, helpers, defend):
     k3, ix3 = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
     fb.op('Mov', dst=k3, src=b.field(ords, 'length'))
     b.loop_head('rec')
-    fb.op('JSLte', a=k3, b=b.const('i32', 0), offset='rec_done')
+    fb.op('JSLte', a=k3, b=b.const('i32', 0), offset='rec_none')
     fb.op('Sub', dst=k3, a=k3, b=b.const('i32', 1))
     o3 = b.cast(b.call('hl.types.ArrayObj.getDyn', ords, k3), 'logic.ai.AIOrder')
     fb.op('JNull', reg=o3, offset='rec')
@@ -907,8 +1232,32 @@ def build_spacing(cx, helpers, defend):
     fb.op('EnumIndex', dst=ix3, value=tt3)
     fb.op('JNotEq', a=ix3, b=b.const('i32', T_STRUCT), offset='rec')
     fb.op('JNotEq', a=b.call('logic.ai.AIOrder.getTarget', o3), b=s_e3, offset='rec')
-    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'alaunch'), fb.dyn(s_e3),
-           fb.dyn(b.field(_state(fb, b, cx), 'time')))
+    # block for the next relaunch: doubled (up to RETRY_MAX) when this launch came within block + RETRY of the last
+    # one (it ended at once again: Smugglers' Liberation on Dam-Al'riyah, InsufficientSupply every 30-60 s for 10
+    # min), else RETRY
+    amap, bmap = _global_map(fb, b, cx, 'alaunch'), _global_map(fb, b, cx, 'ablk')
+    now3, pl, pb = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=now3, src=b.field(_state(fb, b, cx), 'time'))
+    fb.op('Mov', dst=pb, src=b.const('f64', RETRY))
+    pbv = b.call('haxe.ds.ObjectMap.get', bmap, fb.dyn(s_e3))
+    fb.op('JNull', reg=pbv, offset='blk0')
+    fb.op('SafeCast', dst=pb, src=pbv)
+    fb.label('blk0')
+    plv = b.call('haxe.ds.ObjectMap.get', amap, fb.dyn(s_e3))
+    fb.op('JNull', reg=plv, offset='blkr')
+    fb.op('SafeCast', dst=pl, src=plv)
+    fb.op('Sub', dst=pl, a=now3, b=pl)
+    fb.op('Sub', dst=pl, a=pl, b=pb)
+    fb.op('JSGte', a=pl, b=b.const('f64', RETRY), offset='blkr')
+    fb.op('Add', dst=pb, a=pb, b=pb)
+    fb.op('JSLte', a=pb, b=b.const('f64', RETRY_MAX), offset='blks')
+    fb.op('Mov', dst=pb, src=b.const('f64', RETRY_MAX))
+    fb.op('JAlways', offset='blks')
+    fb.label('blkr')
+    fb.op('Mov', dst=pb, src=b.const('f64', RETRY))
+    fb.label('blks')
+    b.call('haxe.ds.ObjectMap.set', bmap, fb.dyn(s_e3), fb.dyn(pb))
+    b.call('haxe.ds.ObjectMap.set', amap, fb.dyn(s_e3), fb.dyn(now3))
     # an Annex on an uncontested ring village: count it (the ring hold ends after DD_TRIES: resistance)
     fb.op('JNotEq', a=b.call('String.__compare', 1, fb.dyn(fb.string('Annex'))), b=b.const('i32', 0), offset='rec_done')
     rz = b.call('ent.Entity.get_zone', s_e3)
@@ -925,6 +1274,111 @@ def build_spacing(cx, helpers, defend):
     fb.label('rec_t0')
     fb.op('Add', dst=tq, a=tq, b=b.const('f64', 1))
     b.call('haxe.ds.ObjectMap.set', tmap, fb.dyn(s_e3), fb.dyn(tq))
+    fb.op('JAlways', offset='rec_done')
+    # no order (NotEnoughArmies, ArmyNotStrongEnough, ...) with an army free: a tension partner we can't take loses
+    # interest, x TEN_FAIL for every village of ours rubbing it (the gate lift would otherwise keep the gauge on it; it rebuilds by contact)
+    fb.label('rec_none')
+    # stuck: FAIL_N orderless launches on one target within FAIL_WIN (ArmyNotStrongEnough, NotEnoughArmies, ...) ->
+    # dropped from the target scores for FAIL_BLOCK s, doubled up to FAIL_MAX when it comes back to the same loop
+    # (Fremen's 10 armies sat at Ars-bu while the gauges re-picked Harkonnen's Aliftah every ~25 s, 183 picks on
+    # Ars-bu before that: no order, so the retry block never applied)
+    # ... counted only when we had an army to send (non-harvester, in no Military order): wiped or all busy is
+    # NoAvailableArmy, not this target's fault (new spawns must find every target open; no tension drop either)
+    ffac = b.field(b.field(0, 'controller'), 'owner')
+    fb.op('JNull', reg=ffac, offset='rec_done')
+    farr, falen = _my_armies(fb, b, ffac, 'rec_done')
+    fi, fk, fix = fb.reg(cx.t('i32')), fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fa = _army_loop(fb, b, farr, falen, fi, 'fav', 'rec_done')
+    fb.op('JNotNull', reg=b.field(fa, 'harvestComponent'), offset='fav')
+    fb.op('Mov', dst=fk, src=b.field(ords, 'length'))
+    b.loop_head('fao')
+    fb.op('JSLte', a=fk, b=b.const('i32', 0), offset='fhave')
+    fb.op('Sub', dst=fk, a=fk, b=b.const('i32', 1))
+    fo = b.cast(b.call('hl.types.ArrayObj.getDyn', ords, fk), 'logic.ai.AIOrder')
+    fb.op('JNull', reg=fo, offset='fao')
+    fb.op('EnumIndex', dst=fix, value=b.field(fo, 'type'))
+    fb.op('JNotEq', a=fix, b=b.const('i32', MILITARY), offset='fao')
+    fou = b.field(fo, 'units')
+    fb.op('JNull', reg=fou, offset='fao')
+    fb.op('JTrue', cond=b.call('hl.types.ArrayObj.contains', fou, fb.dyn(fa)), offset='fav')  # busy
+    fb.op('JAlways', offset='fao')
+    fb.label('fhave')
+    # ... nor when we can't pay for it now (MissingResources: vanilla reserves and waits; Smugglers' Fafir got stuck
+    # blocks for 2-8 min while Authority came in)
+    ocf = cx.fn('ent.comp.SiegeComponent.getOccupationActionCost')
+    ocat = [a.value for a in cx.code.types[ocf.type.value].definition.args]
+    ocn = fb.reg(ocat[2])
+    fb.op('Null', dst=ocn)
+    fsg = b.field(b.cast(fb.dyn(s_e3), 'ent.Structure'), 'siege')
+    fb.op('JNull', reg=fsg, offset='faff')
+    fcost = fb.reg(cx.code.types[ocf.type.value].definition.ret.value)
+    fb.op('Call4', dst=fcost, fun=ocf.findex.value, arg0=fsg, arg1=1, arg2=ocn, arg3=ffac)
+    fb.op('JNull', reg=fcost, offset='faff')
+    fctl = b.field(ffac, 'aiController')
+    fb.op('JNull', reg=fctl, offset='faff')
+    fmiss = b.call('logic.ai.AIController.getMissingResources', fctl, fcost, fb.dyn(b.const('i32', 3)))
+    fb.op('JNull', reg=fmiss, offset='faff')
+    fb.op('JSGt', a=b.field(fmiss, 'length'), b=b.const('i32', 0), offset='rec_done')
+    fb.label('faff')
+    fcm, ftm, fum, fbm = (_global_map(fb, b, cx, n) for n in ('afc', 'aft', 'afu', 'afb'))
+    fnow, fq, fc, fbk = (fb.reg(cx.t('f64')) for _ in range(4))
+    fb.op('Mov', dst=fnow, src=b.field(_state(fb, b, cx), 'time'))
+    fb.op('Mov', dst=fc, src=b.const('f64', 1))
+    ftv = b.call('haxe.ds.ObjectMap.get', ftm, fb.dyn(s_e3))
+    fb.op('JNull', reg=ftv, offset='fnew')
+    fb.op('SafeCast', dst=fq, src=ftv)
+    fb.op('Sub', dst=fq, a=fnow, b=fq)
+    fb.op('JSGt', a=fq, b=b.const('f64', FAIL_WIN), offset='fnew')
+    fb.op('SafeCast', dst=fc, src=b.call('haxe.ds.ObjectMap.get', fcm, fb.dyn(s_e3)))
+    fb.op('Add', dst=fc, a=fc, b=b.const('f64', 1))
+    fb.op('JAlways', offset='fcnt')
+    fb.label('fnew')
+    b.call('haxe.ds.ObjectMap.set', ftm, fb.dyn(s_e3), fb.dyn(fnow))
+    fb.label('fcnt')
+    b.call('haxe.ds.ObjectMap.set', fcm, fb.dyn(s_e3), fb.dyn(fc))
+    fb.op('JSLt', a=fc, b=b.const('f64', FAIL_N), offset='fdone')
+    # block: FAIL_BLOCK, doubled when the last block ended less than FAIL_WIN ago
+    fb.op('Mov', dst=fbk, src=b.const('f64', FAIL_BLOCK))
+    fuv = b.call('haxe.ds.ObjectMap.get', fum, fb.dyn(s_e3))
+    fb.op('JNull', reg=fuv, offset='fset')
+    fb.op('SafeCast', dst=fq, src=fuv)
+    fb.op('Sub', dst=fq, a=fnow, b=fq)
+    fb.op('JSGt', a=fq, b=b.const('f64', FAIL_WIN), offset='fset')
+    fb.op('SafeCast', dst=fbk, src=b.call('haxe.ds.ObjectMap.get', fbm, fb.dyn(s_e3)))
+    fb.op('Add', dst=fbk, a=fbk, b=fbk)
+    fb.op('JSLte', a=fbk, b=b.const('f64', FAIL_MAX), offset='fset')
+    fb.op('Mov', dst=fbk, src=b.const('f64', FAIL_MAX))
+    fb.label('fset')
+    b.call('haxe.ds.ObjectMap.set', fbm, fb.dyn(s_e3), fb.dyn(fbk))
+    fb.op('Add', dst=fq, a=fnow, b=fbk)
+    b.call('haxe.ds.ObjectMap.set', fum, fb.dyn(s_e3), fb.dyn(fq))
+    b.call('haxe.ds.ObjectMap.remove', ftm, fb.dyn(s_e3))
+    b.call('haxe.ds.ObjectMap.remove', fcm, fb.dyn(s_e3))
+    fb.label('fdone')
+    tfac = b.field(b.field(0, 'controller'), 'owner')
+    fb.op('JNull', reg=tfac, offset='rec_done')
+    tmine = b.cast(fb.get(tfac, 'structures', 'array'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=tmine, offset='rec_done')
+    tenw3, tenv3 = _global_map(fb, b, cx, 'tenw'), _global_map(fb, b, cx, 'tenv')
+    ti3 = fb.reg(cx.t('i32'))
+    tq3 = fb.reg(cx.t('f64'))
+    tve = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=ti3, src=b.const('i32', 0))
+    b.loop_head('rtn')
+    fb.op('JSGte', a=ti3, b=b.field(tmine, 'length'), offset='rec_done')
+    tsv = b.call('hl.types.ArrayObj.getDyn', tmine, ti3)
+    fb.op('Incr', dst=ti3)
+    fb.op('JNull', reg=tsv, offset='rtn')
+    fb.op('JNotEq', a=b.call('haxe.ds.ObjectMap.get', tenw3, tsv), b=fb.dyn(s_e3), offset='rtn')
+    ttv = b.call('haxe.ds.ObjectMap.get', tenv3, tsv)
+    fb.op('JNull', reg=ttv, offset='rtn')
+    fb.op('SafeCast', dst=tq3, src=ttv)
+    fb.op('Mul', dst=tq3, a=tq3, b=_ratio(fb, b, TEN_FAIL))
+    b.call('haxe.ds.ObjectMap.set', tenv3, tsv, fb.dyn(tq3))
+    fb.op('Mov', dst=tve, src=b.cast(tsv, 'ent.Entity'))
+    _log_ev(fb, b, cx, helpers, 'tdrop', [('f', fb.get(tfac, 'kind')), ('k', 1), ('v', tve), ('w', s_e3),
+                                          ('T%', tq3)])
+    fb.op('JAlways', offset='rtn')
     fb.label('rec_done')
     fb.end_try(guard3)
     fb.op('Ret', ret=void)
@@ -966,7 +1420,7 @@ def _vfield(fb, b, obj, name):
     return dst, idx[0]
 
 
-def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, new_ids):
+def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, new_ids, neutral):
     """Siege launch sizing: the pickUnits call(s) in tryArmyAction (every vanilla siege launch after the gate).
     Vanilla requires balance 1.0 flat for a neutral target and adds idle armies closest-first only until it is
     reached, so a village gets 2 armies while more sit idle next to it: the militia fight drags on (~50 s), drains
@@ -1030,6 +1484,50 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
     fb.op('SetField', obj=1, field=ri, src=nr)
     fb.label('req_done')
     fb.end_try(guard)
+    # 0. armies on a Discovery trip farther than JOIN_R from the target leave the candidates (vanilla pulled one ~370
+    # away into Fremen's Annex of Haykus: the stack arrived strung out)
+    guard0 = fb.try_()
+    fb.op('JTrue', cond=sim, offset='fd_done')
+    es0, _ = _vfield(fb, b, 1, 'enemyStructure')
+    fb.op('JNull', reg=es0, offset='fd_done')
+    s0 = fb.reg(cx.t('ent.Entity'))
+    fb.op('SafeCast', dst=s0, src=fb.dyn(es0))
+    cu0, _ = _vfield(fb, b, 1, 'consideredUnits')
+    fb.op('JNull', reg=cu0, offset='fd_done')
+    cand0 = fb.reg(cx.t('hl.types.ArrayObj'))
+    fb.op('SafeCast', dst=cand0, src=fb.dyn(cu0))
+    ords0 = b.field(b.field(b.field(0, 'controller'), 'aiOrders'), 'orders')
+    fb.op('JNull', reg=ords0, offset='fd_done')
+    fi0, fk0, fx0 = (fb.reg(cx.t('i32')) for _ in range(3))
+    fd0 = fb.reg(cx.t('f64'))
+    fe0 = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=fi0, src=b.field(cand0, 'length'))
+    b.loop_head('fdl')  # backwards: removal shifts the tail
+    fb.op('JSLte', a=fi0, b=b.const('i32', 0), offset='fd_done')
+    fb.op('Sub', dst=fi0, a=fi0, b=b.const('i32', 1))
+    fa0 = b.cast(b.call('hl.types.ArrayObj.getDyn', cand0, fi0), 'ent.Army')
+    fb.op('JNull', reg=fa0, offset='fdl')
+    fb.op('Mov', dst=fe0, src=fa0)
+    fb.op('Mov', dst=fd0, src=b.call('ent.Entity.getDistTo', fe0, s0))
+    fb.op('JSLte', a=fd0, b=b.const('f64', JOIN_R), offset='fdl')
+    fb.op('Mov', dst=fk0, src=b.field(ords0, 'length'))
+    b.loop_head('fdo')
+    fb.op('JSLte', a=fk0, b=b.const('i32', 0), offset='fdl')
+    fb.op('Sub', dst=fk0, a=fk0, b=b.const('i32', 1))
+    fo0 = b.cast(b.call('hl.types.ArrayObj.getDyn', ords0, fk0), 'logic.ai.AIOrder')
+    fb.op('JNull', reg=fo0, offset='fdo')
+    fu0 = b.field(fo0, 'units')
+    fb.op('JNull', reg=fu0, offset='fdo')
+    fb.op('JFalse', cond=b.call('hl.types.ArrayObj.contains', fu0, fb.dyn(fa0)), offset='fdo')
+    fb.op('EnumIndex', dst=fx0, value=b.field(fo0, 'type'))
+    fb.op('JNotEq', a=fx0, b=b.const('i32', DISCOVERY), offset='fdl')
+    b.call('hl.types.ArrayObj.remove', cand0, fb.dyn(fa0))
+    _throttle(fb, b, cx, 'farpick', fa0, PICK_LOG_T, 'fdl')
+    _log_ev(fb, b, cx, helpers, 'farpick', [('f', fb.get(b.call('ent.Entity.get_owner', fe0), 'kind')), ('a', fa0),
+                                            ('tgt', s0), ('d', fd0)])
+    fb.op('JAlways', offset='fdl')
+    fb.label('fd_done')
+    fb.end_try(guard0)
     fb.op('Call2', dst=res, fun=inner, arg0=0, arg1=1)
     # 2. idle armies near the target join
     guard2 = fb.try_()
@@ -1069,6 +1567,10 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
     fb.op('CallN', dst=q, fun=cover, args=[fac, s, s, t_false, no_arr])
     fb.op('Add', dst=h, a=h, b=q)
     fb.op('Call1', dst=q, fun=militia, arg0=st)
+    fb.op('Add', dst=h, a=h, b=q)
+    # neutral raiders at it working for themselves (renegades taking it over, another faction's raiders): they
+    # fight whoever contests the village (threat counts only raiders aimed at us)
+    fb.op('Call3', dst=q, fun=neutral, arg0=fac, arg1=s, arg2=b.const('f64', LOCAL))
     fb.op('Add', dst=h, a=h, b=q)
     fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', s))
     fb.op('Mul', dst=q, a=h, b=_ratio(fb, b, JOIN_TO))
@@ -1121,7 +1623,7 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
     return {'siege-join': len(sites)}
 
 
-def build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain):
+def build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain, neutral):
     """aimod_sengage(mil, dt), every CHECK s: early Engage for our siege orders (Military on a Structure: vanilla
     Annex/Pillage/Raze/..., `raid`). Vanilla Regroup waits until every order army reached the regroup point, so a
     stack standing next to the target walked away from it towards a far member first (Fremen raid on Tuoron: 5 armies
@@ -1191,6 +1693,8 @@ def build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain):
     fb.op('Add', dst=h, a=h, b=q)
     fb.op('Call1', dst=q, fun=militia, arg0=s)
     fb.op('Add', dst=h, a=h, b=q)
+    fb.op('Call3', dst=q, fun=neutral, arg0=fac, arg1=se, arg2=local)  # other raiders at it fight us too
+    fb.op('Add', dst=h, a=h, b=q)
     fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', se))
     fb.op('Mov', dst=req, src=enter)
     fb.op('JNotNull', reg=b.call('ent.Entity.get_owner', se), offset='owned')
@@ -1201,6 +1705,10 @@ def build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain):
     fb.label('owned')
     fb.op('Mul', dst=q, a=h, b=req)
     fb.op('SDiv', dst=q, a=q, b=tf)
+    # part of the order still on the way: PART_X x that, else wait (re-judged every CHECK s as they arrive)
+    fb.op('JSGte', a=near, b=un, offset='all')
+    fb.op('Mul', dst=q, a=q, b=_ratio(fb, b, PART_X))
+    fb.label('all')
     fb.op('JSLt', a=m, b=q, offset='o')
     fb.op('Call1', dst=void, fun=helpers.get('nextPhase', cx.fn('logic.ai.AIOrder.nextPhase').findex.value), arg0=o)
     _log_ev(fb, b, cx, helpers, 'sengage', [('f', fb.get(fac, 'kind')), ('tgt', se), ('H', h), ('M', m),

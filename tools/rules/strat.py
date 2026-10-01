@@ -67,7 +67,7 @@ def _has_action(fb, b, cx, s, fac, name, yes, no):
     fb.op('JAlways', offset=yes)
 
 
-def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, defend, militia, home, short):
+def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, defend, militia, home, short, neutral):
     """aimod_strat(mil, dt) (see module doc)."""
     fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
     b = B(fb)
@@ -120,6 +120,8 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
         cover_at(q, ve, False)
         fb.op('Add', dst=dst, a=dst, b=q)
         fb.op('Call1', dst=q, fun=militia, arg0=s)
+        fb.op('Add', dst=dst, a=dst, b=q)
+        fb.op('Call3', dst=q, fun=neutral, arg0=fac, arg1=ve, arg2=local)  # other raiders at it fight us too
         fb.op('Add', dst=dst, a=dst, b=q)
 
     def clear_press():
@@ -305,7 +307,12 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     their_side(h, v)
     fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', ve))
     fb.op('Mul', dst=q, a=m, b=tf)
-    fb.op('Mul', dst=r, a=h, b=press)
+    # contact tension (AI-POLICY §5c step 2): softness PRESS -> ENTER as T goes 0 -> 1
+    prx, tq = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Call2', dst=tq, fun=helpers['tension'], arg0=fac, arg1=ve)
+    fb.op('Mul', dst=tq, a=tq, b=_ratio(fb, b, PRESS - ENTER))
+    fb.op('Sub', dst=prx, a=press, b=tq)
+    fb.op('Mul', dst=r, a=h, b=prx)
     fb.op('JSLt', a=q, b=r, offset='v')  # not soft: not worth the time
     fb.op('JSGte', a=dm, b=best_d, offset='v')
     for dst, src in ((best, v), (best_f, vo), (best_d, dm), (best_h, h), (best_m, m)):
@@ -466,7 +473,8 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
 def strat_levers(cx, new_ids):
     """Vanilla gates opened for the pressed faction only (policy §5b levers):
     - `Diplomacy.getTargetStatus` in getSiegeableVillages -> >= 1 for the pressed village's owner (vanilla lists an
-      enemy's villages only for its daily diplomatic target);
+      enemy's villages only for its daily diplomatic target); also for an at-war owner one of whose villages is our
+      contact partner at tension >= TEN_GATE (the target scores keep only such partner villages of it);
     - `get_aggressiveness` in tryAnnexation -> GAUGE_FIRE-scale max (100) while pressing in annex mode (enemy
       villages need aggressiveness >= 50).
     The target scores (siege.build_scoring) then keep only the pressed village among that faction's."""
@@ -495,8 +503,33 @@ def strat_levers(cx, new_ids):
     fb.op('JAlways', offset='lift')
     fb.label('press')
     pf = b.cast(b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'spf'), fb.dyn(owner)), 'ent.Faction')
-    fb.op('JNull', reg=pf, offset='end')
-    fb.op('JNotEq', a=pf, b=1, offset='end')
+    fb.op('JNull', reg=pf, offset='tens')
+    fb.op('JEq', a=pf, b=1, offset='lift')
+    # contact tension at the cap (rules/tension.py, AI-POLICY §5c): one of our villages rubs a village of this at-war
+    # owner at T >= TEN_GATE: its villages are listed; the target scores keep only the partner ones (siege.py)
+    fb.label('tens')
+    st2 = _state(fb, b, cx)
+    fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', st2, owner, 1), offset='end')
+    tenw, tenv = _global_map(fb, b, cx, 'tenw'), _global_map(fb, b, cx, 'tenv')
+    mine = b.cast(fb.get(owner, 'structures', 'array'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=mine, offset='end')
+    ti = fb.reg(cx.t('i32'))
+    tq = fb.reg(cx.t('f64'))
+    twe = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=ti, src=b.const('i32', 0))
+    b.loop_head('tl')
+    fb.op('JSGte', a=ti, b=b.field(mine, 'length'), offset='end')
+    tsv = b.call('hl.types.ArrayObj.getDyn', mine, ti)
+    fb.op('Incr', dst=ti)
+    fb.op('JNull', reg=tsv, offset='tl')
+    tw = b.call('haxe.ds.ObjectMap.get', tenw, tsv)
+    fb.op('JNull', reg=tw, offset='tl')
+    fb.op('Mov', dst=twe, src=b.cast(tw, 'ent.Entity'))
+    fb.op('JNotEq', a=b.call('ent.Entity.get_owner', twe), b=1, offset='tl')
+    tvv = b.call('haxe.ds.ObjectMap.get', tenv, tsv)
+    fb.op('JNull', reg=tvv, offset='tl')
+    fb.op('SafeCast', dst=tq, src=tvv)
+    fb.op('JSLt', a=tq, b=_ratio(fb, b, TEN_GATE), offset='tl')
     fb.label('lift')
     fb.op('Int', dst=res, ptr=cx.code.add_i32(1).value)
     fb.label('end')

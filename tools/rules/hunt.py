@@ -30,6 +30,45 @@ def _log_hunt(fb, b, cx, helpers, fac, act, why, tgt, h, m, extra):
     fb.op('Call1', dst=v, fun=helpers['log'], arg0=fb.dyn(d))
 
 
+def _near_base(fb, b, cx, state, fac, e, mbr, wr):
+    """mbr = the active main base of a faction at war with fac nearest to entity e within BASE_KEEP (else null),
+    wr = its proximity 1 - d / BASE_KEEP (0..1)."""
+    k, j = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    me, d = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('f64'))
+    zi = b.const('i32', 0)
+    lf, lm, ok = _uid('nbf'), _uid('nbm'), _uid('nbok')
+    fb.op('Null', dst=mbr)
+    fb.op('Mov', dst=wr, src=b.const('f64', 0))
+    facs = b.cast(fb.get(state, 'factions', 'array'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=facs, offset=ok)
+    fb.op('Mov', dst=k, src=zi)
+    b.loop_head(lf)
+    fb.op('JSGte', a=k, b=b.field(facs, 'length'), offset=ok)
+    of = b.cast(b.call('hl.types.ArrayObj.getDyn', facs, k), 'ent.Faction')
+    fb.op('Incr', dst=k)
+    fb.op('JNull', reg=of, offset=lf)
+    fb.op('JEq', a=of, b=fac, offset=lf)
+    fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, fac, of), offset=lf)
+    mbs = b.field(of, 'mainBases')
+    fb.op('JNull', reg=mbs, offset=lf)
+    fb.op('Mov', dst=j, src=zi)
+    b.loop_head(lm)
+    fb.op('JSGte', a=j, b=b.field(mbs, 'length'), offset=lf)
+    mb = b.cast(b.call('hl.types.ArrayObj.getDyn', mbs, j), 'ent.Structure')
+    fb.op('Incr', dst=j)
+    fb.op('JNull', reg=mb, offset=lm)
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', mb), offset=lm)
+    fb.op('Mov', dst=me, src=mb)
+    fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', e, me))
+    fb.op('SDiv', dst=d, a=d, b=b.const('f64', BASE_KEEP))
+    fb.op('Sub', dst=d, a=b.const('f64', 1), b=d)
+    fb.op('JSLte', a=d, b=wr, offset=lm)
+    fb.op('Mov', dst=wr, src=d)
+    fb.op('Mov', dst=mbr, src=me)
+    fb.op('JAlways', offset=lm)
+    fb.label(ok)
+
+
 def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieged, cover, defend, neutral, react):
     """aimod_hunt(mil, dt): abort pass every CHECK s, start pass every START s (see module doc). Threat is always
     aimod_hthreat around the prey's faction (a third party at war with it doesn't count, one allied with it only
@@ -109,15 +148,48 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     givemap = _global_map(fb, b, cx, 'hgive')  # army -> time a chase on it was given up
     gvf = fb.reg(cx.t('f64'))
 
+    tripd, tripl = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    trip_e = fb.reg(cx.t('ent.Entity'))
+
+    def _trip(a, da, back, dst):
+        """dst = back + min(da, back + land(a)): the off-land walk to the anchor (da from army a) + the way back."""
+        fb.op('Mov', dst=trip_e, src=a)
+        fb.op('Call2', dst=tripl, fun=land, arg0=fac, arg1=trip_e)
+        fb.op('Add', dst=tripl, a=tripl, b=back)
+        lbl = _uid('trip')
+        fb.op('Mov', dst=dst, src=da)
+        fb.op('JSLte', a=dst, b=tripl, offset=lbl)
+        fb.op('Mov', dst=dst, src=tripl)
+        fb.label(lbl)
+        fb.op('Add', dst=dst, a=dst, b=back)
+
+    hax, hay, hat = (_global_map(fb, b, cx, n) for n in ('hax', 'hay', 'hat'))
+    ax_, ay_ = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+
     def given_up(e, skip):
-        """Jump to `skip` if a chase on army e was given up less than GIVEUP_T s ago (it outruns us)."""
+        """Jump to `skip` if a chase on army e was given up less than GIVEUP_T s ago (it outruns us), or e stands
+        within LOCAL of where a hunt of ours aborted on supply / weak / turret / desert less than HUNT_AREA_T s ago."""
         gv = b.call('haxe.ds.ObjectMap.get', givemap, fb.dyn(e))
-        lbl = f'gu{len(fb.ops)}'
+        lbl, la = f'gu{len(fb.ops)}', _uid('ga')
         fb.op('JNull', reg=gv, offset=lbl)
         fb.op('SafeCast', dst=gvf, src=gv)
         fb.op('Sub', dst=gvf, a=t, b=gvf)
         fb.op('JSLt', a=gvf, b=b.const('f64', GIVEUP_T), offset=skip)
         fb.label(lbl)
+        av = b.call('haxe.ds.ObjectMap.get', hat, fb.dyn(fac))
+        fb.op('JNull', reg=av, offset=la)
+        fb.op('SafeCast', dst=gvf, src=av)
+        fb.op('Sub', dst=gvf, a=t, b=gvf)
+        fb.op('JSGte', a=gvf, b=b.const('f64', HUNT_AREA_T), offset=la)
+        fb.op('SafeCast', dst=ax_, src=b.call('haxe.ds.ObjectMap.get', hax, fb.dyn(fac)))
+        fb.op('SafeCast', dst=ay_, src=b.call('haxe.ds.ObjectMap.get', hay, fb.dyn(fac)))
+        fb.op('Sub', dst=ax_, a=b.field(e, 'posx'), b=ax_)
+        fb.op('Sub', dst=ay_, a=b.field(e, 'posy'), b=ay_)
+        fb.op('Mul', dst=ax_, a=ax_, b=ax_)
+        fb.op('Mul', dst=ay_, a=ay_, b=ay_)
+        fb.op('Add', dst=ax_, a=ax_, b=ay_)
+        fb.op('JSLt', a=ax_, b=b.const('f64', LOCAL * LOCAL), offset=skip)
+        fb.label(la)
 
     # ---- 1. abort pass: re-check running hunts (backwards: stop() removes the order from the list)
     _tick(fb, b, cx, t, CHECK, 'new')
@@ -215,6 +287,9 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     un = b.field(units, 'length')
     fb.op('Mov', dst=need, src=big)
     fb.op('Bool', dst=losing, value=False)
+    # in transit (worm ride / shuttle): no re-decision until it lands; _army_loop skips transported armies, so
+    # power read 0 (Fremen: 6 armies riding to contest Hadwaz, M 0, aborted `weak`, landed orderless as it fell)
+    _riding(fb, b, cx, helpers, fac, o, units, 'hride', 'ord')
     u = _army_loop(fb, b, units, un, j, 'units', 'udone')
     fb.op('Call1', dst=p, fun=pw, arg0=u)
     fb.op('Add', dst=m, a=m, b=p)
@@ -249,6 +324,18 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     # turret cover at the group: enemy turrets / main base guns add to the threat, ours to our power
     cover_at(tc, ent_r, no_ent, False)
     cover_at(tm, ent_r, no_ent, True)
+    # an enemy main base ahead: its defense weighs in before its guns reach us, growing from 0 at BASE_KEEP to all
+    # of it at the base (soft: a strong enough stack still goes; Atreides' 8 armies chased a dying Fremen group from
+    # Qalnih to 123 from Tabr on draining supply and were wiped out after). The larger of it and the cover at the
+    # group: within gun range the base is already in that
+    nbm, nbw = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('f64'))
+    _near_base(fb, b, cx, state, fac, core, nbm, nbw)
+    fb.op('JNull', reg=nbm, offset='nbdone')
+    cover_at(q, nbm, no_ent, False)
+    fb.op('Mul', dst=q, a=q, b=nbw)
+    fb.op('JSLte', a=q, b=tc, offset='nbdone')
+    fb.op('Mov', dst=tc, src=q)
+    fb.label('nbdone')
     fb.op('Add', dst=h, a=h, b=tc)
     fb.op('Add', dst=m, a=m, b=tm)
     fb.op('Mul', dst=p, a=h, b=abort)
@@ -265,6 +352,20 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Mul', dst=q, a=h, b=kill)
     fb.op('SDiv', dst=q, a=q, b=tf)
     fb.op('JSLt', a=m, b=q, offset='ab_supply')
+    # ... for CRUSH_T s of the prey running at most (map `hcrush` order -> running s, CHECK per pass it moves; summed,
+    # so a prey stopping now and then doesn't reset it): a dying prey that keeps running drags the stack on while
+    # supply drains. A prey standing and fighting keeps the waiver until it dies (Atreides crushing Fremen at
+    # Bir-rekh at 10-13x were pulled home by a wall-clock cap and lost an army left behind)
+    fb.op('JFalse', cond=b.call('ent.Unit.isMoving', core), offset='supok')
+    crm = _global_map(fb, b, cx, 'hcrush')
+    crv = b.call('haxe.ds.ObjectMap.get', crm, fb.dyn(o))
+    fb.op('Mov', dst=q, src=b.const('f64', 0))
+    fb.op('JNull', reg=crv, offset='crnew')
+    fb.op('SafeCast', dst=q, src=crv)
+    fb.label('crnew')
+    fb.op('Add', dst=q, a=q, b=b.const('f64', CHECK))
+    b.call('haxe.ds.ObjectMap.set', crm, fb.dyn(o), fb.dyn(q))
+    fb.op('JSGt', a=q, b=b.const('f64', CRUSH_T), offset='ab_supply')
     fb.label('supok')
     # objective: a chase (no besieged village within LOCAL of its group) yields to a siege near our land that its
     # own armies could stop (same entry test as a contest start: free, within HUNT_R, supply budget, ENTER x
@@ -291,7 +392,8 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('JSGt', a=du, b=hunt_r, offset='ou')
     fb.op('Call2', dst=ok, fun=free, arg0=uu, arg1=no_orders)
     fb.op('JFalse', cond=ok, offset='ou')
-    fb.op('Call3', dst=ok, fun=supok, arg0=uu, arg1=sdx, arg2=sup_enter)
+    _trip(uu, du, sdx, tripd)  # same test as a contest start
+    fb.op('Call3', dst=ok, fun=supok, arg0=uu, arg1=tripd, arg2=sup_enter)
     fb.op('JFalse', cond=ok, offset='ou')
     fb.op('Call1', dst=p, fun=pw, arg0=uu)
     fb.op('Add', dst=mv, a=mv, b=p)
@@ -344,6 +446,25 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     b.call('haxe.ds.ObjectMap.set', pp_map, fb.dyn(o), fb.dyn(pp))
     b.call('haxe.ds.ObjectMap.set', pd_map, fb.dyn(o), fb.dyn(need))
     fb.label('prog_done')
+    # home run: the prey runs on its own land with no member below CHASE_LIFE: nothing left to finish, only full-health
+    # runners pulling us under their guns (Harkonnen chased Fremen off Gursan at 61x: a dying trooper was worth it,
+    # then 20 s more after healthy ones into Fremen land, chip damage counting as progress). Ends as `chase`
+    fb.op('JNull', reg=pf, offset='kdone')
+    kz = b.call('ent.Entity.get_zone', core)
+    fb.op('JNull', reg=kz, offset='kdone')
+    fb.op('JNotEq', a=b.field(kz, 'owner'), b=pf, offset='kdone')
+    fb.op('JFalse', cond=b.call('ent.Unit.isMoving', core), offset='kdone')  # standing and fighting: finish it
+    kn, kj = b.field(mem, 'length'), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=kj, src=zi)
+    b.loop_head('kill')
+    fb.op('JSGte', a=kj, b=kn, offset='ab_chase')
+    ke = b.cast(b.call('hl.types.ArrayObj.getDyn', mem, kj), 'ent.Entity')
+    fb.op('Incr', dst=kj)
+    fb.op('JNull', reg=ke, offset='kill')
+    fb.op('JTrue', cond=b.call('ent.Entity.isDead', ke), offset='kill')
+    fb.op('JSLt', a=b.call('ent.Entity.get_lifeRatio', ke), b=_ratio(fb, b, CHASE_LIFE), offset='kdone')
+    fb.op('JAlways', offset='kill')
+    fb.label('kdone')
     # defend: one of our structures is besieged -> a chase ends, unless the prey is in contact and we crush it
     # (h, tf: the group's threat and terrain from the `weak` test)
     fb.op('JNull', reg=dfs, offset='tur')
@@ -423,6 +544,11 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     for why in ('gone', 'truce', 'leash', 'home', 'supply', 'drift', 'lost', 'weak', 'turret', 'desert'):
         fb.label(f'ab_{why}')
         b.call('logic.ai.AIOrder.stop', o, cancel)
+        if why in ('supply', 'weak', 'turret', 'desert'):
+            # the place beat us: no new chase there for HUNT_AREA_T s (Smugglers hunted three Fremen targets at
+            # Tab-Al'san in 90 s, aborted `turret` then `supply`, running out and back)
+            for mp, v in ((hax, b.field(first, 'posx')), (hay, b.field(first, 'posy')), (hat, t)):
+                b.call('haxe.ds.ObjectMap.set', mp, fb.dyn(fac), fb.dyn(v))
         _log_hunt(fb, b, cx, helpers, fac, 'abort', why, first, h, m, {'sd': sd, 'dn': need, 'T': tc})
         fb.op('JAlways', offset='ord')
 
@@ -502,8 +628,16 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Call2', dst=sd, fun=land, arg0=fac, arg1=ent_r)
     fb.op('JSGt', a=sd, b=defend_r, offset='vcand')
     fb.op('Mov', dst=rr, src=hunt_r)
+    # the village we defend (ours, or a neutral one in our home ring: aimod_defend) or any of ours: everyone free
+    # within GATHER_R comes (vanilla Regroup gathers them)
+    dfe = fb.reg(cx.t('ent.Entity'))
+    fb.op('JNull', reg=dfs, offset='vchk')
+    fb.op('Mov', dst=dfe, src=dfs)
+    fb.op('JEq', a=ent_r, b=dfe, offset='vgath')
+    fb.label('vchk')
     fb.op('JNotEq', a=b.call('ent.Entity.get_owner', ent_r), b=fac, offset='notown')
-    fb.op('Mov', dst=rr, src=gather_r)  # our own village: everyone free comes (vanilla Regroup gathers them)
+    fb.label('vgath')
+    fb.op('Mov', dst=rr, src=gather_r)
     fb.op('JAlways', offset='vown')
     fb.label('notown')
     fb.op('JNotNull', reg=dfs, offset='vcand')  # defending: our own villages first
@@ -524,7 +658,11 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('JSGt', a=dy, b=rr, offset='mloop')
     fb.op('Call2', dst=ok, fun=free, arg0=y, arg1=orders)
     fb.op('JFalse', cond=ok, offset='mloop')
-    fb.op('Call3', dst=ok, fun=supok, arg0=y, arg1=sd, arg2=sup_enter)  # supply for the way back from there
+    # supply for the trip: the walk there off our land (an army at home: ~sd; one already out: ~dy) + the way back
+    # (the way back alone passed Smugglers' stack 313 from a Fremen harvester 282 off their land: `supply` abort
+    # on arrival, three hunts into the same spot in 90 s)
+    _trip(y, dy, sd, tripd)
+    fb.op('Call3', dst=ok, fun=supok, arg0=y, arg1=tripd, arg2=sup_enter)
     fb.op('JFalse', cond=ok, offset='mloop')
     fb.op('Call1', dst=p, fun=pw, arg0=y)
     fb.op('Add', dst=m, a=m, b=p)
@@ -538,12 +676,25 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('JSGte', a=h, b=p, offset='hmax')
     fb.op('Mov', dst=h, src=p)
     fb.label('hmax')
-    fb.op('JNotEq', a=mode, b=two, offset='hneu')  # neutral prey: raiders busy elsewhere fight back too
+    fb.op('JEq', a=mode, b=two, offset='hneuy')  # neutral prey: raiders busy elsewhere fight back too
+    fb.op('JNotEq', a=mode, b=one, offset='hneu')
+    fb.op('JNotNull', reg=pf, offset='hneu')  # contest of a raider siege: its raiders count
+    fb.label('hneuy')
     fb.op('Call3', dst=p, fun=neutral, arg0=fac, arg1=prey, arg2=local)
     fb.op('Add', dst=h, a=h, b=p)
     fb.label('hneu')
     # turret cover at the anchor (not the anchor's own turrets: a besieged village's turrets are silent)
     cover_at(tc, anc, anc, False)
+    # ... and an enemy main base near the prey, as the abort pass weighs it (else a chase towards it starts and
+    # aborts on the next check)
+    sbm, sbw = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('f64'))
+    _near_base(fb, b, cx, state, fac, prey, sbm, sbw)
+    fb.op('JNull', reg=sbm, offset='sbdone')
+    cover_at(q, sbm, no_ent, False)
+    fb.op('Mul', dst=q, a=q, b=sbw)
+    fb.op('JSLte', a=q, b=tc, offset='sbdone')
+    fb.op('Mov', dst=tc, src=q)
+    fb.label('sbdone')
     fb.op('Add', dst=h, a=h, b=tc)
     # prey in the deep desert: supply drains several times faster there (wind + zone factor), a chase is a
     # starvation march (Smugglers 2 armies 127 -> 0 supply in ~25 s after a raider): only in contact and crushing it
@@ -552,7 +703,17 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('JFalse', cond=b.call('ent.Zone.isDeepDesert', pz), offset='nodeep')
     fb.op('Bool', dst=far, value=True)
     fb.label('nodeep')
-    fb.op('Mul', dst=need, a=h, b=enter)
+    # contest next to our village: entry falls from ENTER to TEN_ENTER with contact tension (AI-POLICY §5c)
+    enx, tq = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=enx, src=enter)
+    fb.op('JNotEq', a=mode, b=one, offset='tx')
+    ae = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=ae, src=anc)
+    fb.op('Call2', dst=tq, fun=helpers['tension'], arg0=fac, arg1=ae)
+    fb.op('Mul', dst=tq, a=tq, b=_ratio(fb, b, ENTER - TEN_ENTER))
+    fb.op('Sub', dst=enx, a=enx, b=tq)
+    fb.label('tx')
+    fb.op('Mul', dst=need, a=h, b=enx)
     fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', anc))
     fb.op('SDiv', dst=need, a=need, b=tf)  # their land: 1.5 / 0.8 = 1.9x needed; ours: 1.15x
     fb.op('JSLt', a=m, b=need, offset='next')
@@ -624,7 +785,10 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
         """Fall through to label `ok` if army x of loop `lp` belongs in the group, else jump back to `lp`."""
         xo = b.call('ent.Entity.get_owner', x)
         fb.op('JNotNull', reg=xo, offset=f'{lp}own')
-        fb.op('JNotEq', a=best_mode, b=two, offset=lp)
+        fb.op('JEq', a=best_mode, b=two, offset=f'{lp}rd')
+        fb.op('JNotEq', a=best_mode, b=one, offset=lp)
+        fb.op('JNotNull', reg=best_pf, offset=lp)  # contest of a raider siege (no besieging faction): its raiders
+        fb.label(f'{lp}rd')
         fb.op('JNull', reg=b.field(x, 'raid'), offset=lp)
         fb.op('JSGt', a=b.call('ent.Entity.getDistTo', x, best_anc), b=local, offset=lp)
         fb.op('JAlways', offset=ok)
@@ -666,7 +830,7 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     # nearest first, until HUNT_TO (KILL for a restricted start) x their side / terrain; past HUNT_CAP x group + 1
     # armies, stop once the entry ratio (ENTER, or KILL restricted) holds. Their side = max(the start's threat,
     # aimod_react at the prey + enemy cover): enemy armies free to come within REACT_R raise the force. Contests
-    # (mode 1) take every free army in reach (policy §5a goal 2)
+    # (mode 1) take armies until HUNT_TO whatever the count, every free army in reach if short (policy §5a goal 2)
     hs, tfb, goal, gate, mt, dq = (fb.reg(cx.t('f64')) for _ in range(6))
     fb.op('Mov', dst=hs, src=best_h)
     fb.op('Call3', dst=dq, fun=react, arg0=fac, arg1=best, arg2=local)
@@ -692,6 +856,11 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Mul', dst=cap, a=cap, b=b.const('i32', HUNT_CAP))
     fb.op('Add', dst=cap, a=cap, b=one)
     cover_at(mt, best_anc, best_anc, True)  # our turrets there fight with us (as in the evaluation)
+    # contest: armies alone fill the goal (our neighbouring turrets / main-base guns x3 could fill it before one army
+    # and send a lone army at a besieging stack)
+    fb.op('JNotEq', a=best_mode, b=one, offset='mt_cov')
+    fb.op('Mov', dst=mt, src=zero)
+    fb.label('mt_cov')
     arr = _new_array(fb, b, cx)
     ny = fb.reg(cx.t('ent.Army'))
     nd2 = fb.reg(cx.t('f64'))
@@ -705,7 +874,8 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('JTrue', cond=b.call('hl.types.ArrayObj.contains', arr, fb.dyn(y)), offset='gloop')
     fb.op('Call2', dst=ok, fun=free, arg0=y, arg1=orders)
     fb.op('JFalse', cond=ok, offset='gloop')
-    fb.op('Call3', dst=ok, fun=supok, arg0=y, arg1=sd, arg2=sup_enter)
+    _trip(y, dg, sd, tripd)
+    fb.op('Call3', dst=ok, fun=supok, arg0=y, arg1=tripd, arg2=sup_enter)
     fb.op('JFalse', cond=ok, offset='gloop')
     fb.op('Mov', dst=ny, src=y)
     fb.op('Mov', dst=nd2, src=dg)
@@ -715,8 +885,11 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     b.call('hl.types.ArrayObj.push', arr, fb.dyn(ny))
     fb.op('Call1', dst=dq, fun=pw, arg0=ny)
     fb.op('Add', dst=mt, a=mt, b=dq)
-    fb.op('JEq', a=best_mode, b=one, offset='sel')  # contest: everyone
     fb.op('JSGte', a=mt, b=goal, offset='seldone')
+    # contest: up to the goal however many armies that takes (no cap / gate stop), all in reach if it isn't met.
+    # Not everyone: Harkonnen sent all 21 armies 540 to Eyron (29k besieger, goal 56k) while 850k Fremen closed on
+    # Qafiel, where those armies stood
+    fb.op('JEq', a=best_mode, b=one, offset='sel')
     fb.op('JSLt', a=b.field(arr, 'length'), b=cap, offset='sel')
     fb.op('JSGte', a=mt, b=gate, offset='seldone')
     fb.op('JAlways', offset='sel')

@@ -36,14 +36,19 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
   disc  : tgt, army, H, M, tf (world-event Discovery trip refused: the lone army's power M < ENTER x at-war threat H
           around the event / terrain tf x100)
   strand: a, s, d, ok (idle army on hostile land sent home: Patrol Move to our structure s, d = its distance)
+  tension: f, v, w, T (x100), d (hottest contact pair per faction every 30 s, rules/tension.py)
+  hride / rride: f, a (hunt / raid army in transit: the order isn't re-judged, at most RIDE_MAX s)
+  keepcap: f, a, s, v (vanilla micro wanted army a to defend our structure s; kept at village v we capture)
+  unstick: f, a, tgt, st, ok (siege army standing still in the village with no siege running moved to the target's safe position; st = s still)
   undeploy: a, ok, nm, sup (installed turret not fighting on hostile land uninstalled; nm = order move blocks removed)
-  ascore: f, tgt, s, c, cmin, vb, v0, vs, n, dd (x100: Fremen deep-desert surround sum of the best), hold (off-ring candidates dropped by the Fremen ring hold) (Annex value: our best target vs vanilla's best; tools/rules/siege.py)
+  alone: f, tgt, s, c (sole Annex candidate past the opening with no ring / special / spice value: dropped)
+  ascore: f, tgt, s, c, cmin, vb, v0, vs, n, dd (x100: Fremen deep-desert surround sum of the best), hold (off-ring candidates dropped by the Fremen ring hold), rt / rs / rdd (best ring village, its score, dd x100), ddh (zone hops of the focus deep desert, 999 none) (Annex value: our best target vs vanilla's best; tools/rules/siege.py)
   noregen: f, a, hp (army without safe regen and full supply removed from the checkUnits Resupply query)
   lowpick: f, a, hp, src (siege|defense|discovery: army under PICK_LIFE removed from vanilla's getUnits result; extra: worn
           temporary unit appended to a Defense the healthy armies already carry)
-  rally : f, act (rally|off), s (danger structure), r (rally point), H, M, n (defenders sent; rules/rally.py)
+  rally : f, act (rally|off|commit|giveup|here: already at D), s (danger structure), r (rally point), H, M, n (defenders sent), Mall (here: all within RALLY_R; rules/rally.py)
   gather: f, a, tgt, d, dmax, n (Engage leader held for the pack; rules/gather.py)
-  spos  : f, a, tgt, e, cv, ok (siege army under at-war guns moved to the target's far side from e; rules/spos.py)
+  spos  : f, a, tgt, es, cv, ok (siege army under at-war guns moved to the target's far side from e; rules/spos.py)
   dstep : f, a, tgt, d, ok (our siege / raid army on the deep-desert side of its target moved 40 from it; rules/desert.py)
   wflee : f, a, rock, d, w, ok (worm-targeted army on sand sent to the nearest rock point; tools/rules/worm.py)
   weaten: o, a, fled (any army eaten by a worm; fled = s since our wflee moved it, -1 never)
@@ -157,7 +162,10 @@ def parse_lines(lines):
         if k < 0:
             continue
         try:
-            events.append(parse_value(line, k + 6)[0])
+            ev = parse_value(line, k + 6)[0]
+            if isinstance(ev.get('e'), dict) and 'cv' in ev:   # old spos rows logged the enemy structure as `e`
+                ev['es'], ev['e'] = ev['e'], 'spos'
+            events.append(ev)
         except (ValueError, IndexError):
             events.append(_salvage(line[k:]) or {'e': 'unparsed'})
     return events
@@ -413,9 +421,9 @@ def summarize(events, faction=None, all_orders=False):
             rallies.append(e)
         elif k == 'gather':
             gathers.append(e)
-        elif k in ('wflee', 'weaten', 'dstep', 'whold', 'hrun', 'spos'):
+        elif k in ('wflee', 'weaten', 'dstep', 'whold', 'hrun', 'spos', 'unstick', 'keepcap', 'tension', 'hride', 'rride'):
             worms.append(e)
-        elif k == 'ascore':
+        elif k in ('ascore', 'alone'):
             ascores.append(e)
         elif k in ('lowpick', 'noregen'):
             lowpicks.append(e)
@@ -544,6 +552,10 @@ def summarize(events, faction=None, all_orders=False):
         for e in rallies[-16:]:
             if e.get('act') == 'off':
                 out.append(f"  {clock(e['_t'])} {e.get('f'):<10} rally off")
+            elif e.get('act') in ('commit', 'giveup', 'here'):
+                extra = f" (Mall{kpw(e.get('Mall'))})" if e.get('act') == 'here' else ''
+                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('s'))[:20]:<20} {e.get('act').upper():<22} "
+                           f"H{kpw(e.get('H'))} M{kpw(e.get('M'))}{extra}")
             else:
                 out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('s'))[:20]:<20} -> {ent(e.get('r'))[:20]:<20} "
                            f"H{kpw(e.get('H'))} M{kpw(e.get('M'))} n{e.get('n')}")
@@ -560,9 +572,13 @@ def summarize(events, faction=None, all_orders=False):
                    'compactness / cost ratio / first spice) vs vanilla\'s best (v0 its vanilla score, vs now); '
                    'c / cmin = its Authority cost / cheapest candidate (once per faction per 30 s)')
         for e in ascores[-16:]:
+            if e['e'] == 'alone':
+                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('tgt'))[:22]:<22} s{e.get('s')} c{e.get('c')} LONE candidate, nothing special: dropped")
+                continue
             same = ent(e.get('tgt')) == ent(e.get('vb'))
             out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('tgt'))[:22]:<22} s{e.get('s')} c{e.get('c')}/{e.get('cmin')} "
-                       + ('= vanilla' if same else f"<- vanilla {ent(e.get('vb'))[:22]} v0 {e.get('v0')} now {e.get('vs')}") + f" n{e.get('n')}" + (f" dd{e.get('dd')}" if e.get('dd') else '') + (f" HOLD{e.get('hold')}" if e.get('hold') else ''))
+                       + ('= vanilla' if same else f"<- vanilla {ent(e.get('vb'))[:22]} v0 {e.get('v0')} now {e.get('vs')}") + f" n{e.get('n')}" + (f" dd{e.get('dd')}" if e.get('dd') else '') + (f" HOLD{e.get('hold')}" if e.get('hold') else '')
+                       + (f" ring {ent(e.get('rt'))[:18]} s{e.get('rs')} dd{e.get('rdd')} h{e.get('ddh')}" if e.get('rt') and ent(e.get('rt')) != ent(e.get('tgt')) else ''))
 
     if lowpicks:
         out.append('\n## Low-life picks (tools/rules/heal.py pick-life): worn armies kept out of vanilla mission picks '
@@ -578,7 +594,15 @@ def summarize(events, faction=None, all_orders=False):
                 out.append(f"  {clock(e['_t'])} {e.get('f')} flee  {ent(e.get('a'))[:22]:<22} rock{int(bool(e.get('rock')))} "
                            f"d{e.get('d')} w{e.get('w')} ok{int(bool(e.get('ok')))}")
             elif e['e'] == 'spos':
-                out.append(f"  {clock(e['_t'])} {e.get('f')} siege-pos {ent(e.get('a'))[:22]:<22} at {ent(e.get('tgt'))[:18]} off guns of {ent(e.get('e'))[:18]} cv{kpw(e.get('cv'))}")
+                out.append(f"  {clock(e['_t'])} {e.get('f')} siege-pos {ent(e.get('a'))[:22]:<22} at {ent(e.get('tgt'))[:18]} off guns of {ent(e.get('es'))[:18]} cv{kpw(e.get('cv'))}")
+            elif e['e'] == 'tension':
+                out.append(f"  {clock(e['_t'])} {e.get('f')} TENSION {ent(e.get('v'))[:18]} <-> {ent(e.get('w'))[:18]} T{e.get('T')}% d{e.get('d')}")
+            elif e['e'] in ('hride', 'rride'):
+                out.append(f"  {clock(e['_t'])} {e.get('f')} IN TRANSIT ({'hunt' if e['e'] == 'hride' else 'raid'}) {ent(e.get('a'))[:22]}: not re-judged until it lands")
+            elif e['e'] == 'keepcap':
+                out.append(f"  {clock(e['_t'])} {e.get('f')} KEEP-CAPTURE {ent(e.get('a'))[:22]:<22} stays at {ent(e.get('v'))[:18]} (not sent to defend {ent(e.get('s'))[:18]})")
+            elif e['e'] == 'unstick':
+                out.append(f"  {clock(e['_t'])} {e.get('f')} UNSTICK {ent(e.get('a'))[:22]:<22} at {ent(e.get('tgt'))[:18]} still {e.get('st')} s ok{int(bool(e.get('ok')))}")
             elif e['e'] == 'whold':
                 out.append(f"  {clock(e['_t'])} {e.get('f')} hold  {ent(e.get('a'))[:22]:<22} (worm near: kept out of {e.get('src')})")
             elif e['e'] == 'hrun':
