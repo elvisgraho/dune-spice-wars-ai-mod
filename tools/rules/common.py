@@ -19,6 +19,11 @@ START = 10         # s between start passes
 HOME_R = 300       # enter: an enemy on its own zone is huntable only this close to one of our structures
 HOME_EXIT = 400    # abort: ... and the hunt is cancelled once it is farther than this from all of them
 DRIFT_R = 575      # abort `drift`: nearest group member farther than this from our structures, none of ours in CONTACT
+HUNT_TO = 2.5      # hunt force: nearest free armies until this x their side (prey + armies free to come within
+                   # REACT_R) / terrain (KILL where the start needed KILL); Smugglers sent all 8 armies (271k) at one 40k
+                   # H_Soldier and left their front empty
+HUNT_CAP = 2       # ... and past HUNT_CAP x (prey group size) + 1 armies, stop as soon as the entry ratio holds
+                   # (a loner: 3, a pair: 5); contests of our besieged villages take every free army
 CONTEST_W = 3      # start score weight when the prey is besieging a structure (objective)
 DIST0 = 100        # start score = weight * H / (distance of our nearest free army + DIST0)
 ENTER = 1.5        # policy enter ratio
@@ -44,6 +49,8 @@ SUP_PEN = 0.6      # fight retreat: balance x (1 - SUP_PEN x share of our fight 
 COVER_R = 130      # turret cover: a structure's turrets / main base guns reach this far from its centre (data: range
                    # 80 for MissileBattery and main bases, + turrets placed around the centre). Also the bunker pair
                    # distance: two villages this close cover each other
+MB_GUN_W = 3       # main-base guns count this many times (our cover and vanilla's sizing): Fremen sized Sadnin, 113 from
+                   # Arrakeen, at 1.7:1 and read 2-13 while the guns took 6 of 10 armies (provisional, one fight)
 TURRET_H = 1500    # turret -> army power: offensivePotential x this HP (~one 3-unit army's health): a MissileBattery
                    # ~ one army, a main base ~ two ("feared more, not overwhelmingly"); calibrate from hunt `T`
 KILL = 3.0         # "kill it on the way": a chase under enemy turret cover, or while we defend, only if the prey is
@@ -66,12 +73,55 @@ RECALL_R = DEFEND_R  # raid abort `defend`: a pillage this close to our besieged
 RAID_DONE = 0.5    # a pillage in Action at this progress (0-1, getOccupationActionProgress) is finished, never
                    # aborted (~30 s left of 2 days; the pillage also refills 50% supply)
 RAID_GAP = 30      # s between two raid launches of one faction (commit, like HUNT_GAP)
+PICK_LIFE = 0.5    # vanilla mission picks (sieges, Defense, Discovery) skip armies below this life unless fighting
+PICK_LOG_T = 30    # s: lowpick log throttle per army
 RAID_LIFE = 0.6    # raid army life floor (a pillage is short; vanilla sieges want 0.9 and a full refill)
 RAID_ARRIVE = 0.25  # raid: supply share an army must still have on arrival (militia fight drains)
 REACT_R = 480      # raid: idle at-war armies this close can reach the village before a pillage ends (militia fight
                    # ~20 s + 2 days = 60 s, at ~6 u/s); fighting, besieging or elsewhere-bound ones don't count
 DANGER_T = 180     # faction memory: a zone where our harvester was attacked stays dangerous this long (6 game days),
                    # linearly fading (cooldown); longer would strand good fields, shorter re-sends into the same raiders
+GATHER_T = 1       # s: gather pass (Engage orders: leaders wait for the pack)
+GATHER_R = 400     # armies of the order this close to the target count; farther ones are stragglers, not waited for
+GATHER_GAP = 15    # an army more than this closer to the target than the farthest counted one waits (~2.5 s walk)
+GATHER_MIN = 80    # ... unless already this close (in reach of the prey / militia) or fighting
+GATHER_MAX = 10    # s: an order holds its leaders at most this long in all (a far laggard can't stall the attack)
+DSTEP_R = 250      # desert step: our siege / raid armies in the deep desert within this of the target ...
+DSTEP_IN = 40      # ... move to this far from the target on their side (the village's zone, still in the fight)
+DSTEP_T = 8        # ... at most this often per army (micro re-engages; no move spam)
+WORM_T = 1         # s: worm-flee pass (a targeted army has seconds before the worm arrives)
+WFLEE_T = 3        # s: a worm-targeted army on sand is re-sent to rock at most this often (vanilla orders move it back)
+WORM_HOLD = 20     # s: an army sent off the sand isn't free for hunts / raids / strand (no relaunch onto the same sand)
+WORM_NEAR = 150    # an army moved off the sand waits there (out of vanilla's Resupply / mission picks) while a worm is
+                   # this close, at most WORM_HOLD s; worm-flee moves the order's other armies on sand this close to it
+WORM_STEP = 20     # rock search: ring step ...
+WORM_R = 200       # ... up to this radius (none found: this far straight away from the worm)
+WORM_DIRS = 16     # ... directions per ring
+HFLEE_T = 20       # s: an attacked team harvester is released to vanilla's re-route at most this often (it packs up)
+RALLY_T = 2        # s: rally pass (rules/rally.py): gather strength when a structure faces more than we can beat
+RALLY_MIN_H = 80000  # ... and that power is at least this (a lone raider is vanilla Defense's business)
+RALLY_R = 600      # our defenders within this of the danger structure count and are gathered
+RALLY_MIN = 150    # the rally point is at least this far from the danger structure; structures this close aren't
+                   # healed / fled to while the rally runs (aimod_unsafe overwhelming)
+RALLY_SAFE = 150   # ... and has no at-war power within this
+RALLY_MB = 150     # the main base counts this much closer (its guns fight with us)
+RALLY_AT = 60      # a defender this close to the rally point has arrived (no move, not held)
+RALLY_MOVE_T = 5   # s: a defender is re-sent at most this often
+RALLY_HOLD = 5     # s: a rallying army stays out of vanilla's picks this long after the last pass saw it walking
+RALLY_HYST = 1.15  # a running rally ends only at ENTER x this (no on / off flicker at the threshold)
+SPOS_CHECK = 2     # s: siege-position pass (rules/spos.py)
+SPOS_R = 250       # Action: our siege armies this close to the target are kept off enemy guns (chasers pulled back)
+SPOS_IN = 80       # Engage: only armies already this close (walkers aren't pulled forward)
+SPOS_OFF = 25      # the safe point: this far from the target's centre, away from the nearest enemy structure (inside
+                   # the occupation range: occupiers seen up to ~30 from the village)
+SPOS_T = 4         # s: an army is re-sent at most this often (micro re-engages in between)
+DISC_RELAUNCH = 30  # s: a world event vanilla launched a Discovery on isn't launched again this soon (a trip cancelled
+                    # in Waiting, e.g. supply, was re-picked every 1.5-7 s for a minute)
+RAID_GAUGE = 85    # a raid doesn't start while our Annexation gauge is this full: vanilla's Annex fires within seconds
+                   # and takes the raid's armies (Fremen raid on Damrekh cancelled 8 s after start)
+HRUN_T = 20        # s: an outgunned harvester under fire is sent to a safe field (or home) at most this often
+OCC_W = 0.5        # aimod_react: an at-war army within REACT_R busy occupying / contesting a structure counts this much
+                   # (it can break off: Fremen left Ars-ha and hunted Atreides at their harvester)
 DANGER_KEY = 600 * 600  # harvester field choice: squared-distance penalty at full danger (a field up to ~600 farther wins)
 ALLY_WIN = 150    # hunt: a third party allied / at peace with the prey counts only if it is within our nearest army's
                    # distance + this (~25 s of fight at ~6 u/s): farther ones arrive after the kill. A third party at
@@ -82,18 +132,30 @@ ENGAGE_R = 100    # siege-engage: order armies this close to the target are at i
 OCC_REFILL = 0.5   # = data Army_Supply_Resupply_OccupationRatio: share of max supply a finished pillage refills
 NEUTRAL_REQ = 1.25 # siege launch: required ratio on a neutral target (vanilla 1.0). Below ENTER: militia is known and
                    # never reinforced, and siege-join adds the idle armies nearby on top
+EARLY_VILLAGES = 2  # opening: while we own fewer villages than this, a neutral target needs only EARLY_REQ (vanilla)
+EARLY_REQ = 1.0    # ... at launch and at the target: the 2 armies of a normal start vs a 2-defense village fall between
+                   # 1.0 and NEUTRAL_REQ, and the AI waited instead of taking its first villages
 JOIN_R = HUNT_R    # siege launch: idle armies this close to the target may join (vanilla sends the minimum) ...
 JOIN_TO = KILL    # ... nearest first, until we have this x their power there (KILL: a fight over in seconds)
 RETRY = 30         # s: a vanilla siege target launched again this soon after its last launch ended at once
                    # (e.g. InsufficientSupply at +0 s) is dropped from the target scores until then
 PURSUIT_T = 15    # s without progress that end a chase (hunt abort `chase`) or a mission-less fight (fight retreat
                    # `pursuit`): a fleeing army at our speed keeps its distance forever (~90 units per 15 s)
+CATCH_T = 30      # s: closing in counts as chase progress only at a rate that reaches the prey within this (a raider
+                   # running at ~4 u/s from 6 u/s hunters 205 away "closed" 30 per 15 s and was followed 57 s / 230 units)
+CATCH_R = 40      # ... "reached" = this close (weapon range)
 PROGRESS = 0.1     # progress = the enemy there lost this share of its power since the last progress ...
 CLOSE = 30         # ... or (hunt) our nearest army got this much closer to the prey (~5 s of walking)
+WZB_T = 5          # s: diagnostic `wzb` row (fight balance raw / adjusted) per warzone at most this often
 PURSUIT_STALE = 3  # s: a warzone record not refreshed for this long belongs to an earlier fight (the balance is read
                    # every tick while the fight runs)
 GIVEUP_T = 90      # s: an army a chase gave up on (`chase` abort) isn't chased again for this long (it outruns us;
                    # a new chase would end the same way 45 s later)
+DISCOVERY = 5      # AIOrderType index of Discovery (Basic Military Defense Protect Resupply Discovery Patrol)
+DISC_HORIZON = 40  # s: a running Discovery trip counts hostile movers that can reach the event within this (2 x the
+                   # launch HORIZON): the lone army leaves while it still has a lead (Harkonnen H_Soldier at a relic saw
+                   # 8 Smugglers armies walk 290 units at it for ~40 s and only left in contact, 1v8)
+DISC_RETRY = 60    # s: a world event whose Discovery trip we gave up isn't sent to again this soon (no launch/abort loop)
 RAID_RETRY = 60    # s: a village our raid left (aborted, or cancelled at once by vanilla) isn't raided again this soon
 FRONT_R = 600      # director: enemy villages this close to our land are the front (policy §5b)
 PRESS = KILL       # ... soft = the spare armies in reach have this x (armies in reach + cover + militia) / terrain
@@ -101,8 +163,34 @@ PRESS_R = HUNT_R   # ... spare armies this close to a village can take part (sam
 PRESS_KEEP = ABORT  # a press is dropped when our power there (any task) x terrain < this x their side
 PRESS_MAX = 240    # s: a press not finished by then is dropped (`slow`); enemy Annex ~ walk + militia + 6 days
 PRESS_RETRY = 120  # s: a dropped press target isn't pressed again this soon
+ANNEX_SPECIAL = 30  # Annex score + this for a village in a special region (region aiWeight >= 20, vanilla adds that
+                    # weight once; specials yield more hegemony), before the cost ratio
+ANNEX_SPICE1 = 2    # Annex score x this for a spice village while we own none (vanilla +100 too), after the cost
+                    # ratio: the opening takes a spice field first. Not for SPICE_ANY factions (harvest anywhere)
+SPICE_ANY = ('Fremen', 'Vernius')  # their first-spice bonus (vanilla +100) is removed
+NEAR_W = 0.25       # Annex score x (1 + NEAR_W x (NEAR_REF - d) / NEAR_REF), clamped to 1 +- NEAR_W, d = distance to our
+NEAR_REF = 400      # nearest structure on our land: compact land, short walks to defend (factions with distance
+                    # annex costs only: Smugglers (Outpost_DistanceCost_MRatio 0) cap far villages by design)
+DD_ATB = 969       # attribute DeepDesert_Surounded_GainControl (Fremen_HegemonyBonus1): Zone.updateOwner gives a deep
+                   # desert to the single owner of all its neighbours with a village or a main base
+DD_W = 1.0         # Annex score x (1 + DD_W x sum over adjacent unowned deep deserts of chance / (1 + still missing
+DD_W_PRE = 0.5     # after this one)), DD_W with the attribute, DD_W_PRE for Fremen before it (plan ahead)
+DD_LINK = 0.5      # ring bonus x this when the candidate touches none of our zones except deep desert: reaching it
+                   # means crossing desert (supply), so the ring grows outward from land we hold
+DD_CAP = 2         # ... sum capped (completing one = x2, one away = x1.5)
+DD_ENEMY = 0.5     # chance x this per missing neighbour owned by another faction or within DD_BASE_R of another
+DD_BASE_R = 350    # faction's main base (contested: progress there stalls); an enemy main-base zone among them = 0
+DD_HOLD_MISS = 2   # the Annex hold needs a ring this close: at most this many villages missing besides the candidate
+DD_TRIES = 3       # an uncontested ring village launched this often (two Annex attempts failed: resistance) stops
+                   # holding the other Annex targets (Fremen: off-ring villages are pillaged while the ring is open)
+ANNEX_FLOOR = 0.1   # a positive score never drops below this (vanilla pickWeight draws by score)
+ASCORE_T = 30       # s: `ascore` log throttle per faction
 PRESS_W = 10       # Annex score x this for the pressed village (vanilla picks at random among the top scores)
 GAUGE_FIRE = 100   # = data AI_Gauge_GoalValue: a military gauge fires at this value (failures x0.85 sink it)
+RECOVER_IN = 0.5   # director RECOVER: more than this share of our army power is worn (life < RAID_LIFE or short of
+                   # supply for the way home): nothing new (no press, no raid launch), heal and gather (policy §5b #2)
+RECOVER_OUT = 0.35  # ... and it ends only below this share (hysteresis: healing armies cross the line one by one)
+RECOVER_POST = 6   # posture index of RECOVER in rules/strat.py POSTURES (read by raid through map `spost`)
 STRAT_LOG = 60     # s: a `strat` row per faction at least this often, and on every posture / target change
 CANCEL = 2      # ent.ActionEndReason: Success Fail Cancel Override
 REGROUP = 3        # AIOrder.phase: Paused Waiting Preparation Regroup Engage Action Retreat

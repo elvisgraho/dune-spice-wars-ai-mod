@@ -27,7 +27,7 @@ reach, war = [{f, ds (desiredStatus toward it), pw (its army power)}] per at-war
 dropped press (why done | gone | truce | slow | weak). Fails safe: in a trap."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
 
-POSTURES = ('', 'defend', 'hold', 'press', 'expand', 'harass')
+POSTURES = ('', 'defend', 'hold', 'press', 'expand', 'harass', 'recover')  # index RECOVER_POST = recover
 
 
 def build_fpow(cx, pw):
@@ -67,7 +67,7 @@ def _has_action(fb, b, cx, s, fac, name, yes, no):
     fb.op('JAlways', offset=yes)
 
 
-def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, defend, militia, home):
+def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, defend, militia, home, short):
     """aimod_strat(mil, dt) (see module doc)."""
     fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
     b = B(fb)
@@ -129,10 +129,18 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     # ---- picture: spare power (free for an offensive, minus the home need) and our total
     fb.op('Mov', dst=S, src=zero)
     fb.op('Mov', dst=T, src=zero)
+    W = fb.reg(cx.t('f64'))  # worn power: life < RAID_LIFE or short of supply for the way home (RECOVER)
+    fb.op('Mov', dst=W, src=zero)
     y = _army_loop(fb, b, my_armies, mlen, j, 'sp', 'spdone')
     fb.op('JNotNull', reg=b.field(y, 'harvestComponent'), offset='sp')
     fb.op('Call1', dst=p, fun=pw, arg0=y)
     fb.op('Add', dst=T, a=T, b=p)
+    fb.op('JSLt', a=b.call('ent.Entity.get_lifeRatio', y), b=_ratio(fb, b, RAID_LIFE), offset='worn')
+    fb.op('Call2', dst=ok, fun=short, arg0=fac, arg1=y)
+    fb.op('JFalse', cond=ok, offset='notworn')
+    fb.label('worn')
+    fb.op('Add', dst=W, a=W, b=p)
+    fb.label('notworn')
     fb.op('JTrue', cond=b.call('ent.Entity.isFighting', y), offset='sp')
     fb.op('Call2', dst=ok, fun=raidable, arg0=y, arg1=orders)
     fb.op('JFalse', cond=ok, offset='sp')
@@ -230,6 +238,18 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
 
     # find: the nearest soft enemy village on the front, with spare force only (2 hold: none)
     fb.label('find')
+    # 2 recover: most of our power is worn (hysteresis: leave only below RECOVER_OUT)
+    fb.op('Mov', dst=post, src=b.const('i32', RECOVER_POST))
+    rthr = _ratio(fb, b, RECOVER_IN)
+    lastp = b.call('haxe.ds.ObjectMap.get', spost, fb.dyn(fac))
+    fb.op('JNull', reg=lastp, offset='rthr')
+    lpost = fb.reg(cx.t('i32'))
+    fb.op('SafeCast', dst=lpost, src=lastp)
+    fb.op('JNotEq', a=lpost, b=b.const('i32', RECOVER_POST), offset='rthr')
+    fb.op('Mov', dst=rthr, src=_ratio(fb, b, RECOVER_OUT))
+    fb.label('rthr')
+    fb.op('Mul', dst=q, a=T, b=rthr)
+    fb.op('JSGt', a=W, b=q, offset='nopress')
     fb.op('Mov', dst=post, src=b.const('i32', 2))
     fb.op('JSLte', a=S, b=zero, offset='nopress')
     fb.op('Mov', dst=post, src=b.const('i32', 3))
@@ -314,6 +334,13 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('Bool', dst=annex, value=True)
     fb.op('JAlways', offset='setpress')
     fb.label('trypil')
+    # never pillage a village on an uncontested deep-desert ring we are closing (aimod_ddclean: Devastated = no Annex)
+    pz = b.call('ent.Entity.get_zone', ve)
+    fb.op('JNull', reg=pz, offset='pring')
+    prc = fb.reg(cx.t('bool'))
+    fb.op('Call2', dst=prc, fun=helpers['ddclean'], arg0=fac, arg1=pz)
+    fb.op('JTrue', cond=prc, offset='nomode')
+    fb.label('pring')
     _has_action(fb, b, cx, best, fac, 'Pillage', 'setpress', 'nomode')
     fb.label('nomode')
     b.call('haxe.ds.ObjectMap.set', sfail, fb.dyn(ve), fb.dyn(t))  # can't act on it: look elsewhere next scan
@@ -350,12 +377,13 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('DynSet', obj=g, field=cx.s('value'), src=fire)
     fb.op('JAlways', offset='log')
 
-    # 1 defend / 2 hold / 4 expand / 5 harass: no press
+    # 1 defend / 2 hold / 6 recover / 4 expand / 5 harass: no press
     fb.label('nopress')
     fb.op('JNull', reg=b.call('haxe.ds.ObjectMap.get', spv, fb.dyn(fac)), offset='noclear')
     clear_press()  # defend ends a press (its siege runs on under vanilla and the fight retreat)
     fb.label('noclear')
     fb.op('JSLte', a=post, b=b.const('i32', 2), offset='log')
+    fb.op('JEq', a=post, b=b.const('i32', RECOVER_POST), offset='log')
     # expand if vanilla has neutral Annex candidates, else harass
     aargs = b.call('$HAI.getDefaultStructureArgs', fb.string('Annex'))
     fb.op('SetField', obj=aargs, field=cx.field(fb.regs[aargs], 'allowEnemy'), src=t_false)

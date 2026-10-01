@@ -218,6 +218,7 @@ def build_aware(cx, helpers):
     fb.op('JNull', reg=z, offset='nozone')
     b.put(e, 'zo', fb.get(z, 'owner', 'kind'))
     b.put(e, 'worm', b.call('ent.Zone.getCurrentWormActivity', z))
+    b.put(e, 'wt', b.call('ent.Unit.isWormTarget', a))  # a worm has targeted it
     fb.label('nozone')
     order = b.field(a, 'aiOrder')
     fb.op('JNull', reg=order, offset='noorder')

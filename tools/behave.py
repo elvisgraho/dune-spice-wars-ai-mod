@@ -1,5 +1,5 @@
 """AI rules built on the enemy army awareness scan (testbed patch `aware-ai`, installed with `ai-log`): wiring only.
-The code lives in tools/rules/: common (thresholds, bytecode helpers), world (shared queries), heal, hunt, siege, raid, strat, strand, memory, deploy.
+The code lives in tools/rules/: common (thresholds, bytecode helpers), world (shared queries), heal, hunt, siege, raid, strat, strand, memory, deploy, peace.
 Thresholds and rationale: docs/AI-POLICY.md §4; mechanics and hook points: docs/REVERSING.md "AI rules".
 
 Shared queries (appended functions): aimod_pw, aimod_threat(fac, p, r) (at-war power + neutral raiders targeting fac
@@ -31,6 +31,12 @@ from rules.strat import *  # noqa: F401,F403
 from rules.strand import *  # noqa: F401,F403
 from rules.memory import *  # noqa: F401,F403
 from rules.deploy import *  # noqa: F401,F403
+from rules.peace import *  # noqa: F401,F403
+from rules.worm import *  # noqa: F401,F403
+from rules.desert import *  # noqa: F401,F403
+from rules.gather import *  # noqa: F401,F403
+from rules.rally import *  # noqa: F401,F403
+from rules.spos import *  # noqa: F401,F403
 
 
 def install(cx, helpers, new_ids):
@@ -60,6 +66,9 @@ def install(cx, helpers, new_ids):
     new_ids.add(mission)
     report.update(build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land))
     report.update(busy)
+    helpers['ddclean'] = build_ddclean(cx)  # Fremen ring test: raid / pillage-press exclusion
+    helpers['ddhold'] = build_ddclean(cx, strict=True)  # ... strict: Annex hold, launch-gate tries
+    new_ids.update({helpers['ddclean'], helpers['ddhold']})
     spacing = build_spacing(cx, helpers, defend)
     new_ids.add(spacing)
     report['annex-spacing'] = 1
@@ -67,33 +76,52 @@ def install(cx, helpers, new_ids):
     new_ids.add(threat_stats)
     report.update(build_turret_stats(cx, cover, silence, threat_stats, new_ids))
     report['discovery-gate'] = build_discovery(cx, helpers, threat, pw, terrain, new_ids)
+    threat_far = build_threat(cx, pw, DISC_HORIZON)
+    discabort = build_disc_abort(cx, helpers, pw, threat_far, terrain)
     militia = build_militia(cx)
     report.update(build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, new_ids))
     report.update(build_scoring(cx, new_ids, helpers))
     hthreat = build_threat(cx, pw, prey=True)
-    hunt = build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieged, cover, defend, neutral)
+    react = build_threat(cx, pw, reach=REACT_R)
+    hunt = build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieged, cover, defend, neutral,
+                      react)
     raidable = build_free(cx, pw, RAID_LIFE, 0, resupply_ok=True)
     raidsup = build_raidsup(cx)
-    react = build_threat(cx, pw, reach=REACT_R)
     home = build_home(cx, pw, land)
     homeown = build_home(cx, pw, land, own=True)
     raid = build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, defend, militia, threat, free,
                       home, homeown, helpers['scores'])
     fpow = build_fpow(cx, pw)
-    strat = build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, defend, militia, home)
+    strat = build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, defend, militia, home,
+                        short)
     report.update(strat_levers(cx, new_ids))
+    report.update(build_peace_gate(cx, helpers, defend, new_ids))
     sengage = build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain)
     idle = build_free(cx, pw, 0, 0, patrol_ok=False)
+    helpers['wormheld'] = build_wormheld(cx)  # worm-flee hold: out of vanilla's Resupply / mission picks
+    new_ids.add(helpers['wormheld'])
+    report.update(pick_life(cx, helpers, idle, new_ids))
+    report.update(no_regen_heal(cx, helpers, new_ids))
     strand = build_strand(cx, helpers, idle, unsafe)
     undeploy = build_undeploy(cx, helpers)
     report.update(build_ability_gate(cx, new_ids))
     danger = build_danger(cx)
-    memory = build_memory(cx, helpers)
+    memory = build_memory(cx, helpers, danger, threat, own)
     report.update(harvest_fields(cx, danger, helpers, new_ids))
-    tick = build_chain(cx, [memory, strat, hunt, raid, sengage, undeploy, strand])
-    new_ids.update({hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, idle, strand, undeploy, danger,
+    report.update(harvest_flee(cx, danger, threat, helpers, new_ids))
+    wormflee = build_worm_flee(cx, helpers)
+    dstep = build_desert_step(cx, helpers)
+    gather = build_gather(cx, helpers)
+    rally = build_rally(cx, helpers, pw, react, threat, terrain, cover, mission)
+    spos = build_spos(cx, helpers, cover)
+    report.update(gather_busy(cx, new_ids))
+    tick = build_chain(cx, [memory, wormflee, strat, hunt, raid, rally, sengage, gather, spos, dstep, discabort, undeploy, strand])
+    new_ids.update({hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, gather, rally, spos,
                     memory, tick})
     report['strand'] = 1
+    report['worm-flee'] = 1
+    report['desert-step'] = 1
+    report.update(log_worm_kill(cx, helpers, new_ids))
     report['undeploy'] = 1
     report['raid'] = 1
     report['strat'] = 1

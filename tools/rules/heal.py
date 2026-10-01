@@ -45,7 +45,8 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     stalls in Regroup while micro keeps attacking). Original value on any error.
     Vanilla returns exactly 1.0 when the warzone holds no enemy power (HPowerScore.compute), e.g. only a neutral
     unit or a structure left: that value passes unchanged (x terrain x supply made it 0.64 and a winning stack left
-    an enemy village it could pillage).
+    an enemy village it could pillage), except disengage: one of our armies there has a Resupply order and none a
+    Military one -> 0 (log act `disengage`).
     Recall: when every one of our armies in the warzone is `short` and none is in a Military order (its hunt / siege
     ended, e.g. hunt abort `supply` -> Resupply), the balance is 0: vanilla force-flees them home. Otherwise micro keeps
     attacking whatever is in reach, and a winning stack pursues a fleeing enemy deep into its land (Atreides chased
@@ -66,7 +67,7 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     fb.op('Mov', dst=raw, src=bal)
     sf = b.const('f64', 1)
     guard = fb.try_()
-    fb.op('JEq', a=raw, b=b.const('f64', 1), offset='end')  # no enemy power in the warzone
+    fb.op('JEq', a=raw, b=b.const('f64', 1), offset='nopow')  # no enemy power in the warzone
     fb.op('JNull', reg=0, offset='end')
     c = b.call('logic.state.Warzone.get_centroid', 0)
     fb.op('JNull', reg=c, offset='end')
@@ -239,8 +240,55 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     _log_ev(fb, b, cx, helpers, 'retreat', [('f', fb.get(1, 'kind')), ('act', act), ('raw%', raw), ('tf%', t),
                                             ('sf%', sf), ('adj%', bal), ('dm', dm), ('en', en), ('x', cxp),
                                             ('y', cyp)])
+    fb.op('JAlways', offset='end')
+    # disengage: nothing with power left to fight (a harvester, an empty structure) and one of our armies there has
+    # a Resupply order, none a Military one: balance 0 so vanilla pulls them out. Else micro keeps them shooting the
+    # target while the order walks them home: Atreides off their aborted hunt kept attacking the F_Harvester at
+    # balance 1.0 for 60 s (stop / go, supply falling, Fremen closing in)
+    fb.label('nopow')
+    nc = b.call('logic.state.Warzone.get_centroid', 0)
+    fb.op('JNull', reg=nc, offset='end')
+    ncx, ncy = b.field(nc, 'x'), b.field(nc, 'y')
+    ex, ey = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    rsp = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=rsp, value=False)
+    oix = fb.reg(cx.t('i32'))
+    arr5, alen5 = _my_armies(fb, b, 1, 'end')
+    i5 = fb.reg(cx.t('i32'))
+    a5 = _army_loop(fb, b, arr5, alen5, i5, 'npl', 'npdone')
+    fb.op('Sub', dst=ex, a=b.field(a5, 'posx'), b=ncx)
+    fb.op('Sub', dst=ey, a=b.field(a5, 'posy'), b=ncy)
+    fb.op('Mul', dst=ex, a=ex, b=ex)
+    fb.op('Mul', dst=ey, a=ey, b=ey)
+    fb.op('Add', dst=ex, a=ex, b=ey)
+    fb.op('JSGt', a=ex, b=b.const('f64', FLEE_R * FLEE_R), offset='npl')
+    fb.op('Call2', dst=ok, fun=mission, arg0=1, arg1=a5)
+    fb.op('JTrue', cond=ok, offset='end')  # a hunt / siege / raid there: its own rules decide
+    o5 = b.field(a5, 'aiOrder')
+    fb.op('JNull', reg=o5, offset='npl')
+    fb.op('EnumIndex', dst=oix, value=b.field(o5, 'type'))
+    fb.op('JNotEq', a=oix, b=b.const('i32', RESUPPLY), offset='npl')
+    fb.op('Bool', dst=rsp, value=True)
+    fb.op('JAlways', offset='npl')
+    fb.label('npdone')
+    fb.op('JFalse', cond=rsp, offset='end')
+    fb.op('Mov', dst=bal, src=b.const('f64', 0))
+    _throttle(fb, b, cx, 'retreat', 0, 5, 'end')
+    _log_ev(fb, b, cx, helpers, 'retreat', [('f', fb.get(1, 'kind')), ('act', 'disengage'), ('raw%', raw),
+                                            ('adj%', bal), ('x', ncx), ('y', ncy)])
     fb.label('end')
     fb.end_try(guard)
+    # diagnostic `wzb`: every fight's balance once per WZB_T s per warzone (raw = vanilla, adj = what vanilla
+    # compares with RETREAT): explains fights that never retreat (a lone army dying to village militia)
+    g2 = fb.try_()
+    fb.op('JNull', reg=0, offset='wz_end')
+    _throttle(fb, b, cx, 'wzb', 0, WZB_T, 'wz_end')
+    c2 = b.call('logic.state.Warzone.get_centroid', 0)
+    fb.op('JNull', reg=c2, offset='wz_end')
+    _log_ev(fb, b, cx, helpers, 'wzb', [('f', fb.get(1, 'kind')), ('raw%', raw), ('adj%', bal),
+                                        ('x', fb.get(c2, 'x')), ('y', fb.get(c2, 'y'))])
+    fb.label('wz_end')
+    fb.end_try(g2)
     fb.op('Ret', ret=bal)
     w = fb.build()
     new_ids.add(w)
@@ -255,7 +303,8 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
 
 def build_unsafe(cx, threat, own, pw, terrain):
     """aimod_unsafe(s, self, sticky) -> 0 safe, 1 contested: threat(owner, s) > own(owner, s, without self) *
-    (sticky ? STICKY : 1), 2 overwhelming: threat > (own + power of self) * OVERWHELM."""
+    (sticky ? STICKY : 1), 2 overwhelming: threat > (own + power of self) * OVERWHELM, or within RALLY_MIN of the
+    owner's running rally's danger structure (map `rly`, `rlyt` within RALLY_HOLD: no heal / flee trip next to it)."""
     fb = FB(cx, [cx.t('ent.Structure'), cx.t('ent.Army'), cx.t('bool')], cx.t('i32'))
     b = B(fb)
     res = fb.reg(cx.t('i32'))
@@ -265,6 +314,20 @@ def build_unsafe(cx, threat, own, pw, terrain):
     fb.op('JNull', reg=owner, offset='end')
     s = fb.reg(cx.t('ent.Entity'))
     fb.op('Mov', dst=s, src=0)
+    # rally running: structures next to the danger are off limits
+    rd = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rly'), fb.dyn(owner))
+    fb.op('JNull', reg=rd, offset='norly')
+    rq = fb.reg(cx.t('f64'))
+    rt = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rlyt'), fb.dyn(owner))
+    fb.op('JNull', reg=rt, offset='norly')
+    fb.op('SafeCast', dst=rq, src=rt)
+    fb.op('Sub', dst=rq, a=b.field(_state(fb, b, cx), 'time'), b=rq)
+    fb.op('JSGt', a=rq, b=b.const('f64', RALLY_HOLD), offset='norly')
+    re_ = b.cast(rd, 'ent.Entity')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', s, re_), b=b.const('f64', RALLY_MIN), offset='norly')
+    fb.op('Int', dst=res, ptr=cx.code.add_i32(2).value)
+    fb.op('JAlways', offset='end')
+    fb.label('norly')
     rng = b.const('f64', SAFE_R)
     h, m = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     fb.op('Call3', dst=h, fun=threat, arg0=owner, arg1=s, arg2=rng)
@@ -396,3 +459,220 @@ def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
             new_ids.add(w)
         report[f'safe-heal:{caller.split(".")[-1]}'] = len(refs)
     return report
+
+
+def pick_life(cx, helpers, idle, new_ids):
+    """pick-life: worn armies heal instead of joining missions. Vanilla getUnits applies minLife (0.9) only to armies
+    with hasSafeRegen, so a Harkonnen Discovery_Sniper at < 50% that sat in a Resupply order at Tsim-Al'rekh was
+    pulled (AIOrder.removeUnit) into a Defense of Talwaz against 2 rebels and died; 25% armies went on Annex /
+    Pillage. The getUnits calls of the mission callers (tryArmyAction: sieges, checkStructures: Defense,
+    checkWorldEvents: Discovery; not checkUnits = the Resupply query) are wrapped: armies with life ratio < PICK_LIFE
+    are removed from the result, unless already fighting (isFighting: at the spot, a Defense coordinates it).
+    Worn temporary units (no safe regen: they never heal, and disband soon) still defend our structures, as extras:
+    at the main base (Defense query priority >= 10: vanilla sends every idle army) they stay in the list; elsewhere
+    the checkStructures pickUnits call is wrapped and, once vanilla's pick of healthy armies is non-empty, idle
+    (`idle`: in no order) no-regen armies under PICK_LIFE within JOIN_R of the structure are appended (logged
+    `lowpick` src=extra). They are never counted toward the required power.
+    Logs `lowpick` (a, hp%, src) once per army per PICK_LOG_T s. Original result on any error."""
+    gu = cx.fn('logic.ai.AIUnits.getUnits')
+    ftypes = {f.findex.value: f.type.value for f in cx.code.functions}
+    ft = cx.code.types[gu.type.value].definition
+    n = 0
+    wrappers = {}
+    for caller, want, tag in (('logic.ai.AIMilitary.tryArmyAction', 1, 'siege'),
+                              ('logic.ai.AIMilitary.checkStructures', 1, 'defense'),
+                              ('logic.ai.AIController.checkWorldEvents', 2, 'discovery')):
+        sites = [op for op in cx.fn(caller).ops if op.op.startswith('Call') and op.df.get('fun') is not None
+                 and ftypes.get(op.df['fun'].value) == gu.type.value]
+        if len(sites) != want:
+            raise ValueError(f'pick-life: expected {want} getUnits calls in {caller}, found {len(sites)}')
+        for op in sites:
+            key = (op.df['fun'].value, tag)
+            if key not in wrappers:
+                wrappers[key] = _pick_life_wrapper(cx, helpers, ft, gu.type.value, op.df['fun'].value, tag)
+                new_ids.add(wrappers[key])
+            op.df['fun'].value = wrappers[key]
+            n += 1
+    n += _defense_extras(cx, helpers, idle, new_ids)
+    return {'pick-life': n}
+
+
+def _defense_extras(cx, helpers, idle, new_ids):
+    pk = cx.fn('logic.ai.AIUnits.pickUnits')
+    ftypes = {f.findex.value: f.type.value for f in cx.code.functions}
+    sites = [op for op in cx.fn('logic.ai.AIMilitary.checkStructures').ops if op.op.startswith('Call')
+             and op.df.get('fun') is not None and ftypes.get(op.df['fun'].value) == pk.type.value]
+    if len(sites) != 1:
+        raise ValueError(f'pick-life: expected 1 pickUnits call in checkStructures, found {len(sites)}')
+    from rules.siege import _vfield
+    ft = cx.code.types[pk.type.value].definition
+    fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=pk.type.value)
+    b = B(fb)
+    res = fb.reg(ft.ret.value)
+    fb.op('Call2', dst=res, fun=sites[0].df['fun'].value, arg0=0, arg1=1)
+    guard = fb.try_()
+    fb.op('JNull', reg=res, offset='end')
+    fb.op('JSLte', a=b.field(res, 'length'), b=b.const('i32', 0), offset='end')
+    al, _ = _vfield(fb, b, 1, 'allyStructure')
+    fb.op('JNull', reg=al, offset='end')
+    s = fb.reg(cx.t('ent.Entity'))
+    fb.op('SafeCast', dst=s, src=fb.dyn(al))
+    ctrl = b.field(0, 'controller')
+    fac = b.field(ctrl, 'owner')
+    fb.op('JNull', reg=fac, offset='end')
+    orders = b.field(b.field(ctrl, 'aiOrders'), 'orders')
+    my_armies, mlen = _my_armies(fb, b, fac, 'end')
+    i = fb.reg(cx.t('i32'))
+    ok = fb.reg(cx.t('bool'))
+    floor, r = _ratio(fb, b, PICK_LIFE), b.const('f64', JOIN_R)
+    lr = fb.reg(cx.t('f64'))
+    a = _army_loop(fb, b, my_armies, mlen, i, 'l', 'end')
+    fb.op('JTrue', cond=b.call('ent.Unit.hasSafeRegen', a), offset='l')
+    fb.op('Mov', dst=lr, src=b.call('ent.Entity.get_lifeRatio', a))
+    fb.op('JSGte', a=lr, b=floor, offset='l')
+    fb.op('JTrue', cond=b.call('hl.types.ArrayObj.contains', res, fb.dyn(a)), offset='l')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', a, s), b=r, offset='l')
+    fb.op('Call2', dst=ok, fun=idle, arg0=a, arg1=orders)
+    fb.op('JFalse', cond=ok, offset='l')
+    b.call('hl.types.ArrayObj.push', res, fb.dyn(a))
+    _log_ev(fb, b, cx, helpers, 'lowpick', [('f', fb.get(fac, 'kind')), ('a', a), ('hp%', lr), ('src', 'extra')])
+    fb.op('JAlways', offset='l')
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    sites[0].df['fun'].value = w
+    new_ids.add(w)
+    return 1
+
+
+def _pick_life_wrapper(cx, helpers, ft, fun_type, inner, tag):
+    fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=fun_type)
+    b = B(fb)
+    res = fb.reg(ft.ret.value)
+    fb.op('Call2', dst=res, fun=inner, arg0=0, arg1=1)
+    guard = fb.try_()
+    fb.op('JNull', reg=res, offset='end')
+    i = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=i, src=b.field(res, 'length'))
+    zi, one = b.const('i32', 0), b.const('i32', 1)
+    floor = _ratio(fb, b, PICK_LIFE)
+    lr = fb.reg(cx.t('f64'))
+    if tag == 'defense':
+        from rules.siege import _vfield
+        prio = fb.reg(cx.t('i32'))
+        fb.op('Mov', dst=prio, src=zi)
+        pv, _ = _vfield(fb, b, 1, 'priority')
+        if fb.regs[pv] == cx.t('i32'):
+            fb.op('Mov', dst=prio, src=pv)
+        else:  # Null<Int>
+            fb.op('JNull', reg=pv, offset='pdone')
+            fb.op('SafeCast', dst=prio, src=fb.dyn(pv))
+            fb.label('pdone')
+    b.loop_head('l')  # backwards: removal shifts the tail
+    fb.op('JSLte', a=i, b=zi, offset='end')
+    fb.op('Sub', dst=i, a=i, b=one)
+    a = b.cast(b.call('hl.types.ArrayObj.getDyn', res, i), 'ent.Army')
+    fb.op('JNull', reg=a, offset='l')
+    whr = fb.reg(cx.t('bool'))
+    fb.op('Call1', dst=whr, fun=helpers['wormheld'], arg0=a)
+    fb.op('JFalse', cond=whr, offset='nwh')
+    b.call('hl.types.ArrayObj.remove', res, fb.dyn(a))  # waits on the rock while the worm is near (worm.py)
+    _throttle(fb, b, cx, 'whold', a, 10, 'l')
+    _log_ev(fb, b, cx, helpers, 'whold', [('f', fb.get(b.call('ent.Entity.get_owner', a), 'kind')), ('a', a),
+                                          ('src', tag)])
+    fb.op('JAlways', offset='l')
+    fb.label('nwh')
+    fb.op('Mov', dst=lr, src=b.call('ent.Entity.get_lifeRatio', a))
+    fb.op('JSGte', a=lr, b=floor, offset='l')
+    fb.op('JTrue', cond=b.call('ent.Entity.isFighting', a), offset='l')
+    if tag == 'defense':  # main base defense (priority >= 10) takes every idle army: worn temporary units too
+        fb.op('JTrue', cond=b.call('ent.Unit.hasSafeRegen', a), offset='rm')
+        fb.op('JSGte', a=prio, b=b.const('i32', 10), offset='l')
+        fb.label('rm')
+    b.call('hl.types.ArrayObj.remove', res, fb.dyn(a))
+    _throttle(fb, b, cx, 'lowpick', a, PICK_LOG_T, 'l')
+    _log_ev(fb, b, cx, helpers, 'lowpick', [('f', fb.get(b.call('ent.Entity.get_owner', a), 'kind')), ('a', a),
+                                            ('hp%', lr), ('src', tag)])
+    fb.op('JAlways', offset='l')
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=res)
+    return fb.build()
+
+
+def no_regen_heal(cx, helpers, new_ids):
+    """no-regen-heal: vanilla checkUnits orders Resupply(1,1) for any army with life < valueCache[1063] (0.9), but
+    the order's termination test (closure f40841) checks life only when `hasSafeRegen()` (attribute
+    SafeRegen_MRatio > 0, no NoSafeRegen): temporary units (Discovery_* recruits: Temporary_Trait, Scavenged
+    ornithopters, NoHealthRegen, H_Sting) never recover life, so with full supply the order ends Success in phase 1
+    and is re-issued every tick (Harkonnen Discovery_Sniper < 50% cycling Tsim-Al'rekh / Carthag / Burron every
+    ~0.5 s and never moving). The checkUnits getUnits call that feeds the Resupply loop (the second one; the first is
+    the upkeep disband) is wrapped: armies without safe regen whose supply needs nothing (no supply, or supply >=
+    valueCache[1062]) are removed from the result; one that needs supply still gets its Resupply (it ends once
+    refilled). Logs `noregen` (a, hp%) once per army per PICK_LOG_T s. Original result on any error."""
+    gu = cx.fn('logic.ai.AIUnits.getUnits')
+    ftypes = {f.findex.value: f.type.value for f in cx.code.functions}
+    ft = cx.code.types[gu.type.value].definition
+    sites = [op for op in cx.fn('logic.ai.AIUnits.checkUnits').ops if op.op.startswith('Call')
+             and op.df.get('fun') is not None and ftypes.get(op.df['fun'].value) == gu.type.value]
+    if len(sites) != 2:
+        raise ValueError(f'no-regen-heal: expected 2 getUnits calls in checkUnits, found {len(sites)}')
+    site = sites[1]
+    fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=gu.type.value)
+    b = B(fb)
+    res = fb.reg(ft.ret.value)
+    fb.op('Call2', dst=res, fun=site.df['fun'].value, arg0=0, arg1=1)
+    guard = fb.try_()
+    fb.op('JNull', reg=res, offset='end')
+    # supply trigger valueCache[1062] (0.9 if unreadable)
+    sup_t = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=sup_t, src=_ratio(fb, b, 0.9))
+    c = fb.reg(cx.t('$Const'))
+    fb.op('GetGlobal', dst=c, **{'global': cx.global_of('$Const')})
+    vc = b.cast(b.field(c, 'valueCache'), 'hl.types.ArrayBytes_Float')
+    fb.op('JNull', reg=vc, offset='vc_done')
+    v = b.call('hl.types.ArrayBytes_Float.getDyn', vc, b.const('i32', 1062))
+    fb.op('JNull', reg=v, offset='vc_done')
+    fb.op('SafeCast', dst=sup_t, src=v)
+    fb.label('vc_done')
+    i = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=i, src=b.field(res, 'length'))
+    zi, one = b.const('i32', 0), b.const('i32', 1)
+    full = _ratio(fb, b, 1)
+    sr = fb.reg(cx.t('f64'))
+    b.loop_head('l')
+    fb.op('JSLte', a=i, b=zi, offset='end')
+    fb.op('Sub', dst=i, a=i, b=one)
+    a = b.cast(b.call('hl.types.ArrayObj.getDyn', res, i), 'ent.Army')
+    fb.op('JNull', reg=a, offset='l')
+    whr = fb.reg(cx.t('bool'))
+    fb.op('Call1', dst=whr, fun=helpers['wormheld'], arg0=a)
+    fb.op('JFalse', cond=whr, offset='nwh')
+    b.call('hl.types.ArrayObj.remove', res, fb.dyn(a))  # waits on the rock while the worm is near (worm.py)
+    _throttle(fb, b, cx, 'whold', a, 10, 'l')
+    _log_ev(fb, b, cx, helpers, 'whold', [('f', fb.get(b.call('ent.Entity.get_owner', a), 'kind')), ('a', a),
+                                          ('src', 'resupply')])
+    fb.op('JAlways', offset='l')
+    fb.label('nwh')
+    fb.op('JTrue', cond=b.call('ent.Unit.hasSafeRegen', a), offset='l')
+    lr = b.call('ent.Entity.get_lifeRatio', a)
+    fb.op('JSGte', a=lr, b=full, offset='l')
+    fb.op('JFalse', cond=b.call('ent.Army.hasSupply', a), offset='drop')
+    ms = b.call('ent.Army.get_maxSupply', a)
+    fb.op('JSLte', a=ms, b=b.const('f64', 0), offset='drop')
+    fb.op('SDiv', dst=sr, a=b.call('ent.Army.get_supply', a), b=ms)
+    fb.op('JSLt', a=sr, b=sup_t, offset='l')  # needs supply: vanilla's Resupply refills it and ends
+    fb.label('drop')
+    b.call('hl.types.ArrayObj.remove', res, fb.dyn(a))
+    _throttle(fb, b, cx, 'noregen', a, PICK_LOG_T, 'l')
+    _log_ev(fb, b, cx, helpers, 'noregen', [('f', fb.get(b.call('ent.Entity.get_owner', a), 'kind')), ('a', a),
+                                            ('hp%', lr)])
+    fb.op('JAlways', offset='l')
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    site.df['fun'].value = w
+    new_ids.add(w)
+    return {'no-regen-heal': 1}

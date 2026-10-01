@@ -18,7 +18,7 @@ ai-mod\mod.cmd launch          # or start normally
 
 | Change | How |
 |---|---|
-| AI decision logging to `game.log` (`ai-log`) + AI rules (`aware-ai`: hunt, safe-heal, retreat-terrain, annex-spacing, turret/third-party sizing, discovery-gate, siege-join, siege-engage, raid, strat (director), strand, undeploy, ability-gate, memory, busy-siege) | appended functions + redirected calls, both boot files |
+| AI decision logging to `game.log` (`ai-log`) + AI rules (`aware-ai`: hunt, safe-heal, retreat-terrain, annex-spacing, turret/third-party sizing, discovery-gate, siege-join, siege-engage, raid, strat (director), strand, undeploy, ability-gate, memory, peace-gate, busy-siege, worm-flee, worm kill log, pick-life, no-regen-heal, desert-step, gather, Fremen ring hold, worm hold, harvester run, hunt awareness, rally, siege position, main-base guns, discovery relaunch, raid gauge) | appended functions + redirected calls, both boot files |
 | Dev console + admin hotkeys always on | 1 byte in `Main.initPrefs`, both boot files (`admin-always-on`) |
 | Skirmish factions limited to `factions` | data: `gameMode.Default.props.playableFactions` (also limits the normal Skirmish lobby) |
 | Map `AllFactions` resized to `mapCells` (vanilla 200; 130 ≈ Medium, for faster contact) | data: `mapType.AllFactions.props.numCells` |

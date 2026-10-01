@@ -11,6 +11,7 @@ Storage: added global 'mem' ObjectMap faction -> ObjectMap(zone -> last event ti
 load the faction has forgotten, never misremembers). Extend with new event kinds (own maps or weights, own decay) and
 new consumers reading aimod_danger; keep one query so every rule sees the same memory."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
+from rules.worm import _move_to, _do_on
 
 
 def _faction_mem(fb, b, cx, fac, create, miss):
@@ -60,9 +61,15 @@ def build_danger(cx):
     return fb.build()
 
 
-def build_memory(cx, helpers):
+def build_memory(cx, helpers, danger, threat, own):
     """aimod_memory(mil, dt), every START s, first in the tick chain: record danger events for this faction (our
-    harvesters fighting). Logs `mem` (k harvester, a unit) per recorded event. In a trap: nothing on error."""
+    harvesters fighting). Logs `mem` (k harvester, a unit) per recorded event.
+    Harvester run: a fighting harvester with hostile power within CONTACT above our own there (the escort can't hold)
+    is sent away at once, at most every HRUN_T s: doAction("MoveAndDeploy", EEntity(field)) to the nearest usable
+    spice field (controller.usableSpiceFields) outside its zone with no danger memory and no hostile power within
+    LOCAL, else Move to our main base. Vanilla's team re-route (harvest-flee) only moves it when another free field
+    beats its own penalised one: the Fremen F_Harvester at (767,826) stayed deployed under 7 Atreides armies, hp
+    100 -> 16 in 40 s, with no `hflee`. Logs `hrun` (a, s field or null, H, M, ok). In a trap: nothing on error."""
     fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
     b = B(fb)
     void = fb.reg(cx.t('void'))
@@ -81,11 +88,124 @@ def build_memory(cx, helpers):
     fb.op('JNull', reg=z, offset='army')
     b.call('haxe.ds.ObjectMap.set', mem, fb.dyn(z), fb.dyn(t))
     _log_ev(fb, b, cx, helpers, 'mem', [('f', fb.get(fac, 'kind')), ('k', 'harvester'), ('a', a)])
+    # outgunned under fire: run to a safe field now
+    ae = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=ae, src=a)
+    h, m, dd, bd, dg = (fb.reg(cx.t('f64')) for _ in range(5))
+    fb.op('Call3', dst=h, fun=threat, arg0=fac, arg1=ae, arg2=b.const('f64', CONTACT))
+    fb.op('JSLte', a=h, b=b.const('f64', 0), offset='army')
+    fb.op('Call4', dst=m, fun=own, arg0=fac, arg1=ae, arg2=b.const('f64', CONTACT), arg3=a)
+    fb.op('JSGte', a=m, b=h, offset='army')
+    _throttle(fb, b, cx, 'hrun', a, HRUN_T, 'army')
+    best = fb.reg(cx.t('ent.Entity'))
+    fb.op('Null', dst=best)
+    fb.op('Mov', dst=bd, src=b.const('f64', 1 << 30))
+    fields = b.field(b.field(0, 'controller'), 'usableSpiceFields')
+    fb.op('JNull', reg=fields, offset='fdone')
+    k = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=k, src=b.const('i32', 0))
+    fe = fb.reg(cx.t('ent.Entity'))
+    b.loop_head('fl')
+    fb.op('JSGte', a=k, b=b.field(fields, 'length'), offset='fdone')
+    fb.op('Mov', dst=fe, src=b.cast(b.call('hl.types.ArrayObj.getDyn', fields, k), 'ent.Structure'))
+    fb.op('Incr', dst=k)
+    fb.op('JNull', reg=fe, offset='fl')
+    fz = b.call('ent.Entity.get_zone', fe)
+    fb.op('JNull', reg=fz, offset='fl')
+    fb.op('JEq', a=fz, b=z, offset='fl')
+    fb.op('Call2', dst=dg, fun=danger, arg0=fac, arg1=fz)
+    fb.op('JSGt', a=dg, b=b.const('f64', 0), offset='fl')
+    fb.op('Mov', dst=dd, src=b.call('ent.Entity.getDistTo', ae, fe))
+    fb.op('JSGte', a=dd, b=bd, offset='fl')
+    # not a field another harvester's team entry holds
+    teams = b.field(b.field(0, 'controller'), 'harvestingTeams')
+    fb.op('JNull', reg=teams, offset='tfree')
+    k2 = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=k2, src=b.const('i32', 0))
+    b.loop_head('tm')
+    fb.op('JSGte', a=k2, b=b.field(teams, 'length'), offset='tfree')
+    te = b.call('hl.types.ArrayObj.getDyn', teams, k2)
+    fb.op('Incr', dst=k2)
+    fb.op('JNull', reg=te, offset='tm')
+    fb.op('JNotEq', a=fb.get(te, 'spice'), b=fb.dyn(fe), offset='tm')
+    fb.op('JEq', a=fb.get(te, 'unit'), b=fb.dyn(a), offset='tm')
+    fb.op('JAlways', offset='fl')  # taken
+    fb.label('tfree')
+    fb.op('Call3', dst=dg, fun=threat, arg0=fac, arg1=fe, arg2=b.const('f64', LOCAL))
+    fb.op('JSGt', a=dg, b=b.const('f64', 0), offset='fl')
+    fb.op('Mov', dst=bd, src=dd)
+    fb.op('Mov', dst=best, src=fe)
+    fb.op('JAlways', offset='fl')
+    fb.label('fdone')
+    okr = fb.reg(cx.t('bool'))
+    fb.op('JNull', reg=best, offset='home')
+    fb.op('Mov', dst=okr, src=_do_on(fb, b, cx, a, 'MoveAndDeploy', best, fac))
+    fb.op('JAlways', offset='rlog')
+    fb.label('home')
+    mb = b.call('ent.Faction.get_mainBase', fac)
+    fb.op('JNull', reg=mb, offset='army')
+    fb.op('Mov', dst=okr, src=_move_to(fb, b, cx, a, b.field(mb, 'posx'), b.field(mb, 'posy'), fac))
+    fb.label('rlog')
+    _log_ev(fb, b, cx, helpers, 'hrun', [('f', fb.get(fac, 'kind')), ('a', a), ('s', best), ('H', h), ('M', m),
+                                         ('ok', okr)])
     fb.op('JAlways', offset='army')
     fb.label('end')
     fb.end_try(guard)
     fb.op('Ret', ret=void)
     return fb.build()
+
+
+def harvest_flee(cx, danger, threat, helpers, new_ids):
+    """Attacked team harvesters move on. checkHarvestingTeams gives every harvester (deployed ones too) its nearest
+    free field by the danger-weighted key (harvest_fields), but issues breakFightWith + doAction("MoveAndDeploy")
+    only when unit.getActionDesc() is null, and a deployed harvester carries its harvesting action: a Fremen
+    F_Harvester shot by 2 S_Troopers at Haththah stayed deployed, hp 100 -> 75 in 30 s, while its team entry
+    already pointed at another field. The single getActionDesc call there is wrapped: null (= free to re-route)
+    for a harvester that is fighting, stands in a zone our memory marks as dangerous (aimod_danger > 0: so its own
+    field is penalised and the re-route goes elsewhere) and has hostile armies within CONTACT (aimod_threat), at
+    most once per HFLEE_T s per harvester (the pack-up takes time). Logs `hflee` (a, H, dg%). Original otherwise."""
+    fn = cx.fn('logic.ai.AIController.checkHarvestingTeams')
+    gad = cx.fn('ent.Entity.getActionDesc')
+    sites = [op for op in fn.ops if op.op.startswith('Call') and op.df.get('fun') is not None
+             and op.df['fun'].value == gad.findex.value]
+    if len(sites) != 1:
+        raise ValueError(f'harvest-flee: expected 1 getActionDesc call in checkHarvestingTeams, found {len(sites)}')
+    ft = cx.code.types[gad.type.value].definition
+    fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=gad.type.value)
+    b = B(fb)
+    res = fb.reg(ft.ret.value)
+    fb.op('Call1', dst=res, fun=gad.findex.value, arg0=0)  # original, outside any trap
+    guard = fb.try_()
+    fb.op('JNull', reg=res, offset='end')
+    fb.op('JNull', reg=0, offset='end')
+    fb.op('JNull', reg=fb.get(0, 'harvestComponent'), offset='end')
+    fb.op('JFalse', cond=b.call('ent.Entity.isFighting', 0), offset='end')
+    owner = b.call('ent.Entity.get_owner', 0)
+    fb.op('JNull', reg=owner, offset='end')
+    z = b.call('ent.Entity.get_zone', 0)
+    fb.op('JNull', reg=z, offset='end')
+    w, h = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Call2', dst=w, fun=danger, arg0=owner, arg1=z)
+    fb.op('JSLte', a=w, b=b.const('f64', 0), offset='end')
+    # a harvester our run just sent away keeps its course (the re-route could pick its own field again)
+    rv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'hrun'), fb.dyn(0))
+    fb.op('JNull', reg=rv, offset='norun')
+    fb.op('SafeCast', dst=h, src=rv)
+    fb.op('Sub', dst=h, a=b.field(_state(fb, b, cx), 'time'), b=h)
+    fb.op('JSLt', a=h, b=b.const('f64', HRUN_T), offset='end')
+    fb.label('norun')
+    fb.op('Call3', dst=h, fun=threat, arg0=owner, arg1=0, arg2=b.const('f64', CONTACT))
+    fb.op('JSLte', a=h, b=b.const('f64', 0), offset='end')
+    _throttle(fb, b, cx, 'hflee', 0, HFLEE_T, 'end')
+    fb.op('Null', dst=res)
+    _log_ev(fb, b, cx, helpers, 'hflee', [('f', fb.get(owner, 'kind')), ('a', 0), ('H', h), ('dg%', w)])
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=res)
+    wr = fb.build()
+    sites[0].df['fun'].value = wr
+    new_ids.add(wr)
+    return {'memory:harvest-flee': 1}
 
 
 def harvest_fields(cx, danger, helpers, new_ids):

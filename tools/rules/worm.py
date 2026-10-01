@@ -1,0 +1,311 @@
+"""Worm: an army a sandworm has targeted steps onto rock (reaction, no worm-risk model).
+
+Vanilla reacts only for ent.Harvester (`checkHarvesters` recalls one when `Unit.isWormTarget()`); armies (Fremen
+harvesters are armies too) keep fighting on the sand until eaten: 2 Smugglers S_Troopers at full health shooting a
+deployed F_Harvester near Haththah (zone worm activity 3) vanished together. `Sandworm.targetEntity` sets
+`Unit.targettedByWorm`; `updateTargeting` re-checks its target every update and drops one that is no longer
+`canBeWormTarget` (off sand, near a sietch), so reaching rock is the escape.
+
+Every WORM_T s per faction: each of our armies with `isWormTarget()` and `isOnSand()` (at most every WFLEE_T s per
+army): the AI order holding it is stopped (Cancel: a hunt / raid / siege would walk it back onto the sand), and it and
+the order's other armies on sand within WORM_NEAR of the worm each get `doAction("Move", {actionTarget:
+EWorldPosition})` to the nearest rock point (`World.isSandAt`, rings of WORM_STEP up to WORM_R, WORM_DIRS directions;
+none found: WORM_R straight away from the worm). Moved armies go into map `wfled`: aimod_free refuses them for
+WORM_HOLD s (no hunt / raid relaunch onto the same sand; a moved harvester's zone is stamped in the faction memory so vanilla's team re-route picks another
+field), and aimod_wormheld keeps them out of vanilla's Resupply and
+mission picks while a worm is within WORM_NEAR (at most WORM_HOLD s): vanilla re-issued the Atreides Resupply 0.5 s
+after every stop, back over the same sand, and the worm re-targeted them: stop / go every 3-4 s for 70 s, 20 moved.
+(AIOrder.removeUnit before Action cancels the whole order, so the stop itself is unavoidable; the others get a new
+Resupply at once.) Logs `wflee` per moved army (a, rock found, d to the point, w worm distance, ok). In a trap."""
+import math
+
+from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
+
+
+def _move_to(fb, b, cx, army, px, py, fac):
+    """army.doAction("Move", {actionTarget: EWorldPosition({x: px, y: py})}, fac) (vanilla checkHarvestingTeams'
+    call shape, with a point). Returns the bool result register."""
+    da = cx.fn('ent.Entity.doAction')
+    da_args = [a.value for a in cx.code.types[da.type.value].definition.args]
+    t_arg = da_args[2]
+    t_tgt = cx.code.types[t_arg].definition.fields[0].type.value
+    cons = cx.code.types[t_tgt].definition.constructs
+    wp = [c.name.resolve(cx.code) for c in cons].index('EWorldPosition')
+    t_pt = cons[wp].params[0].value
+    pt_fields = [f.name.resolve(cx.code) for f in cx.code.types[t_pt].definition.fields]
+    pt = fb.reg(t_pt)
+    fb.op('New', dst=pt)
+    fb.op('SetField', obj=pt, field=pt_fields.index('x'), src=px)
+    fb.op('SetField', obj=pt, field=pt_fields.index('y'), src=py)
+    tg = fb.reg(t_tgt)
+    fb.op('MakeEnum', dst=tg, construct=wp, args=[pt])
+    arg = fb.reg(t_arg)
+    fb.op('New', dst=arg)
+    fb.op('SetField', obj=arg, field=0, src=tg)
+    who = fb.reg(da_args[0])
+    fb.op('Mov', dst=who, src=army)
+    res = fb.reg(cx.code.types[da.type.value].definition.ret.value)
+    fb.op('Call4', dst=res, fun=da.findex.value, arg0=who, arg1=fb.string('Move'), arg2=arg, arg3=fac)
+    return res
+
+
+def _do_on(fb, b, cx, unit, action, target, fac):
+    """unit.doAction(action, {actionTarget: EEntity(target)}, fac) (vanilla checkHarvestingTeams' MoveAndDeploy
+    shape). Returns the bool result register."""
+    da = cx.fn('ent.Entity.doAction')
+    da_args = [a.value for a in cx.code.types[da.type.value].definition.args]
+    t_arg = da_args[2]
+    t_tgt = cx.code.types[t_arg].definition.fields[0].type.value
+    cons = cx.code.types[t_tgt].definition.constructs
+    ee = [c.name.resolve(cx.code) for c in cons].index('EEntity')
+    te = fb.reg(cons[ee].params[0].value)
+    fb.op('Mov', dst=te, src=target)
+    tg = fb.reg(t_tgt)
+    fb.op('MakeEnum', dst=tg, construct=ee, args=[te])
+    arg = fb.reg(t_arg)
+    fb.op('New', dst=arg)
+    fb.op('SetField', obj=arg, field=0, src=tg)
+    who = fb.reg(da_args[0])
+    fb.op('Mov', dst=who, src=unit)
+    res = fb.reg(cx.code.types[da.type.value].definition.ret.value)
+    fb.op('Call4', dst=res, fun=da.findex.value, arg0=who, arg1=fb.string(action), arg2=arg, arg3=fac)
+    return res
+
+
+def build_worm_flee(cx, helpers):
+    """aimod_wormflee(mil, dt) (see module doc)."""
+    fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
+    b = B(fb)
+    void = fb.reg(cx.t('void'))
+    guard = fb.try_()
+    ctrl = b.field(0, 'controller')
+    fac = b.field(ctrl, 'owner')
+    fb.op('JNull', reg=fac, offset='end')
+    t = b.field(_state(fb, b, cx), 'time')
+    _tick(fb, b, cx, t, WORM_T, 'end')
+    orders = b.field(b.field(ctrl, 'aiOrders'), 'orders')
+    fb.op('JNull', reg=orders, offset='end')
+    gs = fb.reg(cx.t('$Game'))
+    fb.op('GetGlobal', dst=gs, **{'global': cx.global_of('$Game')})
+    world = b.field(b.field(gs, 'inst'), 'world')
+    fb.op('JNull', reg=world, offset='end')
+    my_armies, mlen = _my_armies(fb, b, fac, 'end')
+    zi, one = b.const('i32', 0), b.const('i32', 1)
+    i, j, k = (fb.reg(cx.t('i32')) for _ in range(3))
+    wfled = _global_map(fb, b, cx, 'wfled')
+    from rules.memory import _faction_mem
+    fmem = _faction_mem(fb, b, cx, fac, True, None)  # harvester moved: its zone counts as danger (team re-route)
+    reason = cx.code.types[cx.fn('logic.ai.AIOrder.stop').type.value].definition.args[1].value
+    cancel = fb.reg(reason)
+    fb.op('MakeEnum', dst=cancel, construct=CANCEL, args=[])
+    # doAction("Move", {actionTarget: EWorldPosition({x, y})}, owner): vanilla checkHarvestingTeams' call shape
+    da = cx.fn('ent.Entity.doAction')
+    da_args = [a.value for a in cx.code.types[da.type.value].definition.args]
+    t_arg = da_args[2]  # virtual {actionTarget}
+    t_tgt = cx.code.types[t_arg].definition.fields[0].type.value  # ent.EActionTarget
+    cons = cx.code.types[t_tgt].definition.constructs
+    wp = [c.name.resolve(cx.code) for c in cons].index('EWorldPosition')
+    t_pt = cons[wp].params[0].value  # virtual {x, y}
+    pt_fields = [f.name.resolve(cx.code) for f in cx.code.types[t_pt].definition.fields]
+    move = fb.string('Move')
+    # direction table (unrolled), ring loop over the radius
+    dirs = [(_ratio(fb, b, math.cos(2 * math.pi * n / WORM_DIRS)), _ratio(fb, b, math.sin(2 * math.pi * n / WORM_DIRS)))
+            for n in range(WORM_DIRS)]
+    ax, ay, px, py, r, q, d, wd = (fb.reg(cx.t('f64')) for _ in range(8))
+    step, rmax = b.const('f64', WORM_STEP), b.const('f64', WORM_R)
+    rock, ok = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
+    mv = fb.reg(cx.t('ent.Army'))  # the army being moved
+    grp = fb.reg(cx.t('hl.types.ArrayObj'))  # the stopped order's armies (null: none)
+    def moved_now(x, skip):
+        """Jump to skip if x was already moved in this pass (as another army's order member, or itself)."""
+        mn = b.call('haxe.ds.ObjectMap.get', wfled, fb.dyn(x))
+        lbl = _uid('mn')
+        fb.op('JNull', reg=mn, offset=lbl)
+        fb.op('SafeCast', dst=q, src=mn)
+        fb.op('JEq', a=q, b=t, offset=skip)
+        fb.label(lbl)
+
+    a = _army_loop(fb, b, my_armies, mlen, i, 'army', 'end')
+    fb.op('JFalse', cond=b.call('ent.Unit.isWormTarget', a), offset='army')
+    fb.op('JFalse', cond=b.call('ent.Entity.isOnSand', a), offset='army')
+    moved_now(a, 'army')
+    _throttle(fb, b, cx, 'wflee', a, WFLEE_T, 'army')
+    worm = b.field(a, 'targettedByWorm')
+    fb.op('Mov', dst=wd, src=b.const('f64', 0))
+    fb.op('JNull', reg=worm, offset='nw')
+    fb.op('Mov', dst=wd, src=b.call('ent.Entity.getDistTo', a, worm))
+    fb.label('nw')
+    # stop the order holding it (backwards scan, first match)
+    fb.op('Null', dst=grp)
+    fb.op('Mov', dst=j, src=b.field(orders, 'length'))
+    b.loop_head('ord')
+    fb.op('JSLte', a=j, b=zi, offset='odone')
+    fb.op('Sub', dst=j, a=j, b=one)
+    o = b.cast(b.call('hl.types.ArrayObj.getDyn', orders, j), 'logic.ai.AIOrder')
+    fb.op('JNull', reg=o, offset='ord')
+    units = b.field(o, 'units')
+    fb.op('JNull', reg=units, offset='ord')
+    fb.op('JFalse', cond=b.call('hl.types.ArrayObj.contains', units, fb.dyn(a)), offset='ord')
+    fb.op('Mov', dst=grp, src=b.call('hl.types.ArrayObj.copy', units))
+    b.call('logic.ai.AIOrder.stop', o, cancel)
+    fb.label('odone')
+    # move a, then the order's other armies on sand
+    fb.op('Mov', dst=k, src=zi)
+    fb.op('Mov', dst=mv, src=a)
+    b.loop_head('mv')
+    fb.op('Mov', dst=ax, src=b.field(mv, 'posx'))
+    fb.op('Mov', dst=ay, src=b.field(mv, 'posy'))
+    fb.op('Bool', dst=rock, value=True)
+    fb.op('Mov', dst=r, src=step)
+    b.loop_head('ring')
+    fb.op('JSGt', a=r, b=rmax, offset='away')
+    for c, s in dirs:
+        fb.op('Mul', dst=q, a=r, b=c)
+        fb.op('Add', dst=px, a=ax, b=q)
+        fb.op('Mul', dst=q, a=r, b=s)
+        fb.op('Add', dst=py, a=ay, b=q)
+        fb.op('JFalse', cond=b.call('world.WorldBase.isSandAt', world, px, py), offset='go')
+    fb.op('Add', dst=r, a=r, b=step)
+    fb.op('JAlways', offset='ring')
+    # no rock in reach: straight away from the worm (or stay if it is unknown)
+    fb.label('away')
+    fb.op('Bool', dst=rock, value=False)
+    fb.op('JNull', reg=worm, offset='next')
+    fb.op('Sub', dst=px, a=ax, b=b.field(worm, 'posx'))
+    fb.op('Sub', dst=py, a=ay, b=b.field(worm, 'posy'))
+    fb.op('Mul', dst=q, a=px, b=px)
+    fb.op('Mul', dst=d, a=py, b=py)
+    fb.op('Add', dst=q, a=q, b=d)
+    fb.op('JSLte', a=q, b=b.const('f64', 1), offset='next')
+    fb.op('Mov', dst=q, src=b.call('hxd.$Math.sqrt', q))
+    fb.op('Mul', dst=px, a=px, b=rmax)
+    fb.op('SDiv', dst=px, a=px, b=q)
+    fb.op('Add', dst=px, a=ax, b=px)
+    fb.op('Mul', dst=py, a=py, b=rmax)
+    fb.op('SDiv', dst=py, a=py, b=q)
+    fb.op('Add', dst=py, a=ay, b=py)
+    fb.label('go')
+    pt = fb.reg(t_pt)
+    fb.op('New', dst=pt)
+    fb.op('SetField', obj=pt, field=pt_fields.index('x'), src=px)
+    fb.op('SetField', obj=pt, field=pt_fields.index('y'), src=py)
+    tg = fb.reg(t_tgt)
+    fb.op('MakeEnum', dst=tg, construct=wp, args=[pt])
+    arg = fb.reg(t_arg)
+    fb.op('New', dst=arg)
+    fb.op('SetField', obj=arg, field=0, src=tg)
+    who = fb.reg(da_args[0])
+    fb.op('Mov', dst=who, src=mv)
+    res = fb.reg(cx.code.types[da.type.value].definition.ret.value)
+    fb.op('Call4', dst=res, fun=da.findex.value, arg0=who, arg1=move, arg2=arg, arg3=fac)
+    b.call('haxe.ds.ObjectMap.set', wfled, fb.dyn(mv), fb.dyn(t))
+    fb.op('JNull', reg=b.field(mv, 'harvestComponent'), offset='nohv')
+    hz = b.call('ent.Entity.get_zone', mv)
+    fb.op('JNull', reg=hz, offset='nohv')
+    b.call('haxe.ds.ObjectMap.set', fmem, fb.dyn(hz), fb.dyn(t))
+    fb.label('nohv')
+    fb.op('Sub', dst=px, a=px, b=ax)
+    fb.op('Sub', dst=py, a=py, b=ay)
+    fb.op('Mul', dst=px, a=px, b=px)
+    fb.op('Mul', dst=py, a=py, b=py)
+    fb.op('Add', dst=d, a=px, b=py)
+    fb.op('Mov', dst=d, src=b.call('hxd.$Math.sqrt', d))
+    _log_ev(fb, b, cx, helpers, 'wflee', [('f', fb.get(fac, 'kind')), ('a', mv), ('rock', rock), ('d', d),
+                                          ('w', wd), ('ok', res)])
+    # next army of the stopped order still on sand (not a itself)
+    fb.label('next')
+    fb.op('JNull', reg=grp, offset='army')
+    b.loop_head('gn')
+    fb.op('JSGte', a=k, b=b.field(grp, 'length'), offset='army')
+    fb.op('Mov', dst=mv, src=b.cast(b.call('hl.types.ArrayObj.getDyn', grp, k), 'ent.Army'))
+    fb.op('Incr', dst=k)
+    fb.op('JNull', reg=mv, offset='gn')
+    fb.op('JEq', a=mv, b=a, offset='gn')
+    fb.op('JTrue', cond=b.call('ent.Entity.isDead', mv), offset='gn')
+    fb.op('JFalse', cond=b.call('ent.Entity.isOnSand', mv), offset='gn')
+    moved_now(mv, 'gn')
+    fb.op('JNull', reg=worm, offset='mv')  # worm unknown: every army on sand
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', mv, worm), b=b.const('f64', WORM_NEAR), offset='gn')
+    fb.op('JAlways', offset='mv')
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=void)
+    return fb.build()
+
+
+def build_wormheld(cx):
+    """aimod_wormheld(army) -> true while worm-flee moved it less than WORM_HOLD s ago (map `wfled`) and a sandworm
+    (State.worms) is within WORM_NEAR of it: it waits on the rock instead of being re-ordered over the sand; also
+    while it walks to a rally point (map `rallied` within RALLY_HOLD, rules/rally.py)."""
+    fb = FB(cx, [cx.t('ent.Entity')], cx.t('bool'))
+    b = B(fb)
+    ok = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=ok, value=False)
+    guard = fb.try_()
+    fb.op('JNull', reg=0, offset='end')
+    st = _state(fb, b, cx)
+    q = fb.reg(cx.t('f64'))
+    # walking to a rally point (rules/rally.py): held too
+    rv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rallied'), fb.dyn(0))
+    fb.op('JNull', reg=rv, offset='norly')
+    fb.op('SafeCast', dst=q, src=rv)
+    fb.op('Sub', dst=q, a=b.field(st, 'time'), b=q)
+    fb.op('JSGt', a=q, b=b.const('f64', RALLY_HOLD), offset='norly')
+    fb.op('Bool', dst=ok, value=True)
+    fb.op('JAlways', offset='end')
+    fb.label('norly')
+    wv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'wfled'), fb.dyn(0))
+    fb.op('JNull', reg=wv, offset='end')
+    fb.op('SafeCast', dst=q, src=wv)
+    fb.op('Sub', dst=q, a=b.field(st, 'time'), b=q)
+    fb.op('JSGt', a=q, b=b.const('f64', WORM_HOLD), offset='end')
+    worms = b.field(st, 'worms')
+    fb.op('JNull', reg=worms, offset='end')
+    k = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=k, src=b.const('i32', 0))
+    we = fb.reg(cx.t('ent.Entity'))
+    b.loop_head('w')
+    fb.op('JSGte', a=k, b=b.field(worms, 'length'), offset='end')
+    fb.op('Mov', dst=we, src=b.cast(b.call('hl.types.ArrayObj.getDyn', worms, k), 'ent.Sandworm'))
+    fb.op('Incr', dst=k)
+    fb.op('JNull', reg=we, offset='w')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', 0, we), b=b.const('f64', WORM_NEAR), offset='w')
+    fb.op('Bool', dst=ok, value=True)
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=ok)
+    return fb.build()
+
+
+def log_worm_kill(cx, helpers, new_ids):
+    """Every army a sandworm eats is logged (`weaten`: o owner, a army, fled = s since worm-flee moved it, -1 never):
+    the single Army.playDeathWorm call in Sandworm.tryAttack is wrapped (log in a trap, then the original)."""
+    fn = cx.fn('ent.Sandworm.tryAttack')
+    pdw = cx.fn('ent.Army.playDeathWorm')
+    sites = [op for op in fn.ops if op.op.startswith('Call') and op.df.get('fun') is not None
+             and op.df['fun'].value == pdw.findex.value]
+    if len(sites) != 1:
+        raise ValueError(f'worm-kill log: expected 1 Army.playDeathWorm call in tryAttack, found {len(sites)}')
+    ft = cx.code.types[pdw.type.value].definition
+    fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=pdw.type.value)
+    b = B(fb)
+    guard = fb.try_()
+    fb.op('JNull', reg=0, offset='end')
+    fl = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=fl, src=b.const('f64', -1))
+    wf = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'wfled'), fb.dyn(0))
+    fb.op('JNull', reg=wf, offset='nf')
+    fb.op('SafeCast', dst=fl, src=wf)
+    fb.op('Sub', dst=fl, a=b.field(_state(fb, b, cx), 'time'), b=fl)
+    fb.label('nf')
+    own = b.call('ent.Entity.get_owner', 0)
+    _log_ev(fb, b, cx, helpers, 'weaten', [('o', fb.get(own, 'kind')), ('a', 0), ('fled', fl)])
+    fb.label('end')
+    fb.end_try(guard)
+    res = fb.reg(ft.ret.value)
+    fb.op(f'Call{len(ft.args)}', dst=res, fun=pdw.findex.value, **{f'arg{i}': i for i in range(len(ft.args))})
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    sites[0].df['fun'].value = w
+    new_ids.add(w)
+    return {'worm:kill-log': 1}

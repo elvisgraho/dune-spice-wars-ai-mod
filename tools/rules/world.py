@@ -45,8 +45,9 @@ def build_threat(cx, pw, horizon_s=HORIZON, stats=False, reach=None, prey=False)
     targets fac.
     stats=True: aimod_threat_stats(fac, p, r, skip, res, zone), same armies minus those owned by `skip`, each also
     pushed into res as unitSimulatedCombatStats(army, zone) (for vanilla power reports).
-    reach=R: aimod_react(fac, p, r), also the armies within R that are free to answer: not fighting, not occupying or
-    contesting a structure, and idle or heading towards p (busy ones may never come; the fight retreat covers it).
+    reach=R: aimod_react(fac, p, r), also the armies within R that are free to answer: not fighting, idle or heading
+    towards p; one occupying or contesting a structure counts OCC_W (it can break off: Fremen left Ars-ha to hunt the
+    Atreides at their harvester).
     prey=True: aimod_hthreat(fac, p, r, pf, dn), the hunt measure around prey faction pf (null: plain threat): pf's
     armies as above; a third party at war with pf is skipped (it fights the prey too); one allied / at peace with pf
     counts within max(r, dn + ALLY_WIN), dn = our nearest army's distance (it arrives before we finish the kill)."""
@@ -93,8 +94,8 @@ def build_threat(cx, pw, horizon_s=HORIZON, stats=False, reach=None, prey=False)
     if reach is not None:
         fb.op('JSGt', a=d, b=b.const('f64', reach), offset='mv')
         fb.op('JTrue', cond=b.call('ent.Entity.isFighting', x), offset='mv')
-        fb.op('JNotNull', reg=b.field(x, 'occupiedStructure'), offset='mv')
-        fb.op('JNotNull', reg=b.field(x, 'contestingStructure'), offset='mv')
+        fb.op('JNotNull', reg=b.field(x, 'occupiedStructure'), offset='busy')
+        fb.op('JNotNull', reg=b.field(x, 'contestingStructure'), offset='busy')
         fb.op('JFalse', cond=b.call('ent.Unit.isMoving', x), offset='count')
         _approaching(fb, b, cx, x, 1, d, 'loop')
         fb.op('JAlways', offset='count')
@@ -106,6 +107,13 @@ def build_threat(cx, pw, horizon_s=HORIZON, stats=False, reach=None, prey=False)
     fb.op('SDiv', dst=eta, a=eta, b=spd)
     fb.op('JSGt', a=eta, b=horizon, offset='loop')
     _approaching(fb, b, cx, x, 1, d, 'loop')
+    if reach is not None:  # busy capturing within reach: it can break off (counts OCC_W)
+        fb.op('JAlways', offset='count')
+        fb.label('busy')
+        fb.op('Call1', dst=p, fun=pw, arg0=x)
+        fb.op('Mul', dst=p, a=p, b=_ratio(fb, b, OCC_W))
+        fb.op('Add', dst=tot, a=tot, b=p)
+        fb.op('JAlways', offset='loop')
     fb.label('count')
     fb.op('Call1', dst=p, fun=pw, arg0=x)
     fb.op('Add', dst=tot, a=tot, b=p)
@@ -208,6 +216,14 @@ def build_free(cx, pw, min_life=MIN_LIFE, min_supply=MIN_SUPPLY, resupply_ok=Fal
     fb.op('JTrue', cond=b.field(0, 'isMilitia'), offset='no')
     fb.op('JTrue', cond=b.call('ent.Entity.isTransported', 0), offset='no')
     fb.op('JNotNull', reg=b.field(0, 'harvestComponent'), offset='no')  # harvesters (Fremen: armies, pw > 0)
+    # sent off the sand by worm-flee within WORM_HOLD s
+    wf = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'wfled'), fb.dyn(0))
+    fb.op('JNull', reg=wf, offset='wf_ok')
+    wft = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=wft, src=wf)
+    fb.op('Sub', dst=wft, a=b.field(_state(fb, b, cx), 'time'), b=wft)
+    fb.op('JSLt', a=wft, b=b.const('f64', WORM_HOLD), offset='no')
+    fb.label('wf_ok')
     fb.op('JSLt', a=b.call('ent.Entity.get_lifeRatio', 0), b=_ratio(fb, b, min_life), offset='no')
     ms = b.call('ent.Army.get_maxSupply', 0)
     zero = b.const('f64', 0)
@@ -443,7 +459,8 @@ def build_cover(cx):
     """aimod_cover(fac, e, exclude, own, res) -> turret cover at e: for every structure within COVER_R of e (not
     `exclude`) owned by fac (own) or by a faction at war with fac (not own), each of its combat stats without health
     (turrets = buildings with power, main base guns; militia have health and are skipped) adds offensivePotential x
-    TURRET_H to the result, and is pushed into `res` when res is not null (for vanilla power reports). Silent: a
+    TURRET_H to the result (an active main base's guns x MB_GUN_W), and is pushed into `res` when res is not null
+    (for vanilla power reports; a main base's MB_GUN_W times). Silent: a
     besieged village (its turrets stop while it is annexed / pillaged) and dead main bases."""
     fb = FB(cx, [cx.t('ent.Faction'), cx.t('ent.Entity'), cx.t('ent.Entity'), cx.t('bool'),
                  cx.t('hl.types.ArrayObj')], cx.t('f64'))
@@ -486,8 +503,11 @@ def build_cover(cx):
     fb.op('Mov', dst=se, src=s)
     fb.op('JEq', a=se, b=2, offset='sl')
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', 1, se), b=cover, offset='sl')
+    ismb = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=ismb, value=False)
     fb.op('JFalse', cond=b.call('ent.Structure.get_isMainBase', s), offset='village')
     fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', s), offset='sl')
+    fb.op('Bool', dst=ismb, value=True)
     fb.op('JAlways', offset='stats')
     fb.label('village')
     sg = b.field(s, 'siege')
@@ -507,9 +527,15 @@ def build_cover(cx):
     fb.op('JSGt', a=sps, b=zero, offset='kl')  # has health: militia, not a turret
     fb.op('Mov', dst=op_, src=b.call('$HPowerScore.offensivePotential', st, zero))
     fb.op('Mul', dst=op_, a=op_, b=th)
+    fb.op('JFalse', cond=ismb, offset='nmb1')
+    fb.op('Mul', dst=op_, a=op_, b=b.const('f64', MB_GUN_W))  # main-base guns hit far above their power score
+    fb.label('nmb1')
     fb.op('Add', dst=tot, a=tot, b=op_)
     fb.op('JNull', reg=4, offset='kl')
     b.call('hl.types.ArrayObj.push', 4, st)
+    fb.op('JFalse', cond=ismb, offset='kl')
+    for _ in range(MB_GUN_W - 1):  # ... in vanilla's report too: the same stats again
+        b.call('hl.types.ArrayObj.push', 4, st)
     fb.op('JAlways', offset='kl')
     fb.label('end')
     fb.op('Ret', ret=tot)

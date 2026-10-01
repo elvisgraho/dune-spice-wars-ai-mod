@@ -13,7 +13,7 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
   snap  : aggr, gauges, armies, structs (daily per AI faction)
   aw    : n, en, mine, a=[{o,k,x,y,pw,hp,sup,ms,ls,hz,zo,sand,worm,vis,mv,d,near,sa,ty,tgt,oc,ct}] (tools/aware.py:
           every 10 s per AI faction: hostile armies within 600 of its structures or armies, or visible; da/na/nsa/nty/ntgt = our nearest army and its task)
-  hunt  : act (start|abort|engage), why (abort: gone truce leash home supply drift lost weak turret objective defend chase), T
+  hunt  : act (start|abort|engage), why (abort: gone truce leash home supply drift lost weak turret objective defend chase desert), T
           (enemy turret cover at the anchor / group, power units; included in H), tgt (prey / first
           member; the village for a contest), H, M, n, ng (group size), ok, sd (dist to our land), dn (our nearest order
           army), dm (start: our nearest free army), anc (start: the besieged village for a contest, else the prey),
@@ -21,7 +21,7 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
           army or contest of a siege; H = threat around it, M = our free power in reach (abort: order power), n armies
           sent; the order itself is a Military ArmyFight order). engage: the order left Regroup early because the
           armies within LOCAL of the core (member nearest our land) already pass the entry test (M = their power)
-  retreat: act (retreat|hold|recall|pursuit), raw, tf, sf, adj (fight balance x100: vanilla, terrain factor, supply factor,
+  retreat: act (retreat|hold|recall|pursuit|disengage: Resupply armies left shooting a powerless target), raw, tf, sf, adj (fight balance x100: vanilla, terrain factor, supply factor,
           adjusted; recall = every army of ours there short of supply and none in a Military order: balance 0; pursuit =
           none of ours there in a Military order and the enemy there (en, power within CONTACT) lost < 10% for 15 s:
           balance 0 (chasing a fleeing army); stranded = held
@@ -37,6 +37,19 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
           around the event / terrain tf x100)
   strand: a, s, d, ok (idle army on hostile land sent home: Patrol Move to our structure s, d = its distance)
   undeploy: a, ok, nm, sup (installed turret not fighting on hostile land uninstalled; nm = order move blocks removed)
+  ascore: f, tgt, s, c, cmin, vb, v0, vs, n, dd (x100: Fremen deep-desert surround sum of the best), hold (off-ring candidates dropped by the Fremen ring hold) (Annex value: our best target vs vanilla's best; tools/rules/siege.py)
+  noregen: f, a, hp (army without safe regen and full supply removed from the checkUnits Resupply query)
+  lowpick: f, a, hp, src (siege|defense|discovery: army under PICK_LIFE removed from vanilla's getUnits result; extra: worn
+          temporary unit appended to a Defense the healthy armies already carry)
+  rally : f, act (rally|off), s (danger structure), r (rally point), H, M, n (defenders sent; rules/rally.py)
+  gather: f, a, tgt, d, dmax, n (Engage leader held for the pack; rules/gather.py)
+  spos  : f, a, tgt, e, cv, ok (siege army under at-war guns moved to the target's far side from e; rules/spos.py)
+  dstep : f, a, tgt, d, ok (our siege / raid army on the deep-desert side of its target moved 40 from it; rules/desert.py)
+  wflee : f, a, rock, d, w, ok (worm-targeted army on sand sent to the nearest rock point; tools/rules/worm.py)
+  weaten: o, a, fled (any army eaten by a worm; fled = s since our wflee moved it, -1 never)
+  hflee : f, a, H, dg (attacked team harvester released to vanilla's re-route)
+  hrun  : f, a, s, H, M, ok (fighting harvester outgunned within CONTACT sent to the nearest safe field, s null = main base; rules/memory.py)
+  whold : f, a, src (worm-moved army dropped from a vanilla pick / Resupply query while a worm is within 150; rules/worm.py)
   mem   : k, a (faction memory event: k harvester = our harvester a fighting, its zone stamped dangerous)
   hfield: a, s, dg (harvester a's field choice: field s penalised, dg = zone danger x100; once per field per 10 s)
   strat : f, post (defend|hold|press|expand|harass; hold = no spare force for a new target), S (spare power after home need), need, T (our army power),
@@ -279,6 +292,35 @@ def ai_control(events, t0, span):
     return out
 
 
+def stuck_fights(wzbs, thr=65, run=3, near=40):
+    """`wzb` samples (fight balance per warzone every 5 s): runs of >= `run` samples of one faction within `near` of
+    each other with adjusted balance <= thr = a fight below the retreat line that went on (vanilla should have left)."""
+    out = ['\n## Fight balance (wzb samples): losing fights that kept going (adj <= 0.65 for >= 15 s at one place): '
+           'faction from-to at (x,y) raw/adj min, samples']
+    by = defaultdict(list)
+    for e in wzbs:
+        by[e.get('f')].append(e)
+    found = 0
+    for f, es in by.items():
+        cur = []
+        for e in es + [None]:
+            low = e is not None and isinstance(e.get('adj'), (int, float)) and e['adj'] <= thr
+            if low and cur and (abs(e['x'] - cur[-1]['x']) > near or abs(e['y'] - cur[-1]['y']) > near
+                                or e['_t'] - cur[-1]['_t'] > 12):
+                low_run, cur = cur, [e]
+            elif low:
+                low_run, cur = None, cur + [e]
+            else:
+                low_run, cur = cur, []
+            if low_run and len(low_run) >= run:
+                found += 1
+                a, z = low_run[0], low_run[-1]
+                out.append(f"  {f} {clock(a['_t'])}-{clock(z['_t'])} at ({a['x']:.0f},{a['y']:.0f}) "
+                           f"raw{min(x['raw'] for x in low_run)} adj{min(x['adj'] for x in low_run)} n{len(low_run)}")
+    out.append(f'  ({found} runs; {len(wzbs)} samples)')
+    return out
+
+
 def summarize(events, faction=None, all_orders=False):
     if not events:
         return 'No AIMOD events. Is the testbed on (`mod testbed on`) and did a match run?'
@@ -300,7 +342,8 @@ def summarize(events, faction=None, all_orders=False):
     stops = Counter()
     hunts = Counter()                       # (faction, act, why)
     spaced = Counter()                      # (faction, why, kind, tgt, near)
-    retreats, heals, bunkers, discs, raids, strats = [], [], [], [], [], []
+    retreats, heals, bunkers, discs, raids, strats, peaces, wzbs = [], [], [], [], [], [], [], []
+    worms, lowpicks, ascores, gathers, rallies = [], [], [], [], []
     for e in events:
         k, f, t = e.get('e'), e.get('f'), when(e, t0)
         e['_t'] = t
@@ -364,6 +407,20 @@ def summarize(events, faction=None, all_orders=False):
             strats.append(e)
         elif k == 'raid':
             raids.append(e)
+        elif k == 'peace':
+            peaces.append(e)
+        elif k == 'rally':
+            rallies.append(e)
+        elif k == 'gather':
+            gathers.append(e)
+        elif k in ('wflee', 'weaten', 'dstep', 'whold', 'hrun', 'spos'):
+            worms.append(e)
+        elif k == 'ascore':
+            ascores.append(e)
+        elif k in ('lowpick', 'noregen'):
+            lowpicks.append(e)
+        elif k == 'wzb':
+            wzbs.append(e)
         elif k == 'hunt':
             # hunt orders target an AIEntityGroup: match by faction + ArmyFight + time, not by target
             hunts[(f, e.get('act'), e.get('why'))] += 1
@@ -478,17 +535,82 @@ def summarize(events, faction=None, all_orders=False):
     if strats:
         out += director(strats)
 
+    if wzbs:
+        out += stuck_fights(wzbs)
+
+    if rallies:
+        out.append('\n## Rally (tools/rules/rally.py): our side too weak at a structure: defenders gathered at a rally point '
+                   'instead of fed one at a time: faction danger structure -> rally point, H their power, M ours (x terrain, + turrets), n sent')
+        for e in rallies[-16:]:
+            if e.get('act') == 'off':
+                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} rally off")
+            else:
+                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('s'))[:20]:<20} -> {ent(e.get('r'))[:20]:<20} "
+                           f"H{kpw(e.get('H'))} M{kpw(e.get('M'))} n{e.get('n')}")
+
+    if gathers:
+        out.append('\n## Gather (tools/rules/gather.py): leaders held in Engage until the pack is within 15 '
+                   '(max 10 s per order): faction army -> target, d its distance, dmax the farthest counted, n')
+        for e in gathers[-16:]:
+            out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('a'))[:20]:<20} -> {ent(e.get('tgt'))[:20]:<20} "
+                       f"d{e.get('d')} dmax{e.get('dmax')} n{e.get('n')}")
+
+    if ascores:
+        out.append('\n## Annex value (tools/rules/siege.py): our best Annex target (s = score after special / '
+                   'compactness / cost ratio / first spice) vs vanilla\'s best (v0 its vanilla score, vs now); '
+                   'c / cmin = its Authority cost / cheapest candidate (once per faction per 30 s)')
+        for e in ascores[-16:]:
+            same = ent(e.get('tgt')) == ent(e.get('vb'))
+            out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('tgt'))[:22]:<22} s{e.get('s')} c{e.get('c')}/{e.get('cmin')} "
+                       + ('= vanilla' if same else f"<- vanilla {ent(e.get('vb'))[:22]} v0 {e.get('v0')} now {e.get('vs')}") + f" n{e.get('n')}" + (f" dd{e.get('dd')}" if e.get('dd') else '') + (f" HOLD{e.get('hold')}" if e.get('hold') else ''))
+
+    if lowpicks:
+        out.append('\n## Low-life picks (tools/rules/heal.py pick-life): worn armies kept out of vanilla mission picks '
+                   '(once per army per 30 s), noregen = no-regen army kept out of the Resupply query: faction army src')
+        c = Counter((e.get('f'), ent(e.get('a'))[:22], e.get('src') or 'noregen') for e in lowpicks)
+        out += [f'  {f} {a} {s} x{n}' for (f, a, s), n in c.most_common(12)]
+
+    if worms:
+        out.append('\n## Worms / deep desert (tools/rules/worm.py, desert.py): dstep = siege army moved off the deep desert to the village; wflee = worm-targeted army sent to rock (rock 0: away from the '
+                   'worm), d to the point, w worm distance; weaten = army eaten (fled = s since its wflee, -1 never); hold = moved army kept out of vanilla picks while the worm is near; HARVESTER RUN = outgunned harvester sent to a safe field')
+        for e in worms[-20:]:
+            if e['e'] == 'wflee':
+                out.append(f"  {clock(e['_t'])} {e.get('f')} flee  {ent(e.get('a'))[:22]:<22} rock{int(bool(e.get('rock')))} "
+                           f"d{e.get('d')} w{e.get('w')} ok{int(bool(e.get('ok')))}")
+            elif e['e'] == 'spos':
+                out.append(f"  {clock(e['_t'])} {e.get('f')} siege-pos {ent(e.get('a'))[:22]:<22} at {ent(e.get('tgt'))[:18]} off guns of {ent(e.get('e'))[:18]} cv{kpw(e.get('cv'))}")
+            elif e['e'] == 'whold':
+                out.append(f"  {clock(e['_t'])} {e.get('f')} hold  {ent(e.get('a'))[:22]:<22} (worm near: kept out of {e.get('src')})")
+            elif e['e'] == 'hrun':
+                out.append(f"  {clock(e['_t'])} {e.get('f')} HARVESTER RUN {ent(e.get('a'))[:22]:<22} -> {ent(e.get('s'))[:22] if e.get('s') else 'main base'} "
+                           f"H{kpw(e.get('H'))} M{kpw(e.get('M'))} ok{int(bool(e.get('ok')))}")
+            elif e['e'] == 'dstep':
+                out.append(f"  {clock(e['_t'])} {e.get('f')} desert-step {ent(e.get('a'))[:22]:<22} -> {ent(e.get('tgt'))[:22]} d{e.get('d')} ok{int(bool(e.get('ok')))}")
+            else:
+                out.append(f"  {clock(e['_t'])} {e.get('o')} EATEN {ent(e.get('a'))[:22]:<22} fled{e.get('fled')}")
+
+    if peaces:
+        out.append('\n## Peace gate (tools/rules/peace.py): treaty offers from an at-war faction refused while our '
+                   'siege on its structure is in Engage/Action: faction <- sender, target, siege action, phase')
+        for e in peaces[-12:]:
+            out.append(f"  {clock(e['_t'])} {e.get('f')} <- {e.get('from')} {ent(e.get('tgt'))[:22]:<22} "
+                       f"{e.get('sa')} ph{e.get('ph')} treaties{e.get('nt')}")
+
     if raids:
         out.append('\n## Raids (tools/rules/raid.py): pillage with idle armies (neutral or at-war villages, not the '
                    'next Annex); h = their threat+cover+militia, m = our raid force, hh/ms = hostile/our power near home')
         starts = [e for e in raids if e.get('act') == 'start']
         refused = [e for e in raids if e.get('act') == 'refuse']
         aborts = [e for e in raids if e.get('act') == 'abort']
+        owned = lambda e: isinstance(e.get('tgt'), dict) and e['tgt'].get('o') not in (None, 'null')
+        out.append('Enemy villages (at-war owner) / all: ' + ', '.join(
+            f"{a} {sum(owned(e) for e in raids if e.get('act') == a)}/{sum(1 for e in raids if e.get('act') == a)}"
+            for a in ('start', 'refuse', 'abort')))
         for e in starts[-12:]:
             out.append(f"  {clock(e['_t'])} {e.get('f')} {ent(e.get('tgt'))[:22]:<22} n{e.get('n')} dm{e.get('dm')} "
                        f"sd{e.get('sd')} h{kpw(e.get('H'))} m{kpw(e.get('M'))} hh{kpw(e.get('hh'))} "
                        f"ms{kpw(e.get('ms'))} ax {ent(e.get('ax'))[:16]}"
-                       f"{'' if e.get('ok') is not False else ' REFUSED'}")
+                       f"{'' if e.get('ok') is not False else ' REFUSED'}{' RECOVER' if e.get('rec') is True else ''}")
         if aborts:
             c = Counter((e.get('f'), e.get('why')) for e in aborts)
             out.append('Aborted pillages (defend = our besieged structure needs the armies, home = hostiles nearer our '
@@ -508,7 +630,8 @@ def summarize(events, faction=None, all_orders=False):
                            f"n{num(e.get('n'), 0)}/{num(e.get('nr'), 0)} dm{num(e.get('dm'), 0)} sd{num(e.get('sd'), 0)} "
                            f"h{kpw(e.get('H'))} c{kpw(e.get('C'))} mi{kpw(e.get('Mi'))} m{kpw(e.get('M'))} "
                            f"tf{num(e.get('tf'), 0)} hh{kpw(e.get('hh'))} ms{kpw(e.get('ms'))} "
-                           f"ax {ent(e.get('ax'))[:16]} nc{num(e.get('nc'), 0)}")
+                           f"ax {ent(e.get('ax'))[:16]} nc{num(e.get('nc'), 0)}"
+                           f"{' RECOVER' if e.get('rec') is True else ''}")
 
     if discs:
         out.append('\n## Refused Discovery trips (tools/rules): lone army vs at-war threat at the world event; '
