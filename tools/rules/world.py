@@ -785,8 +785,8 @@ def build_defend(cx, sieged, helpers, threat, neutral, own, cover, terrain):
 
 def build_sieged(cx):
     """aimod_sieged(fac, s) -> s is besieged or occupied by a faction at war with fac (or by neutral raiders: no
-    faction set), and s is neutral, ours, or
-    belongs to a faction not at war with us (a capture we want to stop). Reads the structure's own siege state
+    faction set), and s is neutral, ours, or belongs to a faction not at war with us (a capture we want to stop);
+    raiders count only on a neutral village or ours. Reads the structure's own siege state
     (as vanilla micro does), so it sees human and AI sieges alike (Army.aiOrder is often null on besiegers)."""
     fb = FB(cx, [cx.t('ent.Faction'), cx.t('ent.Structure')], cx.t('bool'))
     b = B(fb)
@@ -803,9 +803,15 @@ def build_sieged(cx):
     fb.op('JNotNull', reg=bf, offset='have')
     # no faction: a neutral raider besieging / occupying it (liberating, pillaging) blocks every faction's Annex /
     # Pillage / Liberate there until it dies (Raider_Ranged liberating Qal-nit)
-    fb.op('JTrue', cond=b.field(sg, 'isUnderSiege'), offset='own')
+    # ... only on a neutral village or ours: raiders on a third faction's village hurt only that faction (Fremen
+    # cancelled a chase `objective` for a raider siege of Harkonnen's O-ram, 830 away, and no contest followed)
+    fb.op('JTrue', cond=b.field(sg, 'isUnderSiege'), offset='rown')
     fb.op('JNull', reg=b.field(sg, 'occupier'), offset='end')
-    fb.op('JAlways', offset='own')
+    fb.label('rown')
+    ro = b.call('ent.Entity.get_owner', 1)
+    fb.op('JNull', reg=ro, offset='yes')
+    fb.op('JEq', a=ro, b=0, offset='yes')
+    fb.op('JAlways', offset='end')
     fb.label('have')
     fb.op('JEq', a=bf, b=0, offset='end')
     state = _state(fb, b, cx)

@@ -119,12 +119,14 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
         fb.op('CallN', dst=dst, fun=hthreat, args=[fac, at, local, pf, dn])
 
     def besieger(s):
-        """pf = the faction besieging structure s (null if none is set)."""
+        """pf = the faction besieging structure s, else its occupier (aimod_sieged's measure; null: raiders)."""
         lbl = f'bs{len(fb.ops)}'
         fb.op('Null', dst=pf)
         sg = b.field(s, 'siege')
         fb.op('JNull', reg=sg, offset=lbl)
         fb.op('Mov', dst=pf, src=b.field(sg, 'besiegingFaction'))
+        fb.op('JNotNull', reg=pf, offset=lbl)
+        fb.op('Mov', dst=pf, src=b.call('ent.comp.SiegeComponent.getOccupierFaction', sg))
         fb.label(lbl)
     gap = b.const('f64', HUNT_GAP)
     zero, zi, one = b.const('f64', 0), b.const('i32', 0), b.const('i32', 1)
@@ -384,6 +386,10 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('JNotNull', reg=found, offset='obj')
     fb.op('Call2', dst=sdx, fun=land, arg0=fac, arg1=ve)
     fb.op('JSGt', a=sdx, b=defend_r, offset='obj')
+    # a minor contest (not ours, farther than CONTEST_NEAR) doesn't cancel a running chase
+    fb.op('JEq', a=b.call('ent.Entity.get_owner', ve), b=fac, offset='objmaj')
+    fb.op('JSGt', a=sdx, b=b.const('f64', CONTEST_NEAR), offset='obj')
+    fb.label('objmaj')
     mv, dv = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     fb.op('Mov', dst=mv, src=zero)
     fb.op('Mov', dst=dv, src=big)
@@ -401,15 +407,24 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Mov', dst=dv, src=du)
     fb.op('JAlways', offset='ou')
     fb.label('oudone')
-    hv = fb.reg(cx.t('f64'))
+    hv, rv = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     besieger(v)  # same measure as the contest start
     threat_at(hv, ve, dv)
     cover_at(q, ve, ve, False)  # same measure as the contest start: + enemy cover, + our cover on our side
     fb.op('Add', dst=hv, a=hv, b=q)
+    # ... and its size floor: armies alone >= DEF_HOPE_IN x max(threat, aimod_react + enemy cover) / terrain
+    fb.op('Call3', dst=rv, fun=react, arg0=fac, arg1=ve, arg2=local)
+    fb.op('Add', dst=rv, a=rv, b=q)
+    fb.op('JSGte', a=rv, b=hv, offset='rvmax')
+    fb.op('Mov', dst=rv, src=hv)
+    fb.label('rvmax')
+    fb.op('Call2', dst=tv, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', ve))
+    fb.op('SDiv', dst=rv, a=rv, b=tv)
+    fb.op('Mul', dst=rv, a=rv, b=_ratio(fb, b, DEF_HOPE_IN))
+    fb.op('JSLt', a=mv, b=rv, offset='obj')
     cover_at(q, ve, ve, True)
     fb.op('Add', dst=mv, a=mv, b=q)
     fb.op('Mul', dst=hv, a=hv, b=enter)
-    fb.op('Call2', dst=tv, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', ve))
     fb.op('SDiv', dst=hv, a=hv, b=tv)
     fb.op('JSLt', a=mv, b=hv, offset='obj')
     fb.op('Mov', dst=found, src=ve)
@@ -427,6 +442,9 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('SafeCast', dst=rdf, src=b.call('haxe.ds.ObjectMap.get', pd_map, fb.dyn(o)))
     fb.op('Mul', dst=q, a=rpf, b=prog)
     fb.op('JSLte', a=pp, b=q, offset='prog_rec')  # it lost power
+    # on it (within CATCH_R): a prey standing to fight isn't running, finish it (Fremen aborted `chase` at dn 9 on a
+    # Raider fighting back at 64k vs 51k: closing in can't count once there); a losing fight is `weak`'s
+    fb.op('JSLte', a=need, b=b.const('f64', CATCH_R), offset='prog_rec')
     # we closed in, fast enough to reach it within CATCH_T at this rate: max(CLOSE, (gap - CATCH_R) x PURSUIT_T /
     # CATCH_T) since the last progress
     cr = fb.reg(cx.t('f64'))
@@ -575,6 +593,10 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     mode, best_mode, two = fb.reg(cx.t('i32')), fb.reg(cx.t('i32')), b.const('i32', 2)  # 0 chase 1 contest 2 neutral
     fb.op('Mov', dst=mode, src=zi)
     fb.op('Mov', dst=best_mode, src=zi)
+    # minor contest: a village not ours (neutral / a third faction's) farther than CONTEST_NEAR from our land: worth
+    # stopping, less than our own or one next to us; no contest priority (scored like a chase), no `objective` abort
+    minor = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=minor, value=False)
     far = fb.reg(cx.t('bool'))  # neutral prey away from our land: only in contact and crushing it (KILL)
     best_far = fb.reg(cx.t('bool'))  # the chosen candidate's `far`
     fb.op('Bool', dst=best_far, value=False)
@@ -622,6 +644,7 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     v = b.cast(b.call('hl.types.ArrayObj.getDyn', villages, i), 'ent.Structure')
     fb.op('Incr', dst=i)
     fb.op('JNull', reg=v, offset='vcand')
+    fb.op('Bool', dst=minor, value=False)
     fb.op('Call2', dst=ok, fun=sieged, arg0=fac, arg1=v)
     fb.op('JFalse', cond=ok, offset='vcand')
     fb.op('Mov', dst=ent_r, src=v)
@@ -641,6 +664,8 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('JAlways', offset='vown')
     fb.label('notown')
     fb.op('JNotNull', reg=dfs, offset='vcand')  # defending: our own villages first
+    fb.op('JSLte', a=sd, b=b.const('f64', CONTEST_NEAR), offset='vown')
+    fb.op('Bool', dst=minor, value=True)
     fb.label('vown')
     besieger(v)
     fb.op('Mov', dst=anc, src=ent_r)
@@ -717,6 +742,19 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', anc))
     fb.op('SDiv', dst=need, a=need, b=tf)  # their land: 1.5 / 0.8 = 1.9x needed; ours: 1.15x
     fb.op('JSLt', a=m, b=need, offset='next')
+    # contest size floor, as the sizing applies it (armies alone >= DEF_HOPE_IN x max(threat, aimod_react + cover) /
+    # terrain): a contest failing it at sizing after winning the pick (contests outrank chases) blocked every chase
+    fb.op('JNotEq', a=mode, b=one, offset='cfloor')
+    fb.op('Call3', dst=q, fun=react, arg0=fac, arg1=prey, arg2=local)
+    fb.op('Add', dst=q, a=q, b=tc)
+    fb.op('JSGte', a=q, b=h, offset='cfmax')
+    fb.op('Mov', dst=q, src=h)
+    fb.label('cfmax')
+    fb.op('SDiv', dst=q, a=q, b=tf)
+    fb.op('Mul', dst=q, a=q, b=_ratio(fb, b, DEF_HOPE_IN))
+    fb.op('Sub', dst=p, a=m, b=tm)  # armies alone
+    fb.op('JSLt', a=p, b=q, offset='next')
+    fb.label('cfloor')
     # a chase while we defend, or under enemy turret cover: only when the prey is in contact and we have KILL x
     # (its threat + cover)
     fb.op('JEq', a=mode, b=one, offset='score')
@@ -728,10 +766,16 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Mul', dst=q, a=need, b=kill_x)
     fb.op('JSLt', a=m, b=q, offset='next')
     fb.label('score')
-    # score = weight * threat / (distance of our nearest free army + DIST0): near and objective-bound first
+    # score = threat / (distance of our nearest free army + DIST0)^2: the enemy in front of us first (linear distance
+    # let a stack twice as strong twice as far win while another walked past under our noses); contests (goal 4)
+    # outrank every chase (goal 5) by CONTEST_W, else the `objective` abort cancels the chase it picked
     fb.op('Add', dst=sc, a=dmin, b=dist0)
-    fb.op('Mul', dst=p, a=w, b=h)
-    fb.op('SDiv', dst=sc, a=p, b=sc)
+    fb.op('Mul', dst=sc, a=sc, b=sc)
+    fb.op('SDiv', dst=sc, a=h, b=sc)
+    fb.op('JNotEq', a=mode, b=one, offset='scx')
+    fb.op('JTrue', cond=minor, offset='scx')
+    fb.op('Add', dst=sc, a=sc, b=contest_w)
+    fb.label('scx')
     fb.op('JSLte', a=sc, b=best_s, offset='next')
     fb.op('Mov', dst=best_s, src=sc)
     fb.op('Mov', dst=best_d, src=dmin)
@@ -796,7 +840,9 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
         fb.op('JEq', a=xo, b=fac, offset=lp)
         fb.op('JSGt', a=b.call('ent.Entity.getDistTo', x, best_anc), b=local, offset=lp)
         fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, fac, xo), offset=lp)
-        fb.op('JNull', reg=best_pf, offset=ok)
+        # no prey faction (raider-siege contest, neutral hunt): raiders only. A Fremen F_Harvester 201 from
+        # Atreides' Qartnah joined a raider contest, outlived the raiders and was chased (H 0) to a `supply` abort, twice
+        fb.op('JNull', reg=best_pf, offset=lp)
         fb.op('JNotEq', a=xo, b=best_pf, offset=lp)
         fb.label(ok)
     nx = fb.reg(cx.t('ent.Army'))
@@ -817,7 +863,12 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Mov', dst=nx, src=x)
     fb.op('JAlways', offset='grp1')
     fb.label('grp1done')
-    fb.op('JNull', reg=nx, offset='end')  # siege state but no besieger in reach
+    fb.op('JNotNull', reg=nx, offset='grp1ok')
+    # siege state but no besieger in reach: logged, an `objective` abort may have released a chase for this (Fremen
+    # 41:36 for a raider siege of Harkonnen's O-ram, Smugglers 50:33 Tal-ras: no contest followed either)
+    _log_hunt(fb, b, cx, helpers, fac, 'nogroup', None, best_anc, best_h, best_m, {'mode': best_mode})
+    fb.op('JAlways', offset='end')
+    fb.label('grp1ok')
     garr = _new_array(fb, b, cx)
     b.call('hl.types.ArrayObj.push', garr, fb.dyn(nx))
     x = _army_loop(fb, b, armies, alen, j, 'grp', 'grpdone')
@@ -826,7 +877,7 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     b.call('hl.types.ArrayObj.push', garr, fb.dyn(x))
     fb.op('JAlways', offset='grp')
     fb.label('grpdone')
-    # force (policy §1.5 concentrate, not everything): our free armies in reach (same tests as the evaluation),
+    # force (policy §1.6 concentrate, not everything): our free armies in reach (same tests as the evaluation),
     # nearest first, until HUNT_TO (KILL for a restricted start) x their side / terrain; past HUNT_CAP x group + 1
     # armies, stop once the entry ratio (ENTER, or KILL restricted) holds. Their side = max(the start's threat,
     # aimod_react at the prey + enemy cover): enemy armies free to come within REACT_R raise the force. Contests
@@ -855,12 +906,10 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Mov', dst=cap, src=b.field(garr, 'length'))
     fb.op('Mul', dst=cap, a=cap, b=b.const('i32', HUNT_CAP))
     fb.op('Add', dst=cap, a=cap, b=one)
-    cover_at(mt, best_anc, best_anc, True)  # our turrets there fight with us (as in the evaluation)
-    # contest: armies alone fill the goal (our neighbouring turrets / main-base guns x3 could fill it before one army
-    # and send a lone army at a besieging stack)
-    fb.op('JNotEq', a=best_mode, b=one, offset='mt_cov')
+    # armies alone fill goal and gate, every mode (the evaluation still counts our cover): main-base guns x3 filled
+    # both before one army was added, so Harkonnen sent single armies at 58k Rebels by Fonval (order balance 0.01
+    # for 40 s); the prey doesn't stay under our guns, the hunt follows it
     fb.op('Mov', dst=mt, src=zero)
-    fb.label('mt_cov')
     arr = _new_array(fb, b, cx)
     ny = fb.reg(cx.t('ent.Army'))
     nd2 = fb.reg(cx.t('f64'))
@@ -896,10 +945,14 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.label('seldone')
     # the force must still pass the entry ratio on their side incl. aimod_react (the evaluation saw only the
     # start's threat): Smugglers sent 2 S_Troopers (72.6k) at an F_Harvester with a 43.6k F_Trooper able to come
-    # (gate 81.7k); contests go anyway (policy §5a goal 2)
+    # (gate 81.7k); contests go short of it (policy §5a goal 2), but not below DEF_HOPE_IN x their side, the
+    # defense's own hopeless measure: Atreides sent 1 army (41k) to contest Fanih against a 297k side (gate 446k)
+    # and its rally judged Fanih outmatched 2 s later; the rally / Defense own a fight we can't even match
     fb.op('Bool', dst=ok, value=False)
-    fb.op('JEq', a=best_mode, b=one, offset='size_ok')
-    fb.op('JSLt', a=mt, b=gate, offset='fail')
+    fb.op('JSGte', a=mt, b=gate, offset='size_ok')
+    fb.op('JNotEq', a=best_mode, b=one, offset='fail')
+    fb.op('Mul', dst=dq, a=hs, b=_ratio(fb, b, DEF_HOPE_IN))
+    fb.op('JSLt', a=mt, b=dq, offset='fail')
     fb.label('size_ok')
     create = cx.fn('logic.ai.$AIEntityGroup.create')
     nul = fb.reg(cx.code.types[create.type.value].definition.args[1].value)

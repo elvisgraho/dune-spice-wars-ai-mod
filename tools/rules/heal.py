@@ -335,16 +335,25 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
 
 
 def build_unsafe(cx, threat, own, pw, terrain):
-    """aimod_unsafe(s, self, sticky) -> 0 safe, 1 contested: threat(owner, s) > own(owner, s, without self) *
+    """aimod_unsafe(s, self, sticky, fac) -> judged for s's owner, else fac, else self's owner (an ownerless allied
+    sietch: Fremen kept retreating to Karlon in Atreides land, into the fight there, rated safe as owner-less);
+    0 safe, 1 contested: threat(owner, s) > own(owner, s, without self) *
     (sticky ? STICKY : 1), 2 overwhelming: threat > (own + power of self) * OVERWHELM, or within RALLY_MIN of the
     owner's running rally's danger structure (map `rly`, `rlyt` within RALLY_HOLD: no heal / flee trip next to it)."""
-    fb = FB(cx, [cx.t('ent.Structure'), cx.t('ent.Army'), cx.t('bool')], cx.t('i32'))
+    fb = FB(cx, [cx.t('ent.Structure'), cx.t('ent.Army'), cx.t('bool'), cx.t('ent.Faction')], cx.t('i32'))
     b = B(fb)
     res = fb.reg(cx.t('i32'))
     fb.op('Int', dst=res, ptr=cx.code.add_i32(0).value)
     fb.op('JNull', reg=0, offset='end')
-    owner = b.call('ent.Entity.get_owner', 0)
+    owner = fb.reg(cx.t('ent.Faction'))
+    fb.op('Mov', dst=owner, src=b.call('ent.Entity.get_owner', 0))
+    fb.op('JNotNull', reg=owner, offset='ownok')
+    fb.op('Mov', dst=owner, src=3)
+    fb.op('JNotNull', reg=owner, offset='ownok')
+    fb.op('JNull', reg=1, offset='end')
+    fb.op('Mov', dst=owner, src=b.call('ent.Entity.get_owner', 1))
     fb.op('JNull', reg=owner, offset='end')
+    fb.label('ownok')
     s = fb.reg(cx.t('ent.Entity'))
     fb.op('Mov', dst=s, src=0)
     # rally running: structures next to the danger are off limits
@@ -505,9 +514,33 @@ def _retreat_commit(fb, b, cx, d):
     fb.label(done)
 
 
+def _micro_owner(cx, new_ids):
+    """Both AIUnits.unitMicroManagement call sites (onReady, regularUpdate) -> wrapper: map `umf` (State -> the
+    faction whose micro runs) set around the call, so closures created and called inside it know their faction."""
+    orig = cx.fn('logic.ai.AIUnits.unitMicroManagement')
+    ft = cx.code.types[orig.type.value].definition
+    args = [a.value for a in ft.args]
+    fb = FB(cx, args, ft.ret.value, fun_type=orig.type.value)
+    b = B(fb)
+    g = fb.try_()
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'umf'), fb.dyn(_state(fb, b, cx)),
+           fb.dyn(b.call('logic.ai.AIModule.get_aiOwner', 0)))
+    fb.end_try(g)
+    r = fb.reg(ft.ret.value)
+    fb.op('CallN', dst=r, fun=orig.findex.value, args=list(range(len(args))))
+    g2 = fb.try_()
+    b.call('haxe.ds.ObjectMap.remove', _global_map(fb, b, cx, 'umf'), fb.dyn(_state(fb, b, cx)))
+    fb.end_try(g2)
+    fb.op('Ret', ret=r)
+    w = fb.build()
+    new_ids.add(w)
+    return _redirect(cx, 'logic.ai.AIUnits.unitMicroManagement',
+                     ['logic.ai.AIUnits.onReady', 'logic.ai.AIUnits.regularUpdate'], w)
+
+
 def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
     """Redirect the healing-structure sort closures to wrappers: key + PENALTY if the structure is unsafe."""
-    report = {}
+    report = {'micro-owner': _micro_owner(cx, new_ids)}
     army_t = cx.t('ent.Army')
     for caller, n_expect in (('logic.ai.AIUnits.checkUnits', 1), ('logic.ai.AIUnits.unitMicroManagement', 2)):
         f = cx.fn(caller)
@@ -529,13 +562,15 @@ def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
             d = fb.reg(cx.t('f64'))
             fb.op('Call2', dst=d, fun=tgt.findex.value, arg0=0, arg1=1)  # original key, outside any trap
 
+            jf_box = [None]  # the judging faction register, set below before any heal_log call
+
             def heal_log(act, h, m, fb=fb, b=b, is_army=args[0] == army_t):
                 # `heal` {act stay|flee|detour|avoid, s, a, h, m, d}: once per structure per 3 s (the sort calls
                 # this key many times); detour/avoid: h/m = threat / own (+ asking army) within SAFE_R
                 done = _uid('hl')
                 g2 = fb.try_()
                 _throttle(fb, b, cx, 'heal', 1, 3, done)
-                so = b.call('ent.Entity.get_owner', 1)
+                so = jf_box[0]
                 fb.op('JNull', reg=so, offset=done)
                 se2 = fb.reg(cx.t('ent.Entity'))
                 fb.op('Mov', dst=se2, src=1)
@@ -553,6 +588,22 @@ def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
             guard = fb.try_()
             me = fb.reg(army_t)
             fb.op('Null', dst=me)
+            # judging faction: the structure's owner; an ownerless one (allied sietch) for the asking side: the army's
+            # owner, or (fight retreat) the first army owner in the warzone that the structure can supply
+            jf = fb.reg(cx.t('ent.Faction'))
+            fb.op('Mov', dst=jf, src=b.call('ent.Entity.get_owner', 1))
+            jfok = _uid('jf')
+            fb.op('JNotNull', reg=jf, offset=jfok)
+            if args[0] == army_t:
+                fb.op('Mov', dst=jf, src=b.call('ent.Entity.get_owner', 0))
+            elif args[0] == cx.t('logic.state.Warzone'):
+                # the fight-retreat key runs inside AIUnits.unitMicroManagement of the retreating faction (map `umf`,
+                # set by _micro_owner); a warzone member's owner could be the enemy (Karlon supplies its zone's owner)
+                mo = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'umf'), fb.dyn(_state(fb, b, cx)))
+                fb.op('JNull', reg=mo, offset=jfok)
+                fb.op('Mov', dst=jf, src=b.cast(mo, 'ent.Faction'))
+            fb.label(jfok)
+            jf_box[0] = jf
             sticky = fb.reg(cx.t('bool'))
             fb.op('Bool', dst=sticky, value=False)
             if args[0] == army_t:
@@ -571,7 +622,7 @@ def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
                 # at home: an army already at this structure stays and heals there; it leaves only when hostiles
                 # are in contact range or FLEE_ETA away AND overwhelm it (last resort), not because some are around
                 fb.op('JSGt', a=b.call('ent.Entity.getDistTo', 0, 1), b=b.const('f64', AT_HOME_R), offset='away')
-                sown = b.call('ent.Entity.get_owner', 1)
+                sown = jf
                 fb.op('JNull', reg=sown, offset='ok')
                 se = fb.reg(cx.t('ent.Entity'))
                 fb.op('Mov', dst=se, src=1)
@@ -592,7 +643,7 @@ def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
                 fb.op('JAlways', offset='ok')
                 fb.label('away')
             lvl = fb.reg(cx.t('i32'))
-            fb.op('Call3', dst=lvl, fun=unsafe, arg0=1, arg1=me, arg2=sticky)
+            fb.op('Call4', dst=lvl, fun=unsafe, arg0=1, arg1=me, arg2=sticky, arg3=jf)
             fb.op('JSLte', a=lvl, b=b.const('i32', 0), offset='ok')
             fb.op('JSGt', a=lvl, b=b.const('i32', 1), offset='hard')
             fb.op('Add', dst=d, a=d, b=b.const('f64', DETOUR * DETOUR))  # contested: worth a detour, not a trek
@@ -836,6 +887,16 @@ def _pick_life_wrapper(cx, helpers, ft, fun_type, inner, tag):
                                             ('hp%', lr), ('src', tag)])
     fb.op('JAlways', offset='l')
     fb.label('end')
+    if tag == 'siege':
+        # map `sidle` faction -> size of this idle list: empty = vanilla's NoAvailableArmy (tryArmyAction), which
+        # the stuck counter (siege.py) must not blame on the target
+        sn = fb.reg(cx.t('i32'))
+        fb.op('Mov', dst=sn, src=b.const('i32', 0))  # fresh load: `zi` is set after the JNull to 'end'
+        fb.op('JNull', reg=res, offset='sidset')
+        fb.op('Mov', dst=sn, src=b.field(res, 'length'))
+        fb.label('sidset')
+        b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'sidle'),
+               fb.dyn(b.field(b.field(0, 'controller'), 'owner')), fb.dyn(sn))
     fb.end_try(guard)
     fb.op('Ret', ret=res)
     return fb.build()

@@ -1,4 +1,4 @@
-"""Rally: gather strength instead of feeding armies one at a time (AI-POLICY §1.5 concentrate, defense).
+"""Rally: gather strength instead of feeding armies one at a time (AI-POLICY §1.6 concentrate, defense).
 
 The failure: Fremen took Atreides' Aeganim with 10 armies (~350k) against Atreides' 7 (~235k, too few even at home
 x1.3). Vanilla had no answer between "Defense with enough power" and nothing: 2 armies idled 330 away, 2 stopped 140
@@ -20,8 +20,9 @@ aimod_unsafe rates every structure within RALLY_MIN of D overwhelming, so vanill
 next to the enemy. Once the gathered force (all within RALLY_R of D) passes ENTER, the rally stops and the contest
 hunt (own village besieged) or vanilla's Defense takes them in together. The rally point is kept while it still
 qualifies (map `rlyp`). A rally still short after RALLY_GIVEUP s (map `rly0` = since when) commits when the gathered force is at least even
-(M >= DEF_HOPE_IN x H, terrain-adjusted; always for a main base): the rally ends, D isn't a rally target for RALLY_COOL s
-(map `rlyc`), vanilla's Defense and the contest hunt fight it (log act commit). Below even it concedes D for RALLY_COOL s
+(M >= DEF_HOPE_IN x H, terrain-adjusted; always for a main base): the rally ends, D and its neighbours within LOCAL
+(map `rlyk` faction -> committed D) aren't rally targets for RALLY_COOL s (map `rlyc`), vanilla's Defense and the
+contest hunt fight it (log act commit). Below even, or judged hopeless (`dhl` < 30 s), it concedes D for RALLY_COOL s
 (map `rlygu` structure -> time; never a main base; every pass first stops our running Defense orders of a conceded
 or hopeless (`dhl` < 30 s) structure, log `dstop`: vanilla's Defense re-sends idle members at the enemy one by one): D and its neighbours within LOCAL (map `rlyg`) can't be picked again, aimod_defend skips it, vanilla's Defense
 of it gets no armies (no trickle into a lost cause), and the armies are free for other work (log act giveup).
@@ -102,6 +103,20 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.op('JSGte', a=gq, b=b.const('f64', RALLY_COOL), offset='lgdone')
     fb.op('SafeCast', dst=gde, src=lgv)
     fb.label('lgdone')
+    # the last committed D (map `rlyk` faction -> D, `here` / timeout commit) while within RALLY_COOL: its neighbours
+    # within LOCAL face the same stack; a rally for one of them would walk the committed force at D away (vanilla's
+    # Defense of D may not have picked them yet: its required ratio re-rolls every 0.5 s)
+    gce = fb.reg(cx.t('ent.Entity'))
+    fb.op('Null', dst=gce)
+    lkv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rlyk'), fb.dyn(fac))
+    fb.op('JNull', reg=lkv, offset='lkdone')
+    lkt = b.call('haxe.ds.ObjectMap.get', rlyc, lkv)
+    fb.op('JNull', reg=lkt, offset='lkdone')
+    fb.op('SafeCast', dst=gq, src=lkt)
+    fb.op('Sub', dst=gq, a=t, b=gq)
+    fb.op('JSGte', a=gq, b=b.const('f64', RALLY_COOL), offset='lkdone')
+    fb.op('SafeCast', dst=gce, src=lkv)
+    fb.label('lkdone')
     zi = b.const('i32', 0)
     zero = b.const('f64', 0)
     i, j = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
@@ -164,9 +179,12 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.op('Sub', dst=gq, a=t, b=gq)
     fb.op('JSLt', a=gq, b=b.const('f64', RALLY_COOL), offset='s')
     fb.label('sgc')
-    fb.op('JNull', reg=gde, offset='sgn')
     fb.op('JTrue', cond=b.call('ent.Structure.get_isMainBase', s), offset='sgn')  # the capital always rallies
+    fb.op('JNull', reg=gde, offset='sgk')
     fb.op('JSLt', a=b.call('ent.Entity.getDistTo', se, gde), b=local, offset='s')
+    fb.label('sgk')
+    fb.op('JNull', reg=gce, offset='sgn')
+    fb.op('JSLt', a=b.call('ent.Entity.getDistTo', se, gce), b=local, offset='s')
     fb.label('sgn')
     fb.op('Call3', dst=h, fun=react, arg0=fac, arg1=se, arg2=local)
     fb.op('JSLt', a=h, b=b.const('f64', RALLY_MIN_H), offset='s')
@@ -223,8 +241,10 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.op('JSLt', a=gq, b=b.const('f64', 30), offset='nothere')
     fb.label('hdok')
     our_power(dz, m, 'hp', b.const('f64', RALLY_HERE))
-    # turrets around D but not D's own: a besieged village's turrets are silent (as aimod_defend counts them)
-    fb.op('CallN', dst=cv, fun=cover, args=[fac, dz, dz, t_true, no_arr])
+    # our turrets at D, D's own included: aimod_cover itself silences a village under a faction's siege (as
+    # aimod_defend sees it); excluding D dropped the guns of a threatened, not yet besieged village and of a main
+    # base (x MB_GUN_W), whose defenders the rally then walked >= RALLY_MIN away from it
+    fb.op('CallN', dst=cv, fun=cover, args=[fac, dz, nul_e, t_true, no_arr])
     fb.op('Add', dst=m, a=m, b=cv)
     hz = b.call('ent.Entity.get_zone', dz)
     fb.op('JNull', reg=hz, offset='nothere')
@@ -233,6 +253,7 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.op('Mul', dst=p, a=bh, b=_ratio(fb, b, DEF_HOPE_IN))
     fb.op('JSLt', a=m, b=p, offset='nothere')
     b.call('haxe.ds.ObjectMap.set', rlyc, fb.dyn(dz), fb.dyn(t))
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'rlyk'), fb.dyn(fac), fb.dyn(dz))
     for mp in (rly, rly0, rlyp):
         b.call('haxe.ds.ObjectMap.remove', mp, fb.dyn(fac))
     _log_ev(fb, b, cx, helpers, 'rally', [('f', fb.get(fac, 'kind')), ('act', 'here'), ('s', dz), ('H', bh),
@@ -252,9 +273,18 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     # at least even (terrain-adjusted, as the hopeless test): commit, the gathered force fights it (Smugglers had 334k
     # vs Atreides' 284k at Qafmah, gave up for not reaching 1.7x, and its Defense got no armies while the pillage
     # ran); below even: concede (never the capital: a main base commits)
+    # judged hopeless by aimod_defend within 30 s (map `dhl`, never a main base): concede, as for `here` (a commit
+    # would leave the armies idle at D: dstop ends its Defense every pass while RALLY_COOL keeps the rally off)
+    gdv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'dhl'), fb.dyn(dz))
+    fb.op('JNull', reg=gdv, offset='gnoh')
+    fb.op('SafeCast', dst=gq, src=gdv)
+    fb.op('Sub', dst=gq, a=t, b=gq)
+    fb.op('JSLt', a=gq, b=b.const('f64', 30), offset='gcede')
+    fb.label('gnoh')
     fb.op('Mul', dst=p, a=bh, b=_ratio(fb, b, DEF_HOPE_IN))
     fb.op('JSGte', a=bm, b=p, offset='gcommit')
     fb.op('JTrue', cond=b.call('ent.Structure.get_isMainBase', b.cast(fb.dyn(dz), 'ent.Structure')), offset='gcommit')
+    fb.label('gcede')
     b.call('haxe.ds.ObjectMap.set', rlygu, fb.dyn(dz), fb.dyn(t))
     b.call('haxe.ds.ObjectMap.set', rlyg, fb.dyn(fac), fb.dyn(dz))
     for mp in (rly, rly0, rlyp):
@@ -264,6 +294,7 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.op('JAlways', offset='end')
     fb.label('gcommit')
     b.call('haxe.ds.ObjectMap.set', rlyc, fb.dyn(dz), fb.dyn(t))
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'rlyk'), fb.dyn(fac), fb.dyn(dz))
     for mp in (rly, rly0, rlyp):
         b.call('haxe.ds.ObjectMap.remove', mp, fb.dyn(fac))
     _log_ev(fb, b, cx, helpers, 'rally', [('f', fb.get(fac, 'kind')), ('act', 'commit'), ('s', dz), ('H', bh),

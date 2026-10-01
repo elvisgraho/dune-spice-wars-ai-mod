@@ -63,7 +63,9 @@ def build_strand(cx, helpers, idle, unsafe):
     fb.op('JNotEq', a=b.field(z, 'owner'), b=fac, offset='st')
     fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', a, s))
     fb.op('Mul', dst=key, a=d, b=d)
-    fb.op('Call3', dst=lvl, fun=unsafe, arg0=s, arg1=a, arg2=t_false)
+    nf = fb.reg(cx.t('ent.Faction'))
+    fb.op('Null', dst=nf)  # ownerless structure: judged for the army's owner
+    fb.op('Call4', dst=lvl, fun=unsafe, arg0=s, arg1=a, arg2=t_false, arg3=nf)
     fb.op('JSGt', a=lvl, b=b.const('i32', 1), offset='st')  # overwhelming: never walk into it
     fb.op('JSLte', a=lvl, b=zi, offset='safe')
     fb.op('Add', dst=key, a=key, b=detour2)

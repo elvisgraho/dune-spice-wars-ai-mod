@@ -1,4 +1,4 @@
-"""Gather: our armies of one attack arrive together (AI-POLICY §1.5 concentrate).
+"""Gather: our armies of one attack arrive together (AI-POLICY §1.6 concentrate).
 
 Vanilla Regroup is not a gathering: checkRegroupOrder counts an army as arrived at the second-to-last step of its own
 path, so armies coming from different sides leave Regroup 60-120 apart; Engage then sends each straight in and the

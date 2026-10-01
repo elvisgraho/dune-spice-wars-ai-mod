@@ -18,8 +18,9 @@ stop(Cancel):
   (life and supply >= MIN_LIFE / MIN_SUPPLY, what the contest hunt and vanilla defense take);
 - home: hostile armies free to strike are closer to our land than the target + HOME_M (aimod_home) and our armies
   at home without the raid's (aimod_homeown) x OWN_T fall below ABORT x them;
-- weak (still walking, phase < Engage): raid power + our cover < ABORT x (aimod_react + enemy cover + militia) /
-  terrain at the target (relief arrived; in the fight the vanilla fight retreat decides).
+- weak (still walking, phase < Engage): raid power + our cover below the launch test x ABORT / ENTER at the target:
+  ABORT x (armies within LOCAL + enemy cover + militia + raiders), ABORT x RAID_FAR / ENTER x (aimod_react + the
+  same) / terrain (relief arrived; in the fight the vanilla fight retreat decides).
 
 Launch pass, every START s per faction, at most one launch per RAID_GAP s, never while defending. While the
 director's posture is RECOVER (most of our power worn, rules/strat.py) only a raid that is itself a recovery: each
@@ -141,7 +142,7 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     pillage_s = fb.string('Pillage')
     pillage = fb.dyn(pillage_s)
     i, j, k, idx, ph = (fb.reg(cx.t('i32')) for _ in range(5))
-    h, m, p, q, r, sd, lim, dy, tf, pr, hh, ms, hp = (fb.reg(cx.t('f64')) for _ in range(13))
+    h, m, p, q, r, sd, lim, dy, tf, pr, hh, ms, hp, hl = (fb.reg(cx.t('f64')) for _ in range(14))
     ok, anx = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
     ve, de = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('ent.Entity'))
     ye = fb.reg(cx.t('ent.Entity'))
@@ -276,13 +277,25 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('JSLt', a=q, b=r, offset='ab_home')
     # weak: still walking and relief arrived at the target (in the fight the vanilla fight retreat decides)
     fb.label('a_weak')
+    # the launch test scaled by ABORT / ENTER (the policy's enter -> abort gap) on both of its parts: the local side
+    # (armies within LOCAL + cover + militia + raiders) at ABORT, everything in REACT_R at ABORT x RAID_FAR / ENTER.
+    # A flat ABORT x all of it sat above the launch's RAID_FAR x all of it: Smugglers raided Ash-in at 92.4k vs
+    # 132.6k (0.70 > 0.667) and aborted `weak` 1 s later on the same numbers
     fb.op('JSGte', a=ph, b=b.const('i32', REGROUP + 1), offset='ord')
     their_side(h, ov)
+    fb.op('Call3', dst=q, fun=react, arg0=fac, arg1=ve, arg2=local)
+    fb.op('Sub', dst=hl, a=h, b=q)
+    fb.op('Call3', dst=q, fun=threat, arg0=fac, arg1=ve, arg2=local)
+    fb.op('Add', dst=hl, a=hl, b=q)
+    fb.op('Mul', dst=hl, a=hl, b=abort)
+    fb.op('Mul', dst=q, a=h, b=_ratio(fb, b, ABORT * RAID_FAR / ENTER))
+    fb.op('JSGte', a=hl, b=q, offset='aw_max')
+    fb.op('Mov', dst=hl, src=q)
+    fb.label('aw_max')
     cover_at(q, ve, True)
     fb.op('Add', dst=r, a=m, b=q)
     fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', ve))
-    fb.op('Mul', dst=q, a=h, b=abort)
-    fb.op('SDiv', dst=q, a=q, b=tf)
+    fb.op('SDiv', dst=q, a=hl, b=tf)
     fb.op('JSLt', a=r, b=q, offset='ab_weak')
     fb.op('JAlways', offset='ord')
     for why, hr, mr in (('defend', h, r), ('home', hh, ms), ('weak', h, r)):

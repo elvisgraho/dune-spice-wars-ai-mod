@@ -43,8 +43,9 @@ HUNT_TO = 2.5      # hunt force: nearest free armies until this x their side (pr
                    # H_Soldier and left their front empty
 HUNT_CAP = 2       # ... and past HUNT_CAP x (prey group size) + 1 armies, stop as soon as the entry ratio holds
                    # (a loner: 3, a pair: 5); contests of our besieged villages take every free army
-CONTEST_W = 3      # start score weight when the prey is besieging a structure (objective)
-DIST0 = 100        # start score = weight * H / (distance of our nearest free army + DIST0)
+CONTEST_W = 10 ** 9 # start score offset for a contest (prey besieging a structure near us): outranks every chase
+CONTEST_NEAR = HOME_R  # a contest of a village not ours counts as an objective (CONTEST_W, `objective`) this close
+DIST0 = 100        # start score = H / (distance of our nearest free army + DIST0)^2 (+ CONTEST_W for a contest)
 ENTER = 1.5        # policy enter ratio
 ABORT = 0.7        # policy abort ratio (buffer: an even-ish open-field fight, 1-2 armies down, is kept)
 OWN_T = 1.3        # terrain factor on our own zone: we heal and resupply there, they drain (defender advantage)
@@ -149,6 +150,8 @@ SPOS_OFF = 25      # the safe point: this far from the target's centre, away fro
                    # the occupation range: occupiers seen up to ~30 from the village)
 SPOS_T = 4         # s: an army is re-sent at most this often (micro re-engages in between)
 ALONE_HOLD = 60    # s: raid skips a village the Annex value dropped as a plain lone candidate this recently
+DIST_COST_ATB = 952  # Outpost_DistanceCost_MRatio: Annex cost grows with distance (> 0); Smugglers don't have it
+FAR_ZONES = 1      # extra zones of siege-target reach for a faction without that cost (vanilla AI: 1 zone total)
 KEEP_R = 60        # keep-capture (rules/spos.py): an army this close to a village we besiege / occupy isn't pulled off
                    # by vanilla micro's 'defend our vulnerable structure' Reposition (occupiers stand at 4-30)
 STUCK_R = 30       # unstick (rules/spos.py): an Action siege army this close to the target's centre ...

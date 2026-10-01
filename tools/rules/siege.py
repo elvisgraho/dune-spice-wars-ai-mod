@@ -1025,7 +1025,8 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
        (lost) and no Military order of ours targets yet: s is replaced (log `bunker`). Bypasses vanilla's target
        score and aggressiveness gate on purpose. Neutral ones aren't redirected (it beat deep-desert ring villages
        and everything else): the Annex value scores them x BUNKER_MB.
-    1b. trip cost of a Liberate / Raze (d = its target's distance to our land; not the director's pressed village,
+    1b. trip cost of a Liberate / Raze / PillageSietch / Dismantle (d = its target's distance to our land; not the
+    director's pressed village,
        map `spv`): (a) beyond LOCAL while our Annex is pending (Annexation gauge >= RAID_GAUGE, full for less than
        RAID_GAUGE_T: raid's map `rgauge`, read only) -> refuse, why annex (the armies are about to have better work
        at home); (b) the at-war armies free to reach our land before we are back (aimod_home(d)) x ENTER above
@@ -1034,7 +1035,9 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
        raid's; Annex has its own value per cost.
     3. annex-spacing: one of our Military orders already targets another structure within ADJ_R of s (two thin
        sieges side by side split the force) -> refuse (log `space`, why space).
-    Refusal = onActionEnd(gauge(k), Dismiss, data): gauge un-paused, no decay, no onFailure blocks; `space` logged
+    Refusal = onActionEnd(gauge(k), Dismiss, data): gauge un-paused, no decay, no onFailure blocks; `exposed` lasts
+    minutes (the Liberation gauge re-fired every 0.5 s for 12 min, 1801 fires), so it ends with Skip instead (x0.85,
+    still no onFailure blocks): the gauge refills and re-asks in ~30 s. `space` logged
     once per faction per 10 s (the gauge retries often). Otherwise (or on any error) the original with s (or the
     bunker village); when that call created an order on the target (not NoAvailableArmy / NotEnoughArmies) its time is
     recorded (map 'alaunch'; the bunker skips a village launched less than RETRY s ago, the scoring wrapper drops it)."""
@@ -1047,6 +1050,8 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     st_t = cx.t('ent.Structure')
     blocked = fb.reg(cx.t('bool'))
     fb.op('Bool', dst=blocked, value=False)
+    decay = fb.reg(cx.t('bool'))  # a lasting refusal: the gauge decays instead of re-firing every 0.5 s
+    fb.op('Bool', dst=decay, value=False)
     near = fb.reg(cx.t('ent.Entity'))
     fb.op('Null', dst=near)
     why = fb.reg(cx.t('String'))
@@ -1076,7 +1081,11 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     # 1b. trip cost of a Liberate / Raze (Harkonnen sent 9 of 11 armies to liberate Atreides' Marwan 694 from its
     # land while its Annex waited on Authority; affordable 2 min later, it failed NotEnoughArmies / NoAvailableArmy)
     fb.label('bunker')
-    fb.op('JEq', a=b.call('String.__compare', 1, fb.dyn(fb.string('Liberate'))), b=zi, offset='farchk')
+    # Sietch and renegade-base strikes too (PillageSietch / Dismantle, prio 2, owner-less: vanilla sizes them by the
+    # defenders alone): Smugglers sent all 15 armies to Ub-Al'khelon's sietch for 5 min while the director held
+    # (no spare force, 640k hostile near home)
+    for kind in ('Liberate', 'PillageSietch', 'Dismantle'):
+        fb.op('JEq', a=b.call('String.__compare', 1, fb.dyn(fb.string(kind))), b=zi, offset='farchk')
     fb.op('JNotEq', a=b.call('String.__compare', 1, fb.dyn(fb.string('Raze'))), b=zi, offset='bunker2')
     fb.label('farchk')
     fb.op('JEq', a=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'spv'), fb.dyn(fac)), b=fb.dyn(2),
@@ -1122,6 +1131,7 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     fb.op('JSLte', a=fh, b=fq, offset='bunker2')
     fb.op('Mov', dst=why, src=fb.string('exposed'))
     fb.op('Bool', dst=blocked, value=True)
+    fb.op('Bool', dst=decay, value=True)
     fb.op('JAlways', offset='done')
 
     # 2. bunker: Annex only
@@ -1286,6 +1296,14 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     # NoAvailableArmy, not this target's fault (new spawns must find every target open; no tension drop either)
     ffac = b.field(b.field(0, 'controller'), 'owner')
     fb.op('JNull', reg=ffac, offset='rec_done')
+    # ... nor when vanilla's idle list for this launch was empty (map `sidle`, set by the pick-life getUnits wrapper:
+    # NoAvailableArmy): every faction's first target was blocked 120 s at 00:14, the opening Annexes waited to 02:14
+    fsv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'sidle'), fb.dyn(ffac))
+    fb.op('JNull', reg=fsv, offset='fsidl')
+    fsn = fb.reg(cx.t('i32'))
+    fb.op('SafeCast', dst=fsn, src=fsv)
+    fb.op('JSLte', a=fsn, b=b.const('i32', 0), offset='rec_done')
+    fb.label('fsidl')
     farr, falen = _my_armies(fb, b, ffac, 'rec_done')
     fi, fk, fix = fb.reg(cx.t('i32')), fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
     fa = _army_loop(fb, b, farr, falen, fi, 'fav', 'rec_done')
@@ -1397,6 +1415,9 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     names = [c.name.resolve(cx.code) for c in cx.code.types[rt].definition.constructs]
     reason = fb.reg(rt)
     fb.op('MakeEnum', dst=reason, construct=names.index('Dismiss'), args=[])  # impactNeeds: no gauge decay
+    fb.op('JFalse', cond=decay, offset='endact')
+    fb.op('MakeEnum', dst=reason, construct=names.index('Skip'), args=[])  # x0.85, no onFailure blocks
+    fb.label('endact')
     fb.op('Call4', dst=void, fun=end.findex.value, arg0=0, arg1=gk, arg2=reason, arg3=3)
     fb.op('Ret', ret=void)
     w = fb.build()

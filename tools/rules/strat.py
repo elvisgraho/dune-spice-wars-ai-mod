@@ -475,6 +475,7 @@ def strat_levers(cx, new_ids):
     - `Diplomacy.getTargetStatus` in getSiegeableVillages -> >= 1 for the pressed village's owner (vanilla lists an
       enemy's villages only for its daily diplomatic target); also for an at-war owner one of whose villages is our
       contact partner at tension >= TEN_GATE (the target scores keep only such partner villages of it);
+    - `isInSupplyRange` in getSiegeableVillages -> + FAR_ZONES zones for a faction without Annex distance cost;
     - `get_aggressiveness` in tryAnnexation -> GAUGE_FIRE-scale max (100) while pressing in annex mode (enemy
       villages need aggressiveness >= 50).
     The target scores (siege.build_scoring) then keep only the pressed village among that faction's."""
@@ -539,6 +540,53 @@ def strat_levers(cx, new_ids):
     new_ids.add(w)
     report['press-target'] = _redirect(cx, 'logic.ai.Diplomacy.getTargetStatus',
                                        ['logic.ai.$AIMilitary.getSiegeableVillages'], w)
+    # supply range of siege targets: vanilla lists villages within maxSupplyDistZones of our territory, 1 zone in
+    # practice (+1 per AI_SupplyEstimation_MaxDistance_BonusesCount 3 / 5 / 15 reached by Recycling Vats + Spectral
+    # Imaging, at most 2). A faction whose Annex cost doesn't grow with distance (attribute 952
+    # Outpost_DistanceCost_MRatio <= 0: Smugglers) gets FAR_ZONES more: far villages cost them the same (Smugglers
+    # saw 1-8 candidates all match and annexed 8 villages in 69 min). Vanilla's -10 / zone score keeps near ones first
+    orig = cx.fn('logic.ai.AIMilitary.isInSupplyRange')
+    args = [a.value for a in cx.code.types[orig.type.value].definition.args]
+    fb = FB(cx, args, cx.t('bool'), fun_type=orig.type.value)
+    b = B(fb)
+    res = fb.reg(cx.t('bool'))
+    fb.op('Call2', dst=res, fun=orig.findex.value, arg0=0, arg1=1)
+    guard = fb.try_()
+    fb.op('JTrue', cond=res, offset='end')
+    fb.op('JNull', reg=0, offset='end')
+    fb.op('JNull', reg=1, offset='end')
+    owner = b.call('logic.ai.AIModule.get_aiOwner', 0)
+    fb.op('JNull', reg=owner, offset='end')
+    gav = cx.fn('ent.Object.getAtbVal')
+    gat = [a.value for a in cx.code.types[gav.type.value].definition.args]
+    gobj, gref, gfac = fb.reg(gat[0]), fb.reg(gat[2]), fb.reg(gat[3])
+    fb.op('Mov', dst=gobj, src=owner)
+    fb.op('Null', dst=gref)
+    fb.op('Null', dst=gfac)
+    dcr = fb.reg(cx.t('f64'))
+    fb.op('Call4', dst=dcr, fun=gav.findex.value, arg0=gobj, arg1=b.const('i32', DIST_COST_ATB), arg2=gref, arg3=gfac)
+    fb.op('JSGt', a=dcr, b=b.const('f64', 0), offset='end')
+    z = b.call('ent.Entity.get_zone', 1)
+    fb.op('JNull', reg=z, offset='end')
+    gd = cx.fn('ent.Zone.getDistanceToPlayerTerritory')
+    gdt = [a.value for a in cx.code.types[gd.type.value].definition.args]
+    pf, tr = fb.reg(gdt[1]), fb.reg(gdt[2])
+    fb.op('Mov', dst=pf, src=owner)
+    fb.op('Bool', dst=tr, value=True)
+    zd = fb.reg(cx.t('i32'))
+    fb.op('Call3', dst=zd, fun=gd.findex.value, arg0=z, arg1=pf, arg2=tr)
+    mx = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=mx, src=b.field(0, 'maxSupplyDistZones'))
+    fb.op('Add', dst=mx, a=mx, b=b.const('i32', FAR_ZONES))
+    fb.op('JSGt', a=zd, b=mx, offset='end')
+    fb.op('Bool', dst=res, value=True)
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    new_ids.add(w)
+    report['far-annex'] = _redirect(cx, 'logic.ai.AIMilitary.isInSupplyRange',
+                                    ['logic.ai.$AIMilitary.getSiegeableVillages'], w)
     # aggressiveness gate (tryAnnexation only)
     orig = cx.fn('logic.ai.AIMilitary.get_aggressiveness')
     fb = FB(cx, [cx.t('logic.ai.AIMilitary')], cx.t('f64'), fun_type=orig.type.value)
