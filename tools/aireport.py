@@ -39,7 +39,11 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
   undeploy: a, ok, nm, sup (installed turret not fighting on hostile land uninstalled; nm = order move blocks removed)
   mem   : k, a (faction memory event: k harvester = our harvester a fighting, its zone stamped dangerous)
   hfield: a, s, dg (harvester a's field choice: field s penalised, dg = zone danger x100; once per field per 10 s)
-  raid  : act start: tgt, H, M, n, dm, sd, hh, ms, ax, nc, ok (pillage launched: H = at-war threat + enemy turret
+  strat : f, post (defend|hold|press|expand|harass; hold = no spare force for a new target), S (spare power after home need), need, T (our army power),
+          tgt (pressed village), mode (annex|pillage), hold (their side there), reach (our power there), war =
+          [{f, ds (our desiredStatus toward it: 0 peace wish, 1 war target, 2 total war, -1 unknown), pw}] (director,
+          every posture / target change and at least every 60 s); act drop: why (done|gone|truce|slow|weak), tgt, age
+  raid  : act start: tgt, H, M, n, dm (0 = the pressed village), sd, hh, ms, ax, nc, ok (pillage launched: H = at-war threat + enemy turret
           cover + militia at the village, M = the sized raid force (+ our cover), n armies, dm = nearest, sd = village
           to our land, hh / ms = hostile / our power within sd + HOME_M of our land (ms minus the raid), ax = the
           vanilla Annex choice kept out, nc = vanilla pillage candidates; the order itself is a Military ArmySiege
@@ -103,6 +107,36 @@ def atom(v):
     return float(v) if re.fullmatch(r'-?\d+(\.\d+)?(e[-+]?\d+)?', v) else v
 
 
+def director(strats):
+    """Director (tools/rules/strat.py): posture time per faction, press targets with their outcome, war wishes."""
+    out = ['\n## Director (tools/rules/strat.py): posture per faction (share of rows), presses and their end; '
+           'ds = our desiredStatus toward an at-war faction (0 = vanilla never targets its villages)']
+    rows = [e for e in strats if e.get('act') != 'drop']
+    drops = [e for e in strats if e.get('act') == 'drop']
+    by = defaultdict(Counter)
+    for e in rows:
+        by[e.get('f')][e.get('post')] += 1
+    for f, c in sorted(by.items(), key=lambda kv: str(kv[0])):
+        n = sum(c.values())
+        last = [e for e in rows if e.get('f') == f][-1]
+        war = ' '.join(f"{w.get('f')}:ds{num(w.get('ds'), 0)}/{kpw(w.get('pw'))}" for w in (last.get('war') or [])
+                       if isinstance(w, dict))
+        out.append(f"{f}: " + ', '.join(f'{p} {100 * k // n}%' for p, k in c.most_common())
+                   + f" | last S{kpw(last.get('S'))} need{kpw(last.get('need'))} T{kpw(last.get('T'))} | {war}")
+    starts = [e for e in rows if e.get('post') == 'press' and e.get('tgt')]
+    seen = set()
+    for e in starts:
+        key = (e.get('f'), ent(e.get('tgt')))
+        if key in seen:
+            continue
+        seen.add(key)
+        end = next((d for d in drops if d.get('f') == e.get('f') and ent(d.get('tgt')) == key[1]
+                    and d['_t'] >= e['_t']), None)
+        out.append(f"  {clock(e['_t'])} {e.get('f')} press {key[1][:22]:<22} {e.get('mode')} hold{kpw(e.get('hold'))} "
+                   f"reach{kpw(e.get('reach'))} -> " + (f"{end.get('why')} at {clock(end['_t'])}" if end else 'open'))
+    return out
+
+
 def parse_lines(lines):
     events = []
     for line in lines:
@@ -112,8 +146,20 @@ def parse_lines(lines):
         try:
             events.append(parse_value(line, k + 6)[0])
         except (ValueError, IndexError):
-            events.append({'e': 'unparsed'})
+            events.append(_salvage(line[k:]) or {'e': 'unparsed'})
     return events
+
+
+def _salvage(s):
+    """Flat `key : number|word` fields of a line the parser couldn't read (the log truncates long values, e.g. the
+    snap gauge list cut inside an entry): enough for snap aggr / armies / structs and the g / t clocks."""
+    m = re.match(r'AIMOD \{e : (\w+), f : (\w+)', s)
+    if not m:
+        return None
+    e = {'e': m.group(1), 'f': m.group(2)}
+    for key, val in re.findall(r'(?:^|[{,] )(aggr|armies|structs|g|t) : (-?[\d.]+)', s):
+        e[key] = float(val)
+    return e if 'g' in e else None
 
 
 def ent(d):
@@ -254,7 +300,7 @@ def summarize(events, faction=None, all_orders=False):
     stops = Counter()
     hunts = Counter()                       # (faction, act, why)
     spaced = Counter()                      # (faction, why, kind, tgt, near)
-    retreats, heals, bunkers, discs, raids = [], [], [], [], []
+    retreats, heals, bunkers, discs, raids, strats = [], [], [], [], [], []
     for e in events:
         k, f, t = e.get('e'), e.get('f'), when(e, t0)
         e['_t'] = t
@@ -314,6 +360,8 @@ def summarize(events, faction=None, all_orders=False):
             bunkers.append(e)
         elif k == 'disc':
             discs.append(e)
+        elif k == 'strat':
+            strats.append(e)
         elif k == 'raid':
             raids.append(e)
         elif k == 'hunt':
@@ -423,9 +471,12 @@ def summarize(events, faction=None, all_orders=False):
 
     if bunkers:
         out.append('\n## Bunker (tools/rules): Annex redirected to a village next to our main base: '
-                   'faction target (vanilla pick), count')
+                   'faction target (vanilla pick), count (logged once per faction per 10 s)')
         c = Counter((e.get('f'), ent(e.get('tgt')), ent(e.get('was'))) for e in bunkers)
         out += [f'{f} {tg} (was {w}) x{n}' for (f, tg, w), n in c.most_common(12)]
+
+    if strats:
+        out += director(strats)
 
     if raids:
         out.append('\n## Raids (tools/rules/raid.py): pillage with idle armies (neutral or at-war villages, not the '
@@ -461,7 +512,7 @@ def summarize(events, faction=None, all_orders=False):
 
     if discs:
         out.append('\n## Refused Discovery trips (tools/rules): lone army vs at-war threat at the world event; '
-                   'faction target count')
+                   'faction target count (logged once per event per 30 s)')
         c = Counter((e.get('f'), ent(e.get('tgt'))) for e in discs)
         out += [f'{f} {tg} x{n}' for (f, tg), n in c.most_common(12)]
         for e in discs[-8:]:

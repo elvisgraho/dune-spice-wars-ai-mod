@@ -1,5 +1,5 @@
 """AI rules built on the enemy army awareness scan (testbed patch `aware-ai`, installed with `ai-log`): wiring only.
-The code lives in tools/rules/: common (thresholds, bytecode helpers), world (shared queries), heal, hunt, siege, raid, strand, memory, deploy.
+The code lives in tools/rules/: common (thresholds, bytecode helpers), world (shared queries), heal, hunt, siege, raid, strat, strand, memory, deploy.
 Thresholds and rationale: docs/AI-POLICY.md §4; mechanics and hook points: docs/REVERSING.md "AI rules".
 
 Shared queries (appended functions): aimod_pw, aimod_threat(fac, p, r) (at-war power + neutral raiders targeting fac
@@ -14,7 +14,7 @@ core, early Engage),
 annex-spacing (no parallel sieges on adjacent structures), turret/third-party-aware vanilla sizing, discovery-gate (no
 lone world-event trips into superior at-war armies), siege-join (neutral targets need 1.25; the nearest idle armies
 join a siege launch until 3x the defense), siege-engage (our siege orders leave Regroup once the armies near the
-target suffice), raid (opportunistic pillage next to our armies), strand (idle armies on hostile land walk home), undeploy (an
+target suffice), strat (director: posture per faction, presses weak enemy villages next to us), raid (pillage with idle armies), strand (idle armies on hostile land walk home), undeploy (an
 installed Fremen turret starving on hostile land gets mobile again), ability-gate (no emergency order abilities
 without enemy power), memory (zone danger with cooldown; harvester field choice),
 busy-siege
@@ -27,6 +27,7 @@ from rules.heal import *  # noqa: F401,F403
 from rules.hunt import *  # noqa: F401,F403
 from rules.siege import *  # noqa: F401,F403
 from rules.raid import *  # noqa: F401,F403
+from rules.strat import *  # noqa: F401,F403
 from rules.strand import *  # noqa: F401,F403
 from rules.memory import *  # noqa: F401,F403
 from rules.deploy import *  # noqa: F401,F403
@@ -34,7 +35,7 @@ from rules.deploy import *  # noqa: F401,F403
 
 def install(cx, helpers, new_ids):
     """Build the queries, the redirects and the per-faction tick. Returns (report, tick findex): tick(mil, dt) runs
-    memory (record danger events first), hunt, raid, siege-engage, undeploy, then strand (a new hunt / raid claims its armies
+    memory (record danger events first), strat (posture / press), hunt, raid, siege-engage, undeploy, then strand (a new hunt / raid claims its armies
     before idle ones are sent home)."""
     busy = fix_busy_siege(cx)
     pw = build_pw(cx)
@@ -78,6 +79,9 @@ def install(cx, helpers, new_ids):
     homeown = build_home(cx, pw, land, own=True)
     raid = build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, defend, militia, threat, free,
                       home, homeown, helpers['scores'])
+    fpow = build_fpow(cx, pw)
+    strat = build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, defend, militia, home)
+    report.update(strat_levers(cx, new_ids))
     sengage = build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain)
     idle = build_free(cx, pw, 0, 0, patrol_ok=False)
     strand = build_strand(cx, helpers, idle, unsafe)
@@ -86,10 +90,11 @@ def install(cx, helpers, new_ids):
     danger = build_danger(cx)
     memory = build_memory(cx, helpers)
     report.update(harvest_fields(cx, danger, helpers, new_ids))
-    tick = build_chain(cx, [memory, hunt, raid, sengage, undeploy, strand])
-    new_ids.update({hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, sengage, idle, strand, undeploy, danger,
+    tick = build_chain(cx, [memory, strat, hunt, raid, sengage, undeploy, strand])
+    new_ids.update({hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, idle, strand, undeploy, danger,
                     memory, tick})
     report['strand'] = 1
     report['undeploy'] = 1
     report['raid'] = 1
+    report['strat'] = 1
     return report, tick

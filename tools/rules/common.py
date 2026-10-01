@@ -95,7 +95,16 @@ PURSUIT_STALE = 3  # s: a warzone record not refreshed for this long belongs to 
 GIVEUP_T = 90      # s: an army a chase gave up on (`chase` abort) isn't chased again for this long (it outruns us;
                    # a new chase would end the same way 45 s later)
 RAID_RETRY = 60    # s: a village our raid left (aborted, or cancelled at once by vanilla) isn't raided again this soon
-CANCEL = 2       # ent.ActionEndReason: Success Fail Cancel Override
+FRONT_R = 600      # director: enemy villages this close to our land are the front (policy §5b)
+PRESS = KILL       # ... soft = the spare armies in reach have this x (armies in reach + cover + militia) / terrain
+PRESS_R = HUNT_R   # ... spare armies this close to a village can take part (same reach as siege-join)
+PRESS_KEEP = ABORT  # a press is dropped when our power there (any task) x terrain < this x their side
+PRESS_MAX = 240    # s: a press not finished by then is dropped (`slow`); enemy Annex ~ walk + militia + 6 days
+PRESS_RETRY = 120  # s: a dropped press target isn't pressed again this soon
+PRESS_W = 10       # Annex score x this for the pressed village (vanilla picks at random among the top scores)
+GAUGE_FIRE = 100   # = data AI_Gauge_GoalValue: a military gauge fires at this value (failures x0.85 sink it)
+STRAT_LOG = 60     # s: a `strat` row per faction at least this often, and on every posture / target change
+CANCEL = 2      # ent.ActionEndReason: Success Fail Cancel Override
 REGROUP = 3        # AIOrder.phase: Paused Waiting Preparation Regroup Engage Action Retreat
 ACTION = 5
 BEST_COUNT = 877   # Const.fValuesCache index of AI_StructureScore_BestStructuresCount: vanilla picks its siege

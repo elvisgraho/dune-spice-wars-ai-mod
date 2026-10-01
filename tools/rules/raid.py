@@ -20,7 +20,9 @@ in Action at RAID_DONE progress or more (finish it). First trigger wins, stop(Ca
 
 Launch pass, every START s per faction, at most one launch per RAID_GAP s, never while defending:
 - candidates: vanilla's own pillage list (AIMilitary.getSiegeableVillages "Pillage": pillage allowed for us, not
-  Devastated, no order on it, in supply range, sandstorms, ...), owned by nobody or by a faction at war with us, not
+  Devastated, no order on it, in supply range, sandstorms, ...) with its desiredStatus gate lifted for this scan
+  (map `rscan`, read by strat_levers: vanilla's daily wish is 0 toward most at-war factions, so the enemy village
+  next to a won fight was never a candidate), owned by nobody or by a faction at war with us, not
   a main base, not besieged; minus the vanilla Annex choices (getSiegeableVillages "Annex" with tryAnnexation's
   aggressiveness gate, target scores, pickMapBest over AI_StructureScore_BestStructuresCount) and villages within
   BUNKER_R of our main base (the bunker redirect annexes them first), villages with our own Underworld HQ (our
@@ -201,6 +203,13 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     # commit gap and defensive posture
     lastmap = _global_map(fb, b, cx, 'raid')
     retrymap = _global_map(fb, b, cx, 'rlaunch')  # village -> last raid launch on it
+    # the director's press (rules/strat.py): annex mode = vanilla's siege takes it, never pillaged; pillage mode =
+    # this rule takes it first (its annex-choice exclusion doesn't apply)
+    pvd = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'spv'), fb.dyn(fac))
+    pan = fb.reg(cx.t('bool'))
+    fb.op('SafeCast', dst=pan, src=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'spa'), fb.dyn(fac)))
+    pref = fb.reg(cx.t('bool'))
+    eff = fb.reg(cx.t('f64'))
     last = b.call('haxe.ds.ObjectMap.get', lastmap, fb.dyn(fac))
     lastf = fb.reg(cx.t('f64'))
     fb.op('JNull', reg=last, offset='gapok')
@@ -214,10 +223,16 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     structs = b.cast(fb.get(fac, 'structures', 'array'), 'hl.types.ArrayObj')
     fb.op('JNull', reg=structs, offset='end')
     sn = b.field(structs, 'length')
-    # vanilla's pillage candidates
+    # vanilla's pillage candidates, every at-war owner's villages included: the desiredStatus gate is lifted for
+    # this call only (map `rscan` faction -> now, read by strat_levers' getTargetStatus wrapper, stale next frame)
+    scan = _global_map(fb, b, cx, 'rscan')
+    b.call('haxe.ds.ObjectMap.set', scan, fb.dyn(fac), fb.dyn(t))
     cands = _new_array(fb, b, cx)
     b.call('logic.ai.$AIMilitary.getSiegeableVillages', cands, pillage_s, fac,
            b.call('$HAI.getDefaultStructureArgs', pillage_s))
+    nodyn = fb.reg(cx.t('dyn'))
+    fb.op('Null', dst=nodyn)
+    b.call('haxe.ds.ObjectMap.set', scan, fb.dyn(fac), nodyn)
     vn = b.field(cands, 'length')
     # vanilla's next Annex choices (as tryAnnexation -> tryAction picks them): never raided
     annex_s = fb.string('Annex')
@@ -299,6 +314,13 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.label('notrecent')
     # not a village our own Underworld HQ exploits (a pillage devastates our income there)
     fb.op('JTrue', cond=b.call('ent.Structure.hasUWHeadquarters', v, fac), offset='v')
+    fb.op('Bool', dst=pref, value=False)
+    fb.op('JNull', reg=pvd, offset='notpress')
+    fb.op('JNotEq', a=fb.dyn(ve), b=pvd, offset='notpress')
+    fb.op('JTrue', cond=pan, offset='v')  # pressed for Annex: the siege takes it
+    fb.op('Bool', dst=pref, value=True)
+    fb.op('JAlways', offset='mbdone')  # pressed for pillage: no annex-choice / bunker exclusion
+    fb.label('notpress')
     # not what we annex next
     fb.op('JNull', reg=choices, offset='nochoice')
     fb.op('JTrue', cond=b.call('hl.types.ArrayObj.contains', choices, fb.dyn(ve)), offset='v')
@@ -409,8 +431,12 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('Mov', dst=rej_why_c, src=why_home)
     fb.op('JSLt', a=q, b=r, offset='refuse')
     fb.label('pass')
-    fb.op('JSGte', a=dmin, b=best_d, offset='v')
-    for dst, src in ((best, ve), (best_d, dmin), (best_h, h), (best_sd, sd), (best_tf, tf),
+    fb.op('Mov', dst=eff, src=dmin)  # the pressed village wins over any other candidate
+    fb.op('JFalse', cond=pref, offset='noeff')
+    fb.op('Mov', dst=eff, src=zero)
+    fb.label('noeff')
+    fb.op('JSGte', a=eff, b=best_d, offset='v')
+    for dst, src in ((best, ve), (best_d, eff), (best_h, h), (best_sd, sd), (best_tf, tf),
                      (best_hh, hh), (best_ms, ms)):
         fb.op('Mov', dst=dst, src=src)
     fb.op('JAlways', offset='v')
