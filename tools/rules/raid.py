@@ -15,7 +15,7 @@ trigger on an occupation under way splits it instead of cancelling (aimod_reluni
 the refill stay, else the weakest; the rest are released; logged act split). First trigger wins, else stop(Cancel):
 - defend: our structure is besieged (aimod_defend) within RECALL_R of the target, our armies already at it (within
   LOCAL, any task) + free ones within GATHER_R (+ our cover) are short of ENTER x (threat + enemy cover) / terrain there, and the raid has armies fit to defend
-  (life and supply >= MIN_LIFE / MIN_SUPPLY, what the contest hunt and vanilla defense take);
+  (life >= MIN_LIFE, what the contest hunt takes; supply is the hunt's absolute trip budget, not a share);
 - home: hostile armies free to strike are closer to our land than the target + HOME_M (aimod_home) and our armies
   at home without the raid's (aimod_homeown) x OWN_T fall below ABORT x them;
 - weak (still walking, phase < Engage): raid power + our cover below the launch test x ABORT / ENTER at the target:
@@ -31,7 +31,8 @@ doesn't go out) and the entry test is RAID_TO instead of ENTER (overwhelming, sh
   (map `rscan`, read by strat_levers: vanilla's daily wish is 0 toward most at-war factions, so the enemy village
   next to a won fight was never a candidate), owned by nobody or by a faction at war with us, not
   a main base, not besieged; minus the vanilla Annex choices (getSiegeableVillages "Annex" with tryAnnexation's
-  aggressiveness gate, target scores, pickMapBest top RAID_KEEP) and villages within
+  aggressiveness gate, target scores, pickMapBest top RAID_KEEP; remembered AKEEP_T s in maps `akv` / `akf`, which
+  also keep them out of vanilla's Pillage targets: siege.build_scoring) and villages within
   BUNKER_R of our main base (the bunker redirect annexes them first), villages on an uncontested deep-desert ring
   we are closing (aimod_ddclean, Fremen), villages with our own Underworld HQ (our
   income there), villages our raid launched on less than RAID_RETRY s ago (aborted / cancelled at once: no loop)
@@ -134,7 +135,7 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     home_m, recall_r, gather_r = b.const('f64', HOME_M), b.const('f64', RECALL_R), b.const('f64', GATHER_R)
     enter, abort, own_t = _ratio(fb, b, ENTER), _ratio(fb, b, ABORT), _ratio(fb, b, OWN_T)
     raid_to = _ratio(fb, b, RAID_TO)
-    min_life, min_sup = _ratio(fb, b, MIN_LIFE), _ratio(fb, b, MIN_SUPPLY)
+    min_life = _ratio(fb, b, MIN_LIFE)
     t_false, t_true = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
     fb.op('Bool', dst=t_false, value=False)
     fb.op('Bool', dst=t_true, value=True)
@@ -229,11 +230,6 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('Call1', dst=p, fun=pw, arg0=u)
     fb.op('Add', dst=m, a=m, b=p)
     fb.op('JSLt', a=b.call('ent.Entity.get_lifeRatio', u), b=min_life, offset='u')
-    ums = b.call('ent.Army.get_maxSupply', u)
-    fb.op('JSLte', a=ums, b=zero, offset='ufit')
-    fb.op('SDiv', dst=q, a=b.call('ent.Army.get_supply', u), b=ums)
-    fb.op('JSLt', a=q, b=min_sup, offset='u')
-    fb.label('ufit')
     fb.op('Add', dst=hp, a=hp, b=p)
     fb.op('JAlways', offset='u')
     fb.label('udone')
@@ -418,7 +414,12 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('SetField', obj=aargs, field=cx.field(fb.regs[aargs], 'allowEnemy'), src=t_false)
     fb.label('aggr')
     ann = _new_array(fb, b, cx)
+    # the Annex scan's reach (map `ascan`, rules/strat.py annex-reach: vanilla's Annex calls get ANNEX_ZONES more):
+    # the same list vanilla's tryAction picks from, else a village 2 zones out that it is about to annex gets raided
+    ascan = _global_map(fb, b, cx, 'ascan')
+    b.call('haxe.ds.ObjectMap.set', ascan, fb.dyn(fac), fb.dyn(b.field(_state(fb, b, cx), 'time')))
     b.call('logic.ai.$AIMilitary.getSiegeableVillages', ann, annex_s, fac, aargs)
+    b.call('haxe.ds.ObjectMap.set', ascan, fb.dyn(fac), nodyn)
     choices = fb.reg(cx.t('hl.types.ArrayObj'))
     fb.op('Null', dst=choices)
     ax = fb.reg(cx.t('ent.Entity'))
@@ -443,6 +444,19 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('JNull', reg=choices, offset='noannex')
     fb.op('JSLte', a=b.field(choices, 'length'), b=zi, offset='noannex')
     fb.op('Mov', dst=ax, src=b.cast(b.call('hl.types.ArrayObj.getDyn', choices, zi), 'ent.Entity'))
+    # remember them (maps `akv` village -> time, `akf` village -> faction): protected for AKEEP_T from raid and from
+    # vanilla's Pillage gauge (siege.build_scoring); one faction per village (the last scan wins)
+    akv, akf = _global_map(fb, b, cx, 'akv'), _global_map(fb, b, cx, 'akf')
+    ki = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=ki, src=zi)
+    b.loop_head('akl')
+    fb.op('JSGte', a=ki, b=b.field(choices, 'length'), offset='noannex')
+    kc = b.call('hl.types.ArrayObj.getDyn', choices, ki)
+    fb.op('Incr', dst=ki)
+    fb.op('JNull', reg=kc, offset='akl')
+    b.call('haxe.ds.ObjectMap.set', akv, kc, fb.dyn(t))
+    b.call('haxe.ds.ObjectMap.set', akf, kc, fb.dyn(fac))
+    fb.op('JAlways', offset='akl')
     fb.label('noannex')
 
     need, dmin, dall, mh, ly = (fb.reg(cx.t('f64')) for _ in range(5))
@@ -505,6 +519,15 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('JNull', reg=choices, offset='nochoice')
     fb.op('JTrue', cond=b.call('hl.types.ArrayObj.contains', choices, fb.dyn(ve)), offset='v')
     fb.label('nochoice')
+    # ... nor what we listed as an Annex choice within AKEEP_T (a village sliding out of the top 3 for a moment)
+    akt = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'akv'), fb.dyn(ve))
+    fb.op('JNull', reg=akt, offset='akok')
+    fb.op('JNotEq', a=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'akf'), fb.dyn(ve)), b=fb.dyn(fac),
+          offset='akok')
+    fb.op('SafeCast', dst=q, src=akt)
+    fb.op('Sub', dst=q, a=t, b=q)
+    fb.op('JSLt', a=q, b=b.const('f64', AKEEP_T), offset='v')
+    fb.label('akok')
     # not a village the Annex value just dropped as a plain lone candidate (map `alonev`): we still annex it once
     # the supply range grows; a pillage would devastate it and double our cost there
     alv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'alonev'), fb.dyn(ve))

@@ -105,6 +105,7 @@ def build_gather(cx, helpers):
     pd = b.call('ent.Entity.getDistTo', prey, a2)
     _approaching(fb, b, cx, prey, a2, pd, 'h')  # the prey moves away from this leader: no wait
     fb.label('pok')
+    _skip_striking(fb, b, cx, helpers, a2, 'h')  # en-route strike: it fights, not waits
     # first hold of this order starts its budget
     fb.op('JNotNull', reg=b.call('haxe.ds.ObjectMap.get', gstart, fb.dyn(o)), offset='budget')
     b.call('haxe.ds.ObjectMap.set', gstart, fb.dyn(o), fb.dyn(t))

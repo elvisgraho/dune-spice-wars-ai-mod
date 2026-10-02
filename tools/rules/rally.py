@@ -127,8 +127,9 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     rr, local = b.const('f64', RALLY_R), b.const('f64', LOCAL)
     nul_e = fb.reg(cx.t('ent.Entity'))
     fb.op('Null', dst=nul_e)
-    t_true, no_arr = fb.reg(cx.t('bool')), fb.reg(cx.t('hl.types.ArrayObj'))
+    t_true, t_false, no_arr = fb.reg(cx.t('bool')), fb.reg(cx.t('bool')), fb.reg(cx.t('hl.types.ArrayObj'))
     fb.op('Bool', dst=t_true, value=True)
+    fb.op('Bool', dst=t_false, value=False)
     fb.op('Null', dst=no_arr)
 
     def our_power(at, dst, lbl, rad=rr, excl=None):
@@ -195,6 +196,11 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.label('sgn')
     fb.op('Call3', dst=h, fun=react, arg0=fac, arg1=se, arg2=local)
     fb.op('JSLt', a=h, b=b.const('f64', RALLY_MIN_H), offset='s')
+    # + at-war turret cover at it, as aimod_defend's hopeless test counts it: without it `here` committed at
+    # 483k vs 345k and the hopeless test conceded 18 s later at 353k vs 422k (Smugglers at Tuo-Al'waz, Ash-bat's
+    # battery counted on one side only)
+    fb.op('CallN', dst=cv, fun=cover, args=[fac, se, se, t_false, no_arr])
+    fb.op('Add', dst=h, a=h, b=cv)
     fb.op('JSLte', a=h, b=bh, offset='s')
     # active: an at-war army at it (FLEE_R) or heading there; a stack idling at its own border is a standoff, not
     # an attack (Smugglers walked 8 armies Shariyah -> Tuek -> Shariyah every 30-60 s: vanilla Patrol out, rally

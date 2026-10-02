@@ -16,7 +16,8 @@ WORM_HOLD s (no hunt / raid relaunch onto the same sand; a moved harvester's zon
 field), and aimod_wormheld keeps them out of vanilla's Resupply and
 mission picks while a worm is within WORM_NEAR (at most WORM_HOLD s): vanilla re-issued the Atreides Resupply 0.5 s
 after every stop, back over the same sand, and the worm re-targeted them: stop / go every 3-4 s for 70 s, 20 moved.
-(AIOrder.removeUnit before Action cancels the whole order, so the stop itself is unavoidable; the others get a new
+(AIOrder.removeUnit before Action cancels the whole order, so the stop itself is unavoidable there; our siege in Action
+is never stopped: the target alone leaves it by removeUnit, its last army stays; the others get a new
 Resupply at once.) Logs `wflee` per moved army (a, rock found, d to the point, w worm distance, ok). In a trap."""
 import math
 
@@ -167,6 +168,20 @@ def build_worm_flee(cx, helpers):
     units = b.field(o, 'units')
     fb.op('JNull', reg=units, offset='ord')
     fb.op('JFalse', cond=b.call('hl.types.ArrayObj.contains', units, fb.dyn(a)), offset='ord')
+    # our siege in Action (Annex / Pillage / Liberate / strike under way, user): never stopped; the worm's target
+    # leaves it alone (removeUnit cancels nothing in Action while others stay), the last army stays and captures
+    widx = fb.reg(cx.t('i32'))
+    fb.op('EnumIndex', dst=widx, value=b.field(o, 'type'))
+    fb.op('JNotEq', a=widx, b=b.const('i32', MILITARY), offset='wstop')
+    fb.op('JNotEq', a=b.field(o, 'phase'), b=b.const('i32', ACTION), offset='wstop')
+    wtt = b.field(o, 'targetType')
+    fb.op('JNull', reg=wtt, offset='wstop')
+    fb.op('EnumIndex', dst=widx, value=wtt)
+    fb.op('JNotEq', a=widx, b=b.const('i32', T_STRUCT), offset='wstop')
+    fb.op('JSLte', a=b.field(units, 'length'), b=one, offset='army')
+    b.call('logic.ai.AIOrder.removeUnit', o, a)
+    fb.op('JAlways', offset='odone')
+    fb.label('wstop')
     fb.op('Mov', dst=grp, src=b.call('hl.types.ArrayObj.copy', units))
     b.call('logic.ai.AIOrder.stop', o, cancel)
     fb.label('odone')

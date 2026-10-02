@@ -268,7 +268,10 @@ def build_free(cx, pw, min_life=MIN_LIFE, min_supply=MIN_SUPPLY, resupply_ok=Fal
     so Resupply/Discovery/hunts/sieges keep their armies (healing comes first, policy §5).
     Variant (raid): other life / supply floors, and a Resupply order doesn't count as busy (a raid that refills
     supply beats walking home, when the supply budget allows it: aimod_raidsup).
-    Variant patrol_ok=False (strand): a Patrol order counts as busy too (idle = in no order at all)."""
+    Variant patrol_ok=False (strand): a Patrol order counts as busy too (idle = in no order at all).
+    Hunts pass min_supply 0: a share of max supply says nothing about the walk (a max-supply rise left Atreides' 6
+    armies at Sandkus at 82/125 while Harkonnen took Sandsud); every hunt army passes the absolute trip budget
+    (aimod_supok) instead."""
     fb = FB(cx, [cx.t('ent.Army'), cx.t('hl.types.ArrayObj')], cx.t('bool'))
     b = B(fb)
     no, yes = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
@@ -486,7 +489,7 @@ def build_home(cx, pw, land, own=False):
 
 
 def build_supok(cx):
-    """aimod_supok(a, d, k) -> supply >= k * (SUP_U * d + SUP_RES * maxSupply): enough to walk d back to our land
+    """aimod_supok(a, d, k) -> supply >= k * (SUP_U * d + SUP_RESERVE): enough to walk d back to our land
     (true for armies without supply)."""
     fb = FB(cx, [cx.t('ent.Army'), cx.t('f64'), cx.t('f64')], cx.t('bool'))
     b = B(fb)
@@ -497,7 +500,7 @@ def build_supok(cx):
     fb.op('JSLte', a=ms, b=b.const('f64', 0), offset='end')
     need, r = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     fb.op('Mul', dst=need, a=1, b=_ratio(fb, b, SUP_U))
-    fb.op('Mul', dst=r, a=ms, b=_ratio(fb, b, SUP_RES))
+    fb.op('Mov', dst=r, src=_ratio(fb, b, SUP_RESERVE))
     fb.op('Add', dst=need, a=need, b=r)
     fb.op('Mul', dst=need, a=need, b=2)
     fb.op('JSGte', a=b.call('ent.Army.get_supply', 0), b=need, offset='end')
@@ -509,10 +512,10 @@ def build_supok(cx):
 
 def build_raidsup(cx):
     """aimod_raidsup(a, d_to, d_home) -> a can raid a village d_to away that lies d_home from our land: it arrives
-    with >= RAID_ARRIVE x max supply (supply - SUP_U x d_to; fighting the militia drains too), occupying doesn't
+    with >= RAID_ARRIVE supply (supply - SUP_U x d_to; fighting the militia drains too), occupying doesn't
     drain (Army.isInHostileZone is false in occupation range), a finished pillage refills OCC_REFILL x max
-    (data Army_Supply_Resupply_OccupationRatio), and then it still has the budget home (SUP_U x d_home + SUP_RES x
-    max). True for armies without supply."""
+    (data Army_Supply_Resupply_OccupationRatio), and then it still has the budget home (SUP_U x d_home +
+    SUP_RESERVE). True for armies without supply."""
     fb = FB(cx, [cx.t('ent.Army'), cx.t('f64'), cx.t('f64')], cx.t('bool'))
     b = B(fb)
     res = fb.reg(cx.t('bool'))
@@ -525,7 +528,7 @@ def build_raidsup(cx):
     arrive, q = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     fb.op('Mul', dst=q, a=1, b=su)
     fb.op('Sub', dst=arrive, a=b.call('ent.Army.get_supply', 0), b=q)
-    fb.op('Mul', dst=q, a=ms, b=_ratio(fb, b, RAID_ARRIVE))
+    fb.op('Mov', dst=q, src=_ratio(fb, b, RAID_ARRIVE))
     fb.op('JSLt', a=arrive, b=q, offset='end')
     fb.op('Mul', dst=q, a=ms, b=_ratio(fb, b, OCC_REFILL))
     fb.op('Add', dst=arrive, a=arrive, b=q)
@@ -534,7 +537,7 @@ def build_raidsup(cx):
     fb.label('capped')
     fb.op('Mul', dst=q, a=2, b=su)
     need = fb.reg(cx.t('f64'))
-    fb.op('Mul', dst=need, a=ms, b=_ratio(fb, b, SUP_RES))
+    fb.op('Mov', dst=need, src=_ratio(fb, b, SUP_RESERVE))
     fb.op('Add', dst=need, a=need, b=q)
     fb.op('JSLt', a=arrive, b=need, offset='end')
     fb.op('Bool', dst=res, value=True)
@@ -612,7 +615,7 @@ def build_cover(cx):
     n = b.field(facs, 'length')
     i, j, k = (fb.reg(cx.t('i32')) for _ in range(3))
     fb.op('Mov', dst=i, src=b.const('i32', 0))
-    sps, op_ = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    op_ = fb.reg(cx.t('f64'))
     se = fb.reg(cx.t('ent.Entity'))
     b.loop_head('fl')
     fb.op('JSGte', a=i, b=n, offset='end')
@@ -637,40 +640,66 @@ def build_cover(cx):
     fb.op('JNull', reg=s, offset='sl')
     fb.op('Mov', dst=se, src=s)
     fb.op('JEq', a=se, b=2, offset='sl')
-    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', 1, se), b=cover, offset='sl')
-    ismb = fb.reg(cx.t('bool'))
-    fb.op('Bool', dst=ismb, value=False)
+    sd = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=sd, src=b.call('ent.Entity.getDistTo', 1, se))
+    # every turret building (main base districts too) from where it stands: past this nothing reaches e
+    fb.op('JSGt', a=sd, b=b.const('f64', COVER_R + TURRET_SPREAD), offset='sl')
     fb.op('JFalse', cond=b.call('ent.Structure.get_isMainBase', s), offset='village')
     fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', s), offset='sl')
-    fb.op('Bool', dst=ismb, value=True)
-    fb.op('JAlways', offset='stats')
+    # main base guns: from its centre, COVER_R (Sadnin, 113 from Arrakeen, lost 6 of 10 armies to them)
+    fb.op('JSGt', a=sd, b=cover, offset='stats')
+    mst = b.call('$HCombatStats.mainBaseCombatStats', s)
+    fb.op('JNull', reg=mst, offset='stats')
+    fb.op('Mov', dst=op_, src=b.call('$HPowerScore.offensivePotential', fb.dyn(mst), zero))
+    fb.op('Mul', dst=op_, a=op_, b=th)
+    fb.op('Mul', dst=op_, a=op_, b=b.const('f64', MB_GUN_W))  # main-base guns hit far above their power score
+    fb.op('Add', dst=tot, a=tot, b=op_)
+    fb.op('JNull', reg=4, offset='stats')
+    for _ in range(MB_GUN_W):  # ... in vanilla's report too: the same stats again
+        b.call('hl.types.ArrayObj.push', 4, fb.dyn(mst))
+    fb.op('JAlways', offset='stats')  # a main base is never silenced by a siege
     fb.label('village')
     sg = b.field(s, 'siege')
     fb.op('JNull', reg=sg, offset='stats')
     fb.op('JNotNull', reg=b.field(sg, 'besiegingFaction'), offset='sl')  # being annexed / pillaged: silent
+    # turrets: each powered, built building from where it stands, by its own attack range (+ TURRET_SPREAD fade); a
+    # powered building without an attack (range 0) or still in construction never covers
     fb.label('stats')
-    arr = b.call('$HCombatStats.structureCombatStats', s)
+    bp = b.field(s, 'buildings')
+    fb.op('JNull', reg=bp, offset='sl')
+    arr = b.cast(b.field(bp, 'array'), 'hl.types.ArrayObj')
     fb.op('JNull', reg=arr, offset='sl')
     an = b.field(arr, 'length')
+    spread = b.const('f64', TURRET_SPREAD)
+    one = b.const('f64', 1)
+    w = fb.reg(cx.t('f64'))
     fb.op('Mov', dst=k, src=b.const('i32', 0))
     b.loop_head('kl')
     fb.op('JSGte', a=k, b=an, offset='sl')
-    st = b.call('hl.types.ArrayObj.getDyn', arr, k)
+    bd = b.cast(b.call('hl.types.ArrayObj.getDyn', arr, k), 'ent.Building')
     fb.op('Incr', dst=k)
+    fb.op('JNull', reg=bd, offset='kl')
+    fb.op('JSLte', a=b.call('ent.Entity.get_power', bd), b=zero, offset='kl')
+    fb.op('JTrue', cond=b.call('ent.BaseBuilding.get_inConstruction', bd), offset='kl')  # status 3: not built yet
+    # w = (range + SPREAD - d) / SPREAD, capped at 1: full within range, 0 at range + SPREAD
+    fb.op('Mov', dst=w, src=b.call('ent.Entity.get_attackRange', bd))
+    fb.op('JSLte', a=w, b=zero, offset='kl')
+    fb.op('Add', dst=w, a=w, b=spread)
+    fb.op('Sub', dst=w, a=w, b=b.call('ent.Entity.getDistTo', 1, bd))
+    fb.op('JSLte', a=w, b=zero, offset='kl')
+    fb.op('SDiv', dst=w, a=w, b=spread)
+    fb.op('JSLte', a=w, b=one, offset='wok')
+    fb.op('Mov', dst=w, src=one)
+    fb.label('wok')
+    st = b.call('$HCombatStats.buildingCombatStats', bd)
     fb.op('JNull', reg=st, offset='kl')
-    fb.op('Mov', dst=sps, src=b.call('$HPowerScore.singlePowerScore', st))
-    fb.op('JSGt', a=sps, b=zero, offset='kl')  # has health: militia, not a turret
-    fb.op('Mov', dst=op_, src=b.call('$HPowerScore.offensivePotential', st, zero))
+    fb.op('Mov', dst=op_, src=b.call('$HPowerScore.offensivePotential', fb.dyn(st), zero))
     fb.op('Mul', dst=op_, a=op_, b=th)
-    fb.op('JFalse', cond=ismb, offset='nmb1')
-    fb.op('Mul', dst=op_, a=op_, b=b.const('f64', MB_GUN_W))  # main-base guns hit far above their power score
-    fb.label('nmb1')
+    fb.op('Mul', dst=op_, a=op_, b=w)
     fb.op('Add', dst=tot, a=tot, b=op_)
     fb.op('JNull', reg=4, offset='kl')
-    b.call('hl.types.ArrayObj.push', 4, st)
-    fb.op('JFalse', cond=ismb, offset='kl')
-    for _ in range(MB_GUN_W - 1):  # ... in vanilla's report too: the same stats again
-        b.call('hl.types.ArrayObj.push', 4, st)
+    fb.op('JSLt', a=w, b=_ratio(fb, b, 0.5), offset='kl')  # vanilla report: only turrets mostly in reach
+    b.call('hl.types.ArrayObj.push', 4, fb.dyn(st))
     fb.op('JAlways', offset='kl')
     fb.label('end')
     fb.op('Ret', ret=tot)

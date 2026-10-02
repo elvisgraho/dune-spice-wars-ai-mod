@@ -223,9 +223,13 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     resource fields in the zone (SpiceArea 40, others 10), region aiWeight (specials 20, Pole 40), main-base
     proximity x Outpost_DistanceCost_MRatio, owned neighbours x 10, +100 for a spice village while we own none; no
     annex cost at all, and tryAction then reserves Authority and waits when the pick is unaffordable). For each
-    positive score: + ANNEX_SPECIAL in a special region, + ANNEX_SIETCH with a sietch in the zone (Zone.getSietch); SPICE_ANY factions lose vanilla's first-spice +100;
-    factions with distance annex costs x the NEAR_W compactness factor (distance to our nearest structure on our
-    land); x cmin / cost (real Authority cost: siege.getOccupationActionCost("Annex"), cmin = cheapest candidate:
+    positive score: vanilla's per-zone distance counts VAN_HOPS_CAP zones at most (the rest added back); + the special
+    table (ANNEX_SPECIALS by region id x faction, ANNEX_SPECIALS_EARLY while we own < ANNEX_SP_EARLY_N villages,
+    ANNEX_SPECIAL for an unlisted special, Smugglers capped at ANNEX_SP_SMUG_CAP), + ANNEX_SIETCH with a sietch in
+    the zone (Zone.getSietch); SPICE_ANY factions lose vanilla's first-spice +100; x (1 + CENTER_W x closeness to the
+    map centre = mean village position, 0 at the farthest village; none within CENTER_BASE_R of another faction's main
+    base; not for factions without Annex distance cost: Smugglers); factions with distance annex costs x the NEAR_W compactness factor (distance to our nearest structure on our
+    land; applied after the ring terms, never below 1 for a feasible ring village: aimod_ddhold); x cmin / cost (real Authority cost: siege.getOccupationActionCost("Annex"), cmin = cheapest candidate:
     a village costing 2 cheap ones counts half); a spice village while we own none x ANNEX_SPICE1 (not SPICE_ANY);
     Fremen deep desert (Zone.updateOwner: a deep desert goes to the single owner of every neighbour with a village
     or main base, if it has DeepDesert_Surounded_GainControl): x (1 + w x min(DD_CAP, sum over unowned deep
@@ -234,6 +238,8 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     per one within DD_BASE_R of another faction's main base; 0 when another faction's main base zone borders it;
     x DD_LINK when the candidate borders none of our non-deep-desert zones (reaching it means crossing desert);
     then + DD_ADD x best chance x w (x DD_LINK, x cmin / cost): a flat bonus like ANNEX_SPECIAL. floor ANNEX_FLOOR.
+    Focus ring: fewest villages missing (a missing one within DD_BASE_R of another faction's main base counts twice),
+    then fewest hops. Logs `acand` per candidate (v0, hops, sp, cf, cen, dd, c, cmin, s) once per ASCORE_T per faction.
     Top 3: when the best scored is unaffordable now (AIController.getMissingResources of its cost at priority 3 non-empty)
     and the 2nd or 3rd is affordable, the unaffordable ones above it get 0.99 / 0.98 x its score (log `aswap` from, to,
     s); none affordable: vanilla reserves Authority and waits on the best, for ASWAP_WAIT s at most (map `aswt` faction
@@ -319,7 +325,7 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JNotEq', a=b.call('String.__compare', kd, fb.dyn(fb.string('Fremen'))), b=zi, offset='an_dw')
     fb.op('Mov', dst=ddw, src=_ratio(fb, b, DD_W_PRE))
     fb.label('an_dw')
-    # the ring we work on: fewest zone hops to our main base among unowned deep deserts next to a village that no
+    # the ring we work on (fewest villages missing, then fewest hops: see an_hok) among unowned deep deserts next to a village that no
     # other faction's main base borders and whose missing villages are all neutral (a held one stalls the ring: it
     # must not halve a clean one); tie: fewest villages missing; the others count x DD_FAR (one ring at a time, not
     # two half-done). No such desert: no focus penalty (hmin 999)
@@ -331,6 +337,9 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     mmin, hmis = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))  # tie on hops: fewest villages still missing
     fb.op('Mov', dst=mmin, src=big)
     fb.op('JSLte', a=ddw, b=zero, offset='an_hm')
+    facs0 = b.cast(fb.get(_state(fb, b, cx), 'factions', 'array'), 'hl.types.ArrayObj')
+    k5, k6 = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    hvv = fb.reg(cx.t('ent.Entity'))
     hvl = b.field(_state(fb, b, cx), 'villages')
     fb.op('JNull', reg=hvl, offset='an_hm')
     fb.op('Mov', dst=k1, src=zi)
@@ -368,10 +377,35 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JNull', reg=b.call('ent.Zone.getVillage', hmz), offset='an_hx')
     fb.op('JNotNull', reg=b.field(hmz, 'owner'), offset='an_hw')  # another faction holds one: stalled, no focus
     fb.op('Add', dst=hmis, a=hmis, b=one_f)
+    # a missing village within DD_BASE_R of another faction's main base counts twice (the far end of the map next
+    # to its capital: progress there stalls)
+    fb.op('JNull', reg=facs0, offset='an_hx')
+    fb.op('Mov', dst=hvv, src=b.cast(b.call('ent.Zone.getVillage', hmz), 'ent.Entity'))
+    fb.op('JNull', reg=hvv, offset='an_hx')
+    fb.op('Mov', dst=k5, src=zi)
+    b.loop_head('an_hf')
+    fb.op('JSGte', a=k5, b=b.field(facs0, 'length'), offset='an_hx')
+    hof = b.cast(b.call('hl.types.ArrayObj.getDyn', facs0, k5), 'ent.Faction')
+    fb.op('Incr', dst=k5)
+    fb.op('JNull', reg=hof, offset='an_hf')
+    fb.op('JEq', a=hof, b=fac, offset='an_hf')
+    hmbs = b.field(hof, 'mainBases')
+    fb.op('JNull', reg=hmbs, offset='an_hf')
+    fb.op('Mov', dst=k6, src=zi)
+    b.loop_head('an_hg')
+    fb.op('JSGte', a=k6, b=b.field(hmbs, 'length'), offset='an_hf')
+    hmb2 = b.cast(b.call('hl.types.ArrayObj.getDyn', hmbs, k6), 'ent.Entity')
+    fb.op('Incr', dst=k6)
+    fb.op('JNull', reg=hmb2, offset='an_hg')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', hvv, hmb2), b=b.const('f64', DD_BASE_R), offset='an_hg')
+    fb.op('Add', dst=hmis, a=hmis, b=one_f)
     fb.op('JAlways', offset='an_hx')
     fb.label('an_hok')
-    fb.op('JSLt', a=hz, b=hmin, offset='an_hset')
-    fb.op('JSGte', a=hmis, b=mmin, offset='an_hw')
+    # the most complete ring first (fewest villages missing), then the nearest: a ring two villages from done across
+    # the map beats an empty one next door
+    fb.op('JSLt', a=hmis, b=mmin, offset='an_hset')
+    fb.op('JSGt', a=hmis, b=mmin, offset='an_hw')
+    fb.op('JSGte', a=hz, b=hmin, offset='an_hw')
     fb.label('an_hset')
     fb.op('Mov', dst=hmin, src=hz)
     fb.op('Mov', dst=mmin, src=hmis)
@@ -405,6 +439,59 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
         fb.op('JAlways', offset=head)
         fb.label(lbl)
 
+    # map centre = mean village position; crad = the farthest village from it (closeness 0 there)
+    cxm, cym, crad, cnt = (fb.reg(cx.t('f64')) for _ in range(4))
+    for r in (cxm, cym, crad, cnt):
+        fb.op('Mov', dst=r, src=zero)
+    cvl = b.field(_state(fb, b, cx), 'villages')
+    fb.op('JNull', reg=cvl, offset='cen_d')
+    fb.op('Mov', dst=k1, src=zi)
+    b.loop_head('cen_a')
+    fb.op('JSGte', a=k1, b=b.field(cvl, 'length'), offset='cen_b')
+    cv1 = b.cast(b.call('hl.types.ArrayObj.getDyn', cvl, k1), 'ent.Entity')
+    fb.op('Incr', dst=k1)
+    fb.op('JNull', reg=cv1, offset='cen_a')
+    fb.op('Add', dst=cxm, a=cxm, b=b.field(cv1, 'posx'))
+    fb.op('Add', dst=cym, a=cym, b=b.field(cv1, 'posy'))
+    fb.op('Add', dst=cnt, a=cnt, b=one_f)
+    fb.op('JAlways', offset='cen_a')
+    fb.label('cen_b')
+    fb.op('JSLte', a=cnt, b=zero, offset='cen_d')
+    fb.op('SDiv', dst=cxm, a=cxm, b=cnt)
+    fb.op('SDiv', dst=cym, a=cym, b=cnt)
+    fb.op('Mov', dst=k1, src=zi)
+    b.loop_head('cen_c')
+    fb.op('JSGte', a=k1, b=b.field(cvl, 'length'), offset='cen_d')
+    cv2 = b.cast(b.call('hl.types.ArrayObj.getDyn', cvl, k1), 'ent.Entity')
+    fb.op('Incr', dst=k1)
+    fb.op('JNull', reg=cv2, offset='cen_c')
+    fb.op('Sub', dst=d, a=b.field(cv2, 'posx'), b=cxm)
+    fb.op('Mul', dst=d, a=d, b=d)
+    fb.op('Sub', dst=q, a=b.field(cv2, 'posy'), b=cym)
+    fb.op('Mul', dst=q, a=q, b=q)
+    fb.op('Add', dst=d, a=d, b=q)
+    fb.op('JSLte', a=d, b=crad, offset='cen_c')
+    fb.op('Mov', dst=crad, src=d)
+    fb.op('JAlways', offset='cen_c')
+    fb.label('cen_d')
+    fb.op('Mov', dst=crad, src=b.call('hxd.$Math.sqrt', crad))
+    nvil = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=nvil, src=b.field(b.call('ent.Faction.getVillages', fac), 'length'))
+    # per-candidate breakdown in this call? (`acand`, once per ASCORE_T per faction)
+    logc = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=logc, value=False)
+    _throttle(fb, b, cx, 'acand', fac, ASCORE_T, 'acn')
+    fb.op('Bool', dst=logc, value=True)
+    fb.label('acn')
+    vo, spb, cf, cenf, hcf = (fb.reg(cx.t('f64')) for _ in range(5))
+    for r in (vo, spb, hcf):
+        fb.op('Mov', dst=r, src=zero)
+    for r in (cf, cenf):
+        fb.op('Mov', dst=r, src=one_f)
+    hz2, hzx = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    mx2 = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=hz2, src=zi)
+    feas = fb.reg(cx.t('bool'))
     # pass 1: cheapest candidate cost, vanilla's best
     vb = fb.reg(cx.t('ent.Entity'))
     fb.op('Null', dst=vb)
@@ -420,7 +507,7 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     v = b.call('haxe.ds.ObjectMap.get', res, fb.dyn(se))
     fb.op('JNull', reg=v, offset='an1')
     fb.op('SafeCast', dst=sc, src=v)
-    fb.op('JSLte', a=sc, b=zero, offset='an1')
+    fb.op('JEq', a=sc, b=zero, offset='an1')  # 0: vanilla's invalid target; negative: far (hop cap below)
     fb.op('JSLte', a=sc, b=v0, offset='an1c')
     fb.op('Mov', dst=v0, src=sc)
     fb.op('Mov', dst=vb, src=se)
@@ -448,16 +535,63 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     v2 = b.call('haxe.ds.ObjectMap.get', res, fb.dyn(se))
     fb.op('JNull', reg=v2, offset='an2')
     fb.op('SafeCast', dst=sc, src=v2)
-    fb.op('JSLte', a=sc, b=zero, offset='an2')
+    fb.op('JEq', a=sc, b=zero, offset='an2')  # vanilla's invalid target
     z = b.call('ent.Entity.get_zone', se)
     fb.op('JNull', reg=z, offset='an2')
-    # special region
+    fb.op('Mov', dst=vo, src=sc)
+    # vanilla's -10 per zone from our main base counts VAN_HOPS_CAP zones at most: add back the rest, before the
+    # positivity test (a far plain village scores <= 0 in vanilla: the cap must lift exactly those). Not for a
+    # faction without Annex distance cost (Smugglers: the per-zone score is its only brake on spreading), not for
+    # getDistanceToPlayerBase's 99 (no main base)
+    fb.op('Mov', dst=hz2, src=zi)
+    fb.op('JSLte', a=dcr, b=zero, offset='an_hcap')
+    fb.op('Call3', dst=hz2, fun=gdb.findex.value, arg0=z, arg1=fac, arg2=gnull)
+    fb.op('JSGte', a=hz2, b=b.const('i32', 99), offset='an_hcap')
+    fb.op('JSLte', a=hz2, b=b.const('i32', VAN_HOPS_CAP), offset='an_hcap')
+    fb.op('Sub', dst=hzx, a=hz2, b=b.const('i32', VAN_HOPS_CAP))
+    fb.op('ToSFloat', dst=hcf, src=hzx)
+    fb.op('Mul', dst=hcf, a=hcf, b=b.const('f64', 10))
+    fb.op('Add', dst=sc, a=sc, b=hcf)
+    fb.label('an_hcap')
+    fb.op('JSLte', a=sc, b=zero, offset='an2')  # still not positive: vanilla's (unpicked) score stands
+    # special region: faction x region table (strategy GENERAL "Specials"; constants ANNEX_SPECIALS)
+    fb.op('Mov', dst=spb, src=zero)
+    rid = b.cast(fb.get(z, 'inf', 'id'), 'String')
+    fb.op('JNull', reg=rid, offset='sp_fb')
+    for _rid, (_base, _over) in ANNEX_SPECIALS.items():
+        _nx = _uid('spn')
+        fb.op('JNotEq', a=b.call('String.__compare', rid, fb.dyn(fb.string(_rid))), b=zi, offset=_nx)
+        fb.op('Mov', dst=spb, src=b.const('f64', _base))
+        fb.op('JNull', reg=kd, offset='sp_done')
+        for _fn, _bo in _over.items():
+            _ny = _uid('spf')
+            fb.op('JNotEq', a=b.call('String.__compare', kd, fb.dyn(fb.string(_fn))), b=zi, offset=_ny)
+            fb.op('Mov', dst=spb, src=b.const('f64', _bo))
+            fb.op('JAlways', offset='sp_done')
+            fb.label(_ny)
+        fb.op('JAlways', offset='sp_done')
+        fb.label(_nx)
+    for _rid, (_early, _late) in ANNEX_SPECIALS_EARLY.items():
+        _nx = _uid('spn')
+        fb.op('JNotEq', a=b.call('String.__compare', rid, fb.dyn(fb.string(_rid))), b=zi, offset=_nx)
+        fb.op('Mov', dst=spb, src=b.const('f64', _late))
+        fb.op('JSGte', a=nvil, b=b.const('i32', ANNEX_SP_EARLY_N), offset='sp_done')
+        fb.op('Mov', dst=spb, src=b.const('f64', _early))
+        fb.op('JAlways', offset='sp_done')
+        fb.label(_nx)
+    fb.label('sp_fb')
     awd = fb.get(z, 'inf', 'props', 'aiWeight')
-    fb.op('JNull', reg=awd, offset='an_nsx')
+    fb.op('JNull', reg=awd, offset='sp_done')
     fb.op('SafeCast', dst=aw, src=awd)
-    fb.op('JSLt', a=aw, b=b.const('f64', 20), offset='an_nsx')
-    fb.op('Add', dst=sc, a=sc, b=b.const('f64', ANNEX_SPECIAL))
-    fb.label('an_nsx')
+    fb.op('JSLt', a=aw, b=b.const('f64', 20), offset='sp_done')
+    fb.op('Mov', dst=spb, src=b.const('f64', ANNEX_SPECIAL))  # a special the table doesn't list
+    fb.label('sp_done')
+    fb.op('JNull', reg=kd, offset='sp_cap')
+    fb.op('JNotEq', a=b.call('String.__compare', kd, fb.dyn(fb.string('Smugglers'))), b=zi, offset='sp_cap')
+    fb.op('JSLte', a=spb, b=b.const('f64', ANNEX_SP_SMUG_CAP), offset='sp_cap')
+    fb.op('Mov', dst=spb, src=b.const('f64', ANNEX_SP_SMUG_CAP))
+    fb.label('sp_cap')
+    fb.op('Add', dst=sc, a=sc, b=spb)
     # a sietch in the zone (neutral / hostile / ancient / accursed): a small flat bonus
     fb.op('JNull', reg=b.call('ent.Zone.getSietch', z), offset='an_nsi')
     fb.op('Add', dst=sc, a=sc, b=b.const('f64', ANNEX_SIETCH))
@@ -469,7 +603,9 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JFalse', cond=exempt, offset='an_nsp1')
     fb.op('Sub', dst=sc, a=sc, b=b.const('f64', 100))
     fb.label('an_nsp1')
-    # compactness (factions with distance annex costs)
+    # compactness (factions with distance annex costs): factor cf, applied after the deep-desert block (a feasible
+    # Fremen ring isn't penalised for distance)
+    fb.op('Mov', dst=cf, src=one_f)
     fb.op('JSLte', a=dcr, b=zero, offset='an_near')
     fb.op('Mov', dst=dm, src=big)
     fb.op('Mov', dst=j, src=zi)
@@ -500,13 +636,66 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('Mov', dst=q, src=hi)
     fb.label('an_hi')
     fb.op('Add', dst=q, a=q, b=_ratio(fb, b, 1))
-    fb.op('Mul', dst=sc, a=sc, b=q)
+    fb.op('Mov', dst=cf, src=q)
     fb.label('an_near')
+    # map centre: x (1 + CENTER_W x closeness), none within CENTER_BASE_R of another faction's main base; never for a
+    # faction without Annex distance cost (Smugglers: user, their villages are islands, not a march to the middle)
+    fb.op('Mov', dst=cenf, src=one_f)
+    fb.op('JSLte', a=dcr, b=zero, offset='an_cen')
+    fb.op('JSLte', a=crad, b=zero, offset='an_cen')
+    fb.op('JNull', reg=facs, offset='an_cen')
+    fb.op('Mov', dst=k3, src=zi)
+    b.loop_head('an_cf')
+    fb.op('JSGte', a=k3, b=b.field(facs, 'length'), offset='an_cok')
+    cof = b.cast(b.call('hl.types.ArrayObj.getDyn', facs, k3), 'ent.Faction')
+    fb.op('Incr', dst=k3)
+    fb.op('JNull', reg=cof, offset='an_cf')
+    fb.op('JEq', a=cof, b=fac, offset='an_cf')
+    cmbs = b.field(cof, 'mainBases')
+    fb.op('JNull', reg=cmbs, offset='an_cf')
+    fb.op('Mov', dst=k4, src=zi)
+    b.loop_head('an_cg')
+    fb.op('JSGte', a=k4, b=b.field(cmbs, 'length'), offset='an_cf')
+    cmb = b.cast(b.call('hl.types.ArrayObj.getDyn', cmbs, k4), 'ent.Entity')
+    fb.op('Incr', dst=k4)
+    fb.op('JNull', reg=cmb, offset='an_cg')
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', se, cmb), b=b.const('f64', CENTER_BASE_R), offset='an_cen')
+    fb.op('JAlways', offset='an_cg')
+    fb.label('an_cok')
+    fb.op('Sub', dst=d, a=b.field(se, 'posx'), b=cxm)
+    fb.op('Mul', dst=d, a=d, b=d)
+    fb.op('Sub', dst=q, a=b.field(se, 'posy'), b=cym)
+    fb.op('Mul', dst=q, a=q, b=q)
+    fb.op('Add', dst=d, a=d, b=q)
+    fb.op('Mov', dst=d, src=b.call('hxd.$Math.sqrt', d))
+    fb.op('SDiv', dst=q, a=d, b=crad)
+    fb.op('JSLte', a=q, b=one_f, offset='an_cq')
+    fb.op('Mov', dst=q, src=one_f)
+    fb.label('an_cq')
+    fb.op('Sub', dst=q, a=one_f, b=q)
+    fb.op('Mul', dst=q, a=q, b=_ratio(fb, b, CENTER_W))
+    fb.op('Add', dst=cenf, a=one_f, b=q)
+    fb.op('Mul', dst=sc, a=sc, b=cenf)
+    fb.label('an_cen')
     # value per cost
-    fb.op('Mov', dst=c, src=zero)
-    fb.op('JSGte', a=cmin, b=big, offset='an_nc')
     cost_of(s2, c)
-    fb.op('JSLte', a=c, b=zero, offset='an_nc')
+    fb.op('JSGt', a=c, b=zero, offset='an_pc')
+    # free (cost 0: Water Subsidies on Polar Sink): only an AI that can hold it, each for itself (rules/claim.py); only while
+    # another candidate has a cost (everything free, or no cost known: nothing lures more than the rest)
+    fb.op('JSGte', a=cmin, b=big, offset='an_nc')
+    fcl = fb.reg(cx.t('bool'))
+    fb.op('Call2', dst=fcl, fun=helpers['fclaim'], arg0=fac, arg1=s2)
+    fb.op('JFalse', cond=logc, offset='an_fcl')
+    _log_ev(fb, b, cx, helpers, 'fclaim', [('f', fb.get(fac, 'kind')), ('tgt', se), ('ok', fcl), ('s', sc)])
+    fb.label('an_fcl')
+    fb.op('JFalse', cond=fcl, offset='an_fdrop')
+    fb.op('Add', dst=sc, a=sc, b=b.const('f64', CLAIM_ADD))
+    fb.op('JAlways', offset='an_nc')
+    fb.label('an_fdrop')
+    b.call('haxe.ds.ObjectMap.remove', res, fb.dyn(se))
+    fb.op('JAlways', offset='an2')
+    fb.label('an_pc')
+    fb.op('JSGte', a=cmin, b=big, offset='an_nc')
     fb.op('Mul', dst=sc, a=sc, b=cmin)
     fb.op('SDiv', dst=sc, a=sc, b=c)
     fb.label('an_nc')
@@ -548,6 +737,7 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('Mov', dst=con, src=_ratio(fb, b, 1))
     fb.op('Call3', dst=hz, fun=gdb.findex.value, arg0=dz, arg1=fac, arg2=gnull)
     fb.op('Mov', dst=miss, src=zero)
+    fb.op('Mov', dst=mx2, src=zero)
     dn = b.field(dz, 'neighbors')
     fb.op('JNull', reg=dn, offset='an_d')
     fb.op('Mov', dst=k2, src=zi)
@@ -588,13 +778,15 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('Mov', dst=mve, src=mv)
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', mve, mb), b=b.const('f64', DD_BASE_R), offset='an_g')
     fb.op('Mul', dst=con, a=con, b=den)
+    fb.op('Add', dst=mx2, a=mx2, b=one_f)  # counts twice in the focus measure (an_hok)
     fb.op('JAlways', offset='an_e')  # once per missing neighbour
     fb.label('an_ed')
     fb.op('Add', dst=miss, a=miss, b=one_f)
-    # not the focus ring (more hops, or as many hops but more villages missing): x DD_FAR
-    fb.op('JSLt', a=hz, b=hmin, offset='an_dnear')
-    fb.op('JSGt', a=hz, b=hmin, offset='an_dfar')
-    fb.op('JSLte', a=miss, b=mmin, offset='an_dnear')
+    # not the focus ring (more villages missing, or as many but more hops; the focus measure: near-base ones twice)
+    fb.op('Add', dst=mx2, a=mx2, b=miss)
+    fb.op('JSLt', a=mx2, b=mmin, offset='an_dnear')
+    fb.op('JSGt', a=mx2, b=mmin, offset='an_dfar')
+    fb.op('JSLte', a=hz, b=hmin, offset='an_dnear')
     fb.label('an_dfar')
     fb.op('Mul', dst=con, a=con, b=_ratio(fb, b, DD_FAR))
     fb.label('an_dnear')
@@ -648,7 +840,13 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('SDiv', dst=q, a=q, b=c)
     fb.label('an_dda')
     fb.op('Add', dst=sc, a=sc, b=q)
+    fb.op('JSLte', a=dd, b=zero, offset='an_dd')
+    fb.op('Call2', dst=feas, fun=ddc, arg0=fac, arg1=z)
+    fb.op('JFalse', cond=feas, offset='an_dd')
+    fb.op('JSGte', a=cf, b=one_f, offset='an_dd')
+    fb.op('Mov', dst=cf, src=one_f)
     fb.label('an_dd')
+    fb.op('Mul', dst=sc, a=sc, b=cf)
     # contact tension (AI-POLICY §5c step 2): x (1 + T) for a village within TEN_R of ours that has rubbed
     fb.op('Call2', dst=q, fun=helpers['tension'], arg0=fac, arg1=se)
     fb.op('Add', dst=q, a=q, b=one_f)
@@ -658,6 +856,11 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('Mov', dst=sc, src=floor)
     fb.label('an_fl')
     b.call('haxe.ds.ObjectMap.set', res, fb.dyn(se), fb.dyn(sc))
+    fb.op('JFalse', cond=logc, offset='an_nolc')
+    _log_ev(fb, b, cx, helpers, 'acand', [('f', fb.get(fac, 'kind')), ('tgt', se), ('v0', vo), ('hops', hz2),
+                                          ('sp', spb), ('cf%', cf), ('cen%', cenf), ('dd%', dd), ('c', c),
+                                          ('cmin', cmin), ('s', sc), ('n', n)])
+    fb.label('an_nolc')
     fb.op('JFalse', cond=isr, offset='an_br')
     fb.op('JSLte', a=sc, b=brs, offset='an_br')
     fb.op('Mov', dst=brs, src=sc)
@@ -677,6 +880,10 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     # the supply range grows (Fremen annexed Ur-Al'nun, 181 from Tabr, the sole candidate, 30 s before ring
     # villages entered range)
     fb.op('JNotEq', a=n, b=b.const('i32', 1), offset='an_lone')
+    # only while a deep-desert ring is open for us (the case it was made for); others take their only candidate:
+    # waiting for the range to grow never ends when only an Annex grows it (Harkonnen x6, Smugglers x5 in 9 min)
+    fb.op('JSLte', a=ddw, b=zero, offset='an_lone')
+    fb.op('JSGte', a=hmin, b=b.const('i32', 999), offset='an_lone')
     fb.op('JSLte', a=mn, b=b.const('i32', EARLY_VILLAGES), offset='an_lone')
     fb.op('JNull', reg=best, offset='an_lone')
     fb.op('JSGt', a=bdd, b=zero, offset='an_lone')
@@ -916,6 +1123,7 @@ def build_scoring(cx, new_ids, helpers):
       full, re-picked the same village every ~2.5 s (Fremen Pelmah x39). Logs `space` why retry (10 s throttle);
     - stuck: FAIL_N launches on it within FAIL_WIN that created no order while an army of ours was free to go (map
       `afu` blocked-until, set by the launch wrapper) -> dropped for FAIL_BLOCK..FAIL_MAX s, logs `space` why stuck;
+    - next Annex choices (maps `akv` / `akf` from raid's scan, top RAID_KEEP within AKEEP_T): no Pillage target;
     - DMZ (rules/dmz.py, aimod_dmzv): Pillage drops a DMZ village, its Annex / Liberate score x DMZ_W;
     - bunker preference: a positive score x BUNKER_W when the structure is within COVER_R of one of our structures
       on our land (their turrets cover each other) or within BUNKER_R of our main base.
@@ -1004,6 +1212,30 @@ def build_scoring(cx, new_ids, helpers):
     b.call('haxe.ds.ObjectMap.remove', res, fb.dyn(gse))
     fb.op('JAlways', offset='tg')
     fb.label('tgdone')
+    # our next Annex choices (maps `akv` / `akf`, set by raid's scan: top RAID_KEEP within AKEEP_T) are no Pillage
+    # targets: vanilla's gauge pillaged Smugglers' top choice (Arslulah x3, Ya-lab), Devastating it and doubling
+    # our Annex cost there
+    fb.op('JNotEq', a=b.call('String.__compare', 2, fb.dyn(fb.string('Pillage'))), b=b.const('i32', 0),
+          offset='akdone')
+    akv, akf = _global_map(fb, b, cx, 'akv'), _global_map(fb, b, cx, 'akf')
+    ai_, aq, ase = fb.reg(cx.t('i32')), fb.reg(cx.t('f64')), fb.reg(cx.t('ent.Entity'))
+    anow = b.field(_state(fb, b, cx), 'time')
+    fb.op('Mov', dst=ai_, src=b.const('i32', 0))
+    b.loop_head('akl')
+    fb.op('JSGte', a=ai_, b=n, offset='akdone')
+    ast_ = b.cast(b.call('hl.types.ArrayObj.getDyn', 0, ai_), 'ent.Structure')
+    fb.op('Incr', dst=ai_)
+    fb.op('JNull', reg=ast_, offset='akl')
+    fb.op('Mov', dst=ase, src=ast_)
+    akt = b.call('haxe.ds.ObjectMap.get', akv, fb.dyn(ase))
+    fb.op('JNull', reg=akt, offset='akl')
+    fb.op('JNotEq', a=b.call('haxe.ds.ObjectMap.get', akf, fb.dyn(ase)), b=fb.dyn(1), offset='akl')
+    fb.op('SafeCast', dst=aq, src=akt)
+    fb.op('Sub', dst=aq, a=anow, b=aq)
+    fb.op('JSGte', a=aq, b=b.const('f64', AKEEP_T), offset='akl')
+    b.call('haxe.ds.ObjectMap.remove', res, fb.dyn(ase))
+    fb.op('JAlways', offset='akl')
+    fb.label('akdone')
     # DMZ (rules/dmz.py): a border village of an at-war neighbour holding >= DMZ_WAR of them is taken, not burnt:
     # no Pillage target; its Annex / Liberate score x DMZ_W
     dmode = fb.reg(cx.t('i32'))  # 0 other, 1 pillage, 2 annex / liberate
@@ -1641,6 +1873,8 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
        (a sietch / renegade base: and the army floor of 3.):
        a short militia fight, while the rest stays free for parallel captures (joining everyone sent 8 armies to a
        33k militia at match start and made captures sequential).
+    4. a sietch / renegade base still below ENTER x that side / terrain after joining (our measure; vanilla's own
+       estimate passes picks ours puts at 1.4) -> empty pick, logs `sweak` (vanilla: NotEnoughArmies / recruits).
     Simulated picks (simulatePendingArmies: counts armies in recruitment) pass through unchanged. Logs `join` when
     armies were added (H, M = the power after joining). Original result on any error."""
     pick = cx.fn('logic.ai.AIUnits.pickUnits')
@@ -1842,6 +2076,26 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
     fb.op('Add', dst=m, a=m, b=p)
     fb.op('JAlways', offset='jo')
     fb.label('jdone')
+    # 4. a sietch / renegade base the joined force can't take at ENTER by our measure (the one siege-engage judges):
+    # empty pick (vanilla's own estimate passed Smugglers' whole army, 10 armies, 6 of them Sneaks / Demos / a
+    # Drone, at 1.42 on Qaf-tah's 289k militia: -80% in 19 s; Ubanim at 2.1 x terrain 1.3 won)
+    fb.op('JSLte', a=jmin, b=b.const('i32', 0), offset='jlog')
+    e = fb.reg(cx.t('f64'))
+    fb.op('Mul', dst=e, a=h, b=_ratio(fb, b, ENTER))
+    fb.op('SDiv', dst=e, a=e, b=tf)
+    fb.op('JSGte', a=m, b=e, offset='jlog')
+    wn = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=wn, src=b.field(res, 'length'))
+    b.loop_head('jw_pop')
+    fb.op('JSLte', a=b.field(res, 'length'), b=b.const('i32', 0), offset='jw_log')
+    b.call('hl.types.ArrayObj.pop', res)
+    fb.op('JAlways', offset='jw_pop')
+    fb.label('jw_log')
+    _throttle(fb, b, cx, 'sweak', st, PICK_LOG_T, 'done')
+    _log_ev(fb, b, cx, helpers, 'sweak', [('f', fb.get(fac, 'kind')), ('tgt', s), ('n', wn), ('H', h), ('M', m),
+                                          ('tf%', tf)])
+    fb.op('JAlways', offset='done')
+    fb.label('jlog')
     fb.op('JSLte', a=added, b=b.const('i32', 0), offset='done')
     _log_ev(fb, b, cx, helpers, 'join', [('f', fb.get(fac, 'kind')), ('tgt', s), ('sel', n0), ('add', added),
                                          ('req%', req), ('H', h), ('M', m), ('tf%', tf)])

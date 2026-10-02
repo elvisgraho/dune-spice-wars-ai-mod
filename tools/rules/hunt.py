@@ -715,7 +715,7 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Mov', dst=dmin, src=dy)
     fb.op('JAlways', offset='mloop')
     fb.label('mdone2')
-    fb.op('JSGte', a=dmin, b=big, offset='next')  # no free army in reach (our turrets alone don't hunt)
+    fb.op('JSGte', a=dmin, b=big, offset='cs_free')  # no free army in reach (our turrets alone don't hunt)
     # contest that can't arrive before the capture ends: skip (Smugglers' contest of Fremen's Annex of Tuoiel started
     # 329 away 36 s into the 72 s capture and arrived after it)
     fb.op('JNotEq', a=mode, b=one, offset='lt_ok')
@@ -770,7 +770,7 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Mul', dst=need, a=h, b=enx)
     fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', anc))
     fb.op('SDiv', dst=need, a=need, b=tf)  # their land: 1.5 / 0.8 = 1.9x needed; ours: 1.15x
-    fb.op('JSLt', a=m, b=need, offset='next')
+    fb.op('JSLt', a=m, b=need, offset='cs_need')
     # contest size floor, as the sizing applies it (armies alone >= DEF_HOPE_IN x max(threat, aimod_react + cover) /
     # terrain): a contest failing it at sizing after winning the pick (contests outrank chases) blocked every chase
     fb.op('JNotEq', a=mode, b=one, offset='cfloor')
@@ -782,7 +782,7 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('SDiv', dst=q, a=q, b=tf)
     fb.op('Mul', dst=q, a=q, b=_ratio(fb, b, DEF_HOPE_IN))
     fb.op('Sub', dst=p, a=m, b=tm)  # armies alone
-    fb.op('JSLt', a=p, b=q, offset='next')
+    fb.op('JSLt', a=p, b=q, offset='cs_floor')
     fb.label('cfloor')
     # a chase while we defend, or under enemy turret cover: only when the prey is in contact and we have KILL x
     # (its threat + cover)
@@ -818,6 +818,17 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Mov', dst=best_mode, src=mode)
     fb.op('Mov', dst=best_pf, src=pf)
     fb.op('Mov', dst=best_far, src=far)
+    fb.op('JAlways', offset='next')
+    # a contest of our own (or the defended) village dropped: say why (Atreides' 6 full armies 443 from Sandsud
+    # stayed idle while Harkonnen annexed it, no hunt row at all). free = no free army within reach, need = short of
+    # the entry ratio, floor = short of the contest floor (q)
+    for why in ('free', 'need', 'floor'):
+        fb.label(f'cs_{why}')
+        fb.op('JNotEq', a=mode, b=one, offset='next')
+        fb.op('JSLt', a=rr, b=gather_r, offset='next')
+        _throttle(fb, b, cx, 'cskip', anc, 30, 'next')
+        _log_hunt(fb, b, cx, helpers, fac, 'nogo', 'c' + why, anc, h, m, {'dn': need, 'fl': q, 'dm': dmin})
+        fb.op('JAlways', offset='next')
     fb.label('next')
     fb.op('JEq', a=mode, b=one, offset='vcand')
     fb.op('JEq', a=mode, b=two, offset='ncand')

@@ -784,6 +784,18 @@ def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
                 fb.op('Mov', dst=jf, src=b.cast(mo, 'ent.Faction'))
             fb.label(jfok)
             jf_box[0] = jf
+            # guest structure: stands in another faction's zone (Smugglers' UWHeadquarters at an enemy village's
+            # centre; Headquarter.canSupply heals only units touching it, a village its whole zone): any real
+            # healing structure wins (Smugglers sent 401-550 into Harkonnen's Arnkhelon / Walha at war, 50:09)
+            gst = _uid('gst')
+            so_ = b.call('ent.Entity.get_owner', 1)
+            fb.op('JNull', reg=so_, offset=gst)
+            sz = b.call('ent.Entity.get_zone', 1)
+            fb.op('JNull', reg=sz, offset=gst)
+            fb.op('JEq', a=b.field(sz, 'owner'), b=so_, offset=gst)
+            fb.op('Add', dst=d, a=d, b=b.const('f64', PENALTY))
+            heal_log('guest', None, None)
+            fb.label(gst)
             sticky = fb.reg(cx.t('bool'))
             fb.op('Bool', dst=sticky, value=False)
             lvl = fb.reg(cx.t('i32'))
@@ -1030,6 +1042,18 @@ def _pick_life_wrapper(cx, helpers, ft, fun_type, inner, tag):
     fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=fun_type)
     b = B(fb)
     res = fb.reg(ft.ret.value)
+    if tag == 'defense':
+        # a Defense of our structure takes armies by their absolute supply (not `short`: below the walk home while
+        # losing supply, below), not vanilla's minSupply 0.9 share: a max-supply rise (Atreides 65 -> 125) left every
+        # full-health army at home under 90% and out of the Sandsud Defense. The query args are a fresh object per
+        # call (HAI.getDefaultUnitQueryArgs)
+        from rules.siege import _vfield
+        g0 = fb.try_()
+        msv, msi = _vfield(fb, b, 1, 'minSupply')
+        zs = fb.reg(fb.regs[msv])
+        fb.op('ToDyn', dst=zs, src=b.const('f64', 0))
+        fb.op('SetField', obj=1, field=msi, src=zs)
+        fb.end_try(g0)
     fb.op('Call2', dst=res, fun=inner, arg0=0, arg1=1)
     guard = fb.try_()
     fb.op('JNull', reg=res, offset='end')
@@ -1073,6 +1097,18 @@ def _pick_life_wrapper(cx, helpers, ft, fun_type, inner, tag):
                                           ('src', tag)])
     fb.op('JAlways', offset='l')
     fb.label('nwh')
+    if tag == 'defense':
+        shf = b.field(b.field(0, 'controller'), 'owner')
+        fb.op('JNull', reg=shf, offset='nshort')
+        sh = fb.reg(cx.t('bool'))
+        fb.op('Call2', dst=sh, fun=helpers['short'], arg0=shf, arg1=a)
+        fb.op('JFalse', cond=sh, offset='nshort')
+        b.call('hl.types.ArrayObj.remove', res, fb.dyn(a))
+        _throttle(fb, b, cx, 'lowpick', a, PICK_LOG_T, 'l')
+        _log_ev(fb, b, cx, helpers, 'lowpick', [('f', fb.get(shf, 'kind')), ('a', a),
+                                                ('hp%', b.call('ent.Entity.get_lifeRatio', a)), ('src', 'short')])
+        fb.op('JAlways', offset='l')
+        fb.label('nshort')
     if tag in ('siege', 'defense'):
         # the last army of one of our Military orders in Action finishes an occupation alone (rules/release.py split
         # the rest off): taking it empties the order (removeUnit cancels it). A main-base defense still may
@@ -1161,7 +1197,9 @@ def no_regen_heal(cx, helpers, new_ids):
     ~0.5 s and never moving). The checkUnits getUnits call that feeds the Resupply loop (the second one; the first is
     the upkeep disband) is wrapped: armies without safe regen whose supply needs nothing (no supply, or supply >=
     valueCache[1062]) are removed from the result; one that needs supply still gets its Resupply (it ends once
-    refilled). Logs `noregen` (a, hp%) once per army per PICK_LOG_T s. Original result on any error."""
+    refilled). Also removed: an army above the life trigger that gains supply where it stands (Army.isGainingSupply):
+    its Resupply would only hold it there (logs `selfsup` a, sup, ms). Logs `noregen` (a, hp%) once per army per
+    PICK_LOG_T s. Original result on any error."""
     gu = cx.fn('logic.ai.AIUnits.getUnits')
     ftypes = {f.findex.value: f.type.value for f in cx.code.functions}
     ft = cx.code.types[gu.type.value].definition
@@ -1187,6 +1225,13 @@ def no_regen_heal(cx, helpers, new_ids):
     fb.op('JNull', reg=v, offset='vc_done')
     fb.op('SafeCast', dst=sup_t, src=v)
     fb.label('vc_done')
+    life_t = fb.reg(cx.t('f64'))  # life trigger valueCache[1063] (0.9 if unreadable)
+    fb.op('Mov', dst=life_t, src=_ratio(fb, b, 0.9))
+    fb.op('JNull', reg=vc, offset='lt_done')
+    lv = b.call('hl.types.ArrayBytes_Float.getDyn', vc, b.const('i32', 1063))
+    fb.op('JNull', reg=lv, offset='lt_done')
+    fb.op('SafeCast', dst=life_t, src=lv)
+    fb.label('lt_done')
     i = fb.reg(cx.t('i32'))
     fb.op('Mov', dst=i, src=b.field(res, 'length'))
     zi, one = b.const('i32', 0), b.const('i32', 1)
@@ -1206,6 +1251,18 @@ def no_regen_heal(cx, helpers, new_ids):
                                           ('src', 'resupply')])
     fb.op('JAlways', offset='l')
     fb.label('nwh')
+    # supply only (life above the trigger) and refilling where it stands (Army.isGainingSupply: not fighting, a
+    # supplying structure in its zone or a neighbour): the order would only hold it there, out of every defense
+    # (Atreides' 6 armies at Sandkus, 82/125 after a max-supply rise, in Resupply while Harkonnen took Sandsud)
+    fb.op('JSLt', a=b.call('ent.Entity.get_lifeRatio', a), b=life_t, offset='ngain')
+    fb.op('JFalse', cond=b.call('ent.Army.isGainingSupply', a), offset='ngain')
+    b.call('hl.types.ArrayObj.remove', res, fb.dyn(a))
+    _throttle(fb, b, cx, 'selfsup', a, PICK_LOG_T, 'l')
+    _log_ev(fb, b, cx, helpers, 'selfsup', [('f', fb.get(b.call('ent.Entity.get_owner', a), 'kind')), ('a', a),
+                                            ('sup', b.call('ent.Army.get_supply', a)),
+                                            ('ms', b.call('ent.Army.get_maxSupply', a))])
+    fb.op('JAlways', offset='l')
+    fb.label('ngain')
     fb.op('JTrue', cond=b.call('ent.Unit.hasSafeRegen', a), offset='l')
     lr = b.call('ent.Entity.get_lifeRatio', a)
     fb.op('JSGte', a=lr, b=full, offset='l')

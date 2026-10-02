@@ -17,7 +17,9 @@ host-gain extensions were built.
   production extension UHQ_EXT_BASE + its gain from the host's current production, only once the host produces a
   listed resource at its minimum); anything
   else NaN (dropped: the slot waits until the village produces something worth taking). Vanilla NaN (not buildable)
-  stays NaN. Log `uhqx` once per HQ per 60 s.
+  stays NaN; a pair on a full HQ (no empty slot) is NaN too: vanilla scores pairs without slots, picks among its top 2
+  only, and a full HQ's Harvesters' Union pair at UHQ_HU failed every pick and starved the village buildings. Log
+  `uhqx` once per HQ per 60 s.
 Fails safe: every wrapper runs vanilla on error (trap), and the score wrappers keep vanilla's value."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
 
@@ -310,8 +312,22 @@ def build_uhq_ext(cx, helpers, val, new_ids):
     fb.op('JNull', reg=s, offset='end')
     _is_kind(fb, b, s, fb.dyn(fb.string('UWHeadquarters')), 'end')
     fb.op('JNotEq', a=b.call('ent.Entity.get_owner', s), b=1, offset='end')
-    host = b.field(b.cast(fb.dyn(s), 'ent.Headquarter'), 'structHost')
+    hq = b.cast(fb.dyn(s), 'ent.Headquarter')
+    host = b.field(hq, 'structHost')
     fb.op('JNull', reg=host, offset='end')
+    # full HQ (extensions built or under way fill every slot): NaN, vanilla drops the pair. Vanilla scores pairs
+    # without slots and builds only one of its top 2 (Insane): a full HQ's pair at UHQ_HU stayed on top for 30 min,
+    # failed every pick (its replace step re-scores in vanilla terms: nothing to swap) and starved the village
+    # buildings (Smugglers at the Plascrete cap, Harvesters' Union pairs on Tallon / Sharekh 01:49-33:06)
+    occ = cx.fn('ent.Headquarter.getOccupiedOutpostSlots')
+    onull = fb.reg(cx.code.types[occ.type.value].definition.args[1].value)
+    fb.op('Null', dst=onull)
+    used = fb.reg(cx.t('i32'))
+    fb.op('Call2', dst=used, fun=occ.findex.value, arg0=hq, arg1=onull)
+    fb.op('JSLt', a=used, b=b.call('ent.Headquarter.getTotalOutpostSlots', hq), offset='free')
+    fb.op('Mov', dst=res, src=_nan(fb, b, cx))
+    fb.op('JAlways', offset='end')
+    fb.label('free')
     k = fb.get(0, 'k')
     fb.op('JNull', reg=k, offset='end')
     ks = b.cast(k, 'String')

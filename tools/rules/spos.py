@@ -185,6 +185,7 @@ def build_spos(cx, helpers, cover):
     fb.op('Mov', dst=dx, src=b.call('hxd.$Math.sqrt', dx))
     fb.op('Sub', dst=dx, a=dx, b=b.const('f64', 10))
     fb.op('JSLte', a=dx, b=bd, offset='a')
+    _skip_striking(fb, b, cx, helpers, a, 'a')  # en-route strike: it fights first
     _throttle(fb, b, cx, 'spos', a, SPOS_T, 'a')
     b.call('haxe.ds.ObjectMap.set', sposm, fb.dyn(a), fb.dyn(t))
     ok = _move_to(fb, b, cx, a, px, py, fac)

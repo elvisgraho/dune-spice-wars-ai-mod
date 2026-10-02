@@ -63,7 +63,9 @@ MIN_LIFE = 0.9     # free army life ratio (= vanilla getUnits minLife)
 MIN_SUPPLY = 0.9   # free army supply ratio (= vanilla getUnits minSupply)
 SUP_U = 0.35       # supply budget per map unit to our land: drain 50/day (data Army_Supply_DailyDrain, 30 s day)
                    # = 1.67/s at ~6 u/s = 0.28/u, x1.25 margin
-SUP_RES = 0.1      # ... plus this share of max supply in reserve. `short` = losing supply and below the budget
+SUP_DRAIN_S = 50 / 30  # data Army_Supply_DailyDrain 50 per 30 s day: supply per second off our land (and in a fight)
+SUP_RESERVE = SUP_DRAIN_S * 10  # ... plus this much in reserve (~10 s of drain, absolute: max supply ranges 65-440 by
+                   # faction and upgrades, a share of it made the reserve 6-44). `short` = losing supply and below the budget
 SUP_WALK = 0.28    # raw drain per map unit walked (SUP_U without the margin). Fight retreat: a short army with
                    # supply < SUP_WALK x distance to our land is `stranded`: fleeing starves it on the way anyway (and
                    # gets it shot in the back), so it isn't penalised and keeps a fight it is winning (Atreides left a
@@ -73,6 +75,13 @@ SUP_PEN = 0.6      # fight retreat: balance x (1 - SUP_PEN x share of our fight 
 COVER_R = 130      # turret cover: a structure's turrets / main base guns reach this far from its centre (data: range
                    # 80 for MissileBattery and main bases, + turrets placed around the centre). Also the bunker pair
                    # distance: two villages this close cover each other
+TURRET_SPREAD = 40 # a village turret covers a point within its own attack range of it in full, fading to 0 this much
+                   # beyond (the fight's armies spread around the point); measured from the building, not the village
+                   # centre: Ash-bat's battery (98 from Tuo-Al'waz) reached a few Atreides units yet counted in full
+STAGE_R = COVER_R  # stage: a siege's regroup point stays this far from the target: out of its turrets (the militia
+                   # trigger is almost at the village) and not loitering in it; Fremen's first 2 of 6 armies on Hadur
+                   # stood 15-50 from it 150 s in Regroup and were shot down
+STAGE_SEE = 320    # stage: a walking army is staged once this close (its own position then shows its approach side)
 MB_GUN_W = 3       # main-base guns count this many times (our cover and vanilla's sizing): Fremen sized Sadnin, 113 from
                    # Arrakeen, at 1.7:1 and read 2-13 while the guns took 6 of 10 armies (provisional, one fight)
 TURRET_H = 1500    # turret -> army power: offensivePotential x this HP (~one 3-unit army's health): a MissileBattery
@@ -109,7 +118,8 @@ RAID_GAP = 30      # s between two raid launches of one faction (commit, like HU
 PICK_LIFE = 0.5    # vanilla mission picks (sieges, Defense, Discovery) skip armies below this life unless fighting
 PICK_LOG_T = 30    # s: lowpick log throttle per army
 RAID_LIFE = 0.6    # raid army life floor (a pillage is short; vanilla sieges want 0.9 and a full refill)
-RAID_ARRIVE = 0.25  # raid: supply share an army must still have on arrival (militia fight drains)
+RAID_ARRIVE = SUP_DRAIN_S * 30  # raid: supply an army must still have on arrival: ~30 s of militia fight drain
+                   # (absolute, *unverified*: Alwahad's fight drained 85 in ~50 s; a 25% share was 16-110 by faction)
 REACT_R = 480      # raid: idle at-war armies this close can reach the village before a pillage ends (militia fight
                    # ~20 s + 2 days = 60 s, at ~6 u/s); fighting, besieging or elsewhere-bound ones don't count
 RAID_FAR = round(1 / ENTER, 3)  # raid start: everything within REACT_R (with the village's side) needs only this x: an
@@ -141,11 +151,30 @@ RALLY_T = 2        # s: rally pass (rules/rally.py): gather strength when a stru
 RALLY_MIN_H = 80000  # ... and that power is at least this (a lone raider is vanilla Defense's business)
 HOME_MIN_H = RALLY_MIN_H  # aimod_home: hostile power free to strike our land below this counts 0 (a raider band the
                    # village militia hold; the rally ignores it too): 20k FremenRaids vs no army home aborted pillages at 10%
+SWEEP_T = 60        # s: map sweep (rules/sweep.py): dead armies / ended orders / ended fights leave our maps
+STRIKE_T = 2        # s: en-route strike tick (rules/strike.py): our siege armies on the march ...
+STRIKE_R = 90       # ... react to an at-war army this close, like a turret (MissileBattery range 80 + a little; user)
+STRIKE_RATIO = 1.0  # ... and fight it when the order's armies within LOCAL are at least this x (its side + cover):
+                    # even or better starts the fight (user), the vanilla fight retreat still judges it after 5 s
+STRIKE_MAX = 30     # s: ... a strike ends after this, then the march goes on
+STRIKE_LEASH = 120  # ... or once the army is this far from where it started (a running enemy isn't chased; user)
 STAND_R = 200      # turret steering (rules/build.py): at-war power within this of our village (turret range 80 +
                    # an idle stack at the next village, Gun-dah 115 from Annarekh) ...
 STAND_MIN_H = RALLY_MIN_H  # ... at least this ...
 STAND_T = 30       # s: ... standing there this long (a passing army is no standoff) ...
 STAND_BONUS = 100  # ... lifts MissileBattery there to vanilla score + this (vanilla building scores ~10-40)
+TURRET_EXPOSED = 2  # turret-steer: our village whose zone borders this many zones held by at-war factions is a front
+                    # village: it gets a MissileBattery (+STAND_BONUS) without waiting for a standing stack (user:
+                    # Atreides, weakest, was overrun by Fremen through such villages with no battery built)
+TURRET_REMOTE = 3   # ... also a village this many zones or more from our main base (Zone.getDistanceToPlayerBase; 1 =
+                    # bordering it): too far for a relief to arrive in time if something happens (user)
+TURRET_BASE_GATE = 1  # ... also a village bordering our main base's zone with this many zones of any other faction
+                      # next to it (at war or not: treaties end): the way into our base (user)
+TURRET_DEMOLISH = ('Marketplace', 'MaintenanceCenter', 'ResearchHub')  # ... a full front village frees a slot
+                    # for it by demolishing the first of these present (Wholesale Market first), only when the battery
+                    # is affordable now; none present: it stays as it is
+TRES_T = 300        # s: after such a demolition, other buildings on that village are dropped from the scoring
+                    # until its battery stands (vanilla would refill the slot and the next scoring demolish again)
 ATTR_PEACE_FORCE = 30  # attribute row Allow_PeaceForce (Atreides): may impose ImproveRelations for Influence
 CAP_EST = 90       # s: hunt contest: an occupation's full length before its progress rate is known (Fremen Annex of Tuoiel 72 s)
 CAP_STALE = 300    # s: a progress record older than this is restarted
@@ -160,7 +189,7 @@ PANNEX_MIN_VILLAGES = 4  # ... and only once we own this many villages: the open
 # Underworld HQs (rules/uhq.py; Smugglers). Vanilla installs whenever <= 1 HQ has an empty extension list (no cap: all
 # Authority went into HQs) and scores regular extensions only by cdb aiWeights (Whisperers Lair on no-Intel villages).
 UHQ_MIN = 3        # HQ cap = max(UHQ_MIN, UHQ_PER_VILLAGE x our villages); built ones are never removed
-UHQ_PER_VILLAGE = 2
+UHQ_PER_VILLAGE = 3
 UHQ_MB_R = 500     # placement: a host village within this of its owner's main base scores up to ...
 UHQ_MB_W = 1.0     # ... x (1 + this) at the base (falls linearly to x 1 at UHQ_MB_R): hardly ever recaptured there
 UHQ_PLACE_W = 1.0  # placement: + this x the best production-extension gain at the village (vanilla score ~20-60)
@@ -245,7 +274,7 @@ ALLY_WIN = 150    # hunt: a third party allied / at peace with the prey counts o
                    # distance + this (~25 s of fight at ~6 u/s): farther ones arrive after the kill. A third party at
                    # war with the prey doesn't count (it fights the prey too). Log: Harkonnen hunt on 3 Fremen next
                    # to an Atreides stack at war with both
-ENGAGE_R = 100    # siege-engage: order armies this close to the target are at it (in the militia fight); farther
+ENGAGE_R = STAGE_R + 30  # siege-engage: order armies this close to the target are at it (staged or in the fight); farther
                    # ones are still walking and would arrive one by one (Harkonnen raid on Har-Al'sud)
 PART_X = 2.0      # siege-engage: an early Engage with only part of the order's armies at the target needs this x the
                   # normal ratio (else it waits for the rest: Fremen's 2 of 3 on Haykus at 2.4x est., vanilla 1.5, lost one)
@@ -289,6 +318,9 @@ DISC_HORIZON = 40  # s: a running Discovery trip counts hostile movers that can 
 DISC_RETRY = 60    # s: a world event whose Discovery trip we gave up isn't sent to again this soon (no launch/abort loop)
 RAID_KEEP = 3      # raid never hits the top this many Annex choices (vanilla's scores), affordable or not: the next
                    # annexes; the rest of the map is fair game (vanilla's 2-5 + Devastated own pillages left Smugglers idle)
+AKEEP_T = 240      # s: a top-RAID_KEEP Annex choice stays protected this long after raid's last scan listed it, from
+                   # raid and from vanilla's Pillage gauge (Smugglers' gauge pillaged its top Annex choices Arslulah x3,
+                   # Ya-lab; raid hit Haywaz just after it left the top 3: Devastated + our Annex cost doubled)
 BEHIND_E = 0.25    # raid: a village is behind another faction's main base M (seen from our nearest main base B) when
                    # M is nearer B than it and d(B,M) + d(M,v) <= d(B,v) x (1 + this): never raided
 RAID_RETRY = 60    # s: a village our raid left (aborted, or cancelled at once by vanilla) isn't raided again this soon
@@ -301,9 +333,42 @@ PRESS_RETRY = 120  # s: a dropped press target isn't pressed again this soon
 ANNEX_SPECIAL = 30  # Annex score + this for a village in a special region (region aiWeight >= 20, vanilla adds that
                     # weight once; specials yield more hegemony), before the cost ratio
 ANNEX_SIETCH = 10  # Annex score + this for a village whose zone has a sietch (Zone.getSietch), before the cost ratio
-ANNEX_SPICE1 = 2    # Annex score x this for a spice village while we own none (vanilla +100 too), after the cost
+ANNEX_SPICE1 = 4    # Annex score x this for a spice village while we own none (vanilla +100 too), after the cost
+                    # ratio and every other term (x2 could lose to a +50 special x centre x compactness): the first capture is a spice field
                     # ratio: the opening takes a spice field first. Not for SPICE_ANY factions (harvest anywhere)
 SPICE_ANY = ('Fremen', 'Vernius')  # their first-spice bonus (vanilla +100) is removed
+ANNEX_ZONES = 1    # Annex target reach: vanilla's 1 zone from our territory + this (every faction; Smugglers get FAR_ZONES
+                   # too): vanilla offered 1-2 candidates per pick, so scores had nothing to choose from
+VAN_HOPS_CAP = 3   # vanilla's -10 per zone from our main base (AI_StructureScore_PerZone_Distance_Weight) counts at most
+                   # this many zones: a central / special village a zone or two farther out can still win on value
+CENTER_W = 0.08    # Annex score x (1 + CENTER_W x closeness to the map centre (mean village position; 1 there, 0 at the
+                   # farthest village)): the middle gives wider map access (strategy GENERAL "Expansion")
+CENTER_BASE_R = 350  # ... no centre bonus within this of another faction's main base (access, not parking at a capital)
+ANNEX_SP_EARLY_N = 4  # special table: "early" specials count their early bonus while we own fewer villages than this
+CLAIM_HOPS = 2      # free Annex (cost 0: Water Subsidies on Polar Sink) only within this many zones of our territory
+                    # (Zone.getDistanceToPlayerTerritory: 1 = bordering, 2 = one zone between): no march to the middle
+CLAIM_R = 600       # ... with our armies within this of it at least ENTER x the at-war armies that can reach it; each
+                    # AI judges only itself: a weak or far one stays out, two strong neighbours meet there
+CLAIM_ADD = 20      # ... bonus (score + this) for an AI that passes: the free village is worth taking now
+ANNEX_SP_SMUG_CAP = 40  # Smugglers' special bonus at most this (no distance cost: never dragged across the map)
+# special region -> (bonus for every faction, {faction: bonus}); region ids from data `region` (variants listed).
+# Strategy GENERAL "Specials" table (T). Unlisted specials (aiWeight >= 20) keep ANNEX_SPECIAL; Desolation is unownable
+_SP_FREMEN = {'Fremen': 50}
+ANNEX_SPECIALS = {
+    'Pit': (50, {'Corrino': 70}), 'Pit_Polar': (50, {'Corrino': 70}), 'Pit_Volcanic': (50, {'Corrino': 70}),
+    'SandFall': (50, {}), 'WormNest': (50, {}),
+    'Pole': (20, {'Atreides': 50, 'Harkonnen': 50}),
+    'ImperialBasin': (20, {'Smugglers': 50}),
+    'MoonDewVale': (20, {'Fremen': 50, 'Smugglers': 50}), 'MoonDewVale_Volcanic': (20, {'Fremen': 50, 'Smugglers': 50}),
+    'Volcano': (20, {'Fremen': 50, 'Corrino': 50, 'Vernius': 50}),
+    'SpaceCruiserWreck': (20, _SP_FREMEN), 'SpaceCruiserWreck_Red': (20, _SP_FREMEN),
+    'SpaceCruiserWreck_Polar': (20, _SP_FREMEN), 'SpaceCruiserWreck_Volcanic': (20, _SP_FREMEN),
+    'CrescentRidge': (20, _SP_FREMEN), 'CrescentRidge_Red': (20, _SP_FREMEN), 'CrescentRidge_Idaho': (20, _SP_FREMEN),
+    'CrescentRidge_Polar': (20, _SP_FREMEN),
+    'ShieldWall': (10, {}), 'ShieldWall_Volcano': (10, {}), 'RichPit': (10, {}), 'RichPit_Volcanic': (10, {}),
+    'RichPit_Red': (10, {}), 'AcidLake': (10, {}), 'AcidLake_Red': (10, {}), 'AcidLake_Volcanic': (10, {}),
+}
+ANNEX_SPECIALS_EARLY = {'MountIdaho': (40, 15), 'ObservatoryM': (40, 15)}  # (early, later)
 NEAR_W = 0.25       # Annex score x (1 + NEAR_W x (NEAR_REF - d) / NEAR_REF), clamped to 1 +- NEAR_W, d = distance to our
 NEAR_REF = 400      # nearest structure on our land: compact land, short walks to defend (factions with distance
                     # annex costs only: Smugglers (Outpost_DistanceCost_MRatio 0) cap far villages by design)
@@ -659,6 +724,16 @@ def build_chain(cx, fns):
         fb.op('Call2', dst=void, fun=f, arg0=0, arg1=1)
     fb.op('Ret', ret=void)
     return fb.build()
+
+
+def _skip_striking(fb, b, cx, helpers, army, skip):
+    """Jump to `skip` while army is in an en-route strike (aimod_striking, rules/strike.py): rules that move order
+    armies (gather, stage, desert-step) leave it to its fight."""
+    e = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=e, src=army)
+    r = fb.reg(cx.t('bool'))
+    fb.op('Call1', dst=r, fun=helpers['striking'], arg0=e)
+    fb.op('JTrue', cond=r, offset=skip)
 
 
 __all__ = [n for n in dir() if not n.startswith('__')]

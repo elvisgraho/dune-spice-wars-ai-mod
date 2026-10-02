@@ -34,6 +34,7 @@ from rules.deploy import *  # noqa: F401,F403
 from rules.peace import *  # noqa: F401,F403
 from rules.worm import *  # noqa: F401,F403
 from rules.desert import *  # noqa: F401,F403
+from rules.stage import *  # noqa: F401,F403
 from rules.gather import *  # noqa: F401,F403
 from rules.rally import *  # noqa: F401,F403
 from rules.spos import *  # noqa: F401,F403
@@ -43,6 +44,9 @@ from rules.uhq import *  # noqa: F401,F403
 from rules.sdiag import *  # noqa: F401,F403
 from rules.release import *  # noqa: F401,F403
 from rules.dmz import *  # noqa: F401,F403
+from rules.claim import *  # noqa: F401,F403
+from rules.strike import *  # noqa: F401,F403
+from rules.sweep import *  # noqa: F401,F403
 
 
 def install(cx, helpers, new_ids):
@@ -54,7 +58,7 @@ def install(cx, helpers, new_ids):
     threat = build_threat(cx, pw)
     neutral = build_neutral(cx, pw)
     own = build_own(cx, pw)
-    free = build_free(cx, pw)
+    free = build_free(cx, pw, min_supply=0)  # supply: the hunt's trip budget (absolute), not a share
     terrain = build_terrain(cx)
     # heal / retreat / strand safety: full threat, no busy / outside discounts (an army rests there)
     hsafe = build_threat(cx, pw, discount=False)
@@ -63,6 +67,7 @@ def install(cx, helpers, new_ids):
     land = build_land(cx)
     supok = build_supok(cx)
     short = build_short(cx, land, supok)
+    helpers['short'] = short  # vanilla Defense picks: absolute supply test (rules/heal.py pick-life)
     sieged = build_sieged(cx)
     cover = build_cover(cx)
     silence = build_silence(cx)
@@ -94,9 +99,11 @@ def install(cx, helpers, new_ids):
     new_ids.add(helpers['tension'])
     helpers['dmzv'] = build_dmzv(cx)  # DMZ village test (rules/dmz.py): scoring, raid, strat
     new_ids.add(helpers['dmzv'])
+    react = build_threat(cx, pw, reach=REACT_R)
+    helpers['fclaim'] = build_fclaim(cx, own, react)  # free Annex gate (rules/claim.py): scoring
+    new_ids.add(helpers['fclaim'])
     report.update(build_scoring(cx, new_ids, helpers))
     hthreat = build_threat(cx, pw, prey=True)
-    react = build_threat(cx, pw, reach=REACT_R)
     ttick = build_tension_tick(cx, helpers, threat)
     new_ids.add(ttick)
     hunt = build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieged, cover, defend, neutral,
@@ -108,8 +115,10 @@ def install(cx, helpers, new_ids):
     raid = build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, defend, militia, threat, free,
                       home, homeown, helpers['scores'], neutral, relunits)
     fpow = build_fpow(cx, pw)
+    threat_in = build_threat(cx, pw, 0)  # strat keep: armies within r only (r = what arrives before our capture ends)
+    new_ids.add(threat_in)
     strat = build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, defend, militia, home,
-                        short, neutral, threat)
+                        short, neutral, threat, threat_in)
     report.update(strat_levers(cx, new_ids))
     dmz = build_dmz(cx, helpers, fpow, defend)  # rules/dmz.py: border counts, truce break
     report.update(build_peace_gate(cx, helpers, defend, new_ids))
@@ -137,7 +146,13 @@ def install(cx, helpers, new_ids):
     report.update(harvest_fields(cx, danger, helpers, new_ids))
     report.update(harvest_flee(cx, danger, threat, helpers, new_ids))
     wormflee = build_worm_flee(cx, helpers)
+    striking = build_striking(cx)  # en-route strike state (rules/strike.py): read by dstep / stage / gather / spos
+    helpers['striking'] = striking
+    report.update(strike_skip(cx, new_ids, striking))
+    strike = build_strike(cx, helpers, pw, threat, cover, striking)
+    new_ids.update({striking, strike})
     dstep = build_desert_step(cx, helpers)
+    stage = build_stage(cx, helpers)
     gather = build_gather(cx, helpers)
     # rally: active threat at D and rally-point safety count movers only when they arrive there (not border shuffles)
     threat_arrive = build_threat(cx, pw, arrive=True)
@@ -148,15 +163,19 @@ def install(cx, helpers, new_ids):
     report.update(gather_busy(cx, new_ids))
     sact = build_sact(cx, helpers, pw, militia)  # diagnostics only (rules/sdiag.py)
     release = build_release(cx, helpers, relunits, threat, neutral, cover)  # rules/release.py
-    tick = build_chain(cx, [memory, wormflee, ttick, dmz, strat, hunt, raid, rally, fpeace, sengage, gather, spos, dstep, discabort, undeploy, strand, release, sact])
-    new_ids.update({dmz, sact, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, gather, rally, threat_arrive, fpeace, spos,
+    sweep = sweep_stub(cx)  # the map sweep: swapped for the real one at the end (every map exists by then)
+    new_ids.add(sweep)
+    tick = build_chain(cx, [memory, wormflee, ttick, dmz, strat, hunt, raid, rally, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, sact, sweep])
+    new_ids.update({dmz, sact, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
                     memory, tick})
     report['strand'] = 1
     report['worm-flee'] = 1
     report['desert-step'] = 1
+    report['stage'] = 1
     report.update(log_worm_kill(cx, helpers, new_ids))
     report.update(build_wind_fallback(cx, helpers, new_ids))  # last: also redirects our own rules' calls
     report['undeploy'] = 1
     report['raid'] = 1
     report['strat'] = 1
+    report.update(install_sweep(cx, helpers, new_ids, tick, sweep))  # last: sees every added map
     return report, tick

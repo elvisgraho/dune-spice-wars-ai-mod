@@ -26,7 +26,7 @@ Every item is a **bias** (weight or ratio modifier) with exits, per GENERAL "Cor
 - **Edge cases:** the rule's data source isn't found yet (not in `siegeAction.Pillage`; look for an Atreides attribute / condition before coding); a neutral village pillaged by us would also block our own Peaceful Annex of it for 20 days (D `Devastated`), so excluding neutrals is right for Atreides either way.
 - **Clash:** a filter, no behavior change elsewhere.
 
-### C4 Per-faction special values · all · S
+### C4 Per-faction special values · all · S · **built** (ANNEX_SPECIALS, AI-POLICY Annex value; verify row "annex choice")
 - **Idea:** replace the flat +30 special bonus in the Annex value with a faction × region table (GENERAL "Specials"). Hook: `_annex_value` (ANNEX_SPECIAL); region ids from the `region` sheet.
 - **Evidence:** which specials each faction takes vs the table (baseline from 2-3 logs).
 - **Edge cases:** a special's risk depends on the map (Polar Sink and Imperial Basin are central on Dune Medium, not necessarily elsewhere): use the existing threat / compactness terms for risk, the table for value only; a value high enough to drag a faction across the map is capped by the compactness term (not for Smugglers: cap the table bonus instead).

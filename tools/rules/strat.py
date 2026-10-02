@@ -17,14 +17,17 @@ PRESS_R x terrain have PRESS x (armies in reach + enemy cover + militia). Neares
 is a later step). Mode annex if the village is in supply range, Annex is available and we can pay it, else pillage
 if available. The press holds until: the village changes owner (done / gone) or can't be
 attacked any more (done: pillaged = Devastated), truce, PRESS_MAX s (`slow`), or our
-power there (any task, + cover) x terrain < PRESS_KEEP x their side (`weak`); a dropped target is skipped for
+power there (any task, + cover) x terrain < PRESS_KEEP x their side (`weak`; while our occupation of it progresses
+only at-war armies arriving before it ends count: aimod_threat (horizon 0, any heading) within max(LOCAL,
+(_cap_rem + CONTEST_SLACK) x CONTEST_SPD)); a dropped target is skipped for
 PRESS_RETRY s and our Military orders on it are cancelled (vanilla would keep a lost siege going).
 The levers (strat_levers, scores in siege.build_scoring, raid) read the press maps: spv faction -> village,
 spf -> its owner, spa -> annex mode, spt -> start time. Annex mode also lifts the Annexation gauge to GAUGE_FIRE so
 vanilla tries it now.
 Logs `strat` on every posture / target change and at least every STRAT_LOG s: post, S, need, T, tgt, mode, hold,
 reach, war = [{f, ds (desiredStatus toward it), pw (its army power)}] per at-war faction; `strat` act drop on a
-dropped press (why done | gone | truce | slow | weak). Fails safe: in a trap."""
+dropped press (why done | gone | truce | slow | weak; + ha hc hm hn = their armies / cover / militia / raiders, tf,
+pr = our occupation progress, rem = its remaining s, -1 when not occupying). Fails safe: in a trap."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
 
 POSTURES = ('', 'defend', 'hold', 'press', 'expand', 'harass', 'recover')  # index RECOVER_POST = recover
@@ -68,7 +71,7 @@ def _has_action(fb, b, cx, s, fac, name, yes, no):
 
 
 def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, defend, militia, home, short, neutral,
-                threat):
+                threat, threat_in):
     """aimod_strat(mil, dt) (see module doc)."""
     fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
     b = B(fb)
@@ -111,6 +114,12 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('Mov', dst=reach, src=zero)
     fb.op('Mov', dst=age, src=zero)
     fb.op('Bool', dst=annex, value=False)
+    # keep-test parts for the drop log: their armies / cover / militia / raiders, terrain, our occupation progress and
+    # its remaining s (-1: not occupying, the full test)
+    ha, hc, hm, hn, kpr, krem = (fb.reg(cx.t('f64')) for _ in range(6))
+    for _r in (ha, hc, hm, hn, kpr, tf):
+        fb.op('Mov', dst=_r, src=zero)
+    fb.op('Mov', dst=krem, src=b.const('f64', -1))
 
     def cover_at(dst, at, own):
         fb.op('CallN', dst=dst, fun=cover, args=[fac, at, at, t_true if own else t_false, no_arr])
@@ -240,8 +249,23 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('JFalse', cond=b.call('ent.Entity.canBeAttacked', ve, fac), offset='drop_quiet')  # pillaged: Devastated
     fb.op('SafeCast', dst=age, src=b.call('haxe.ds.ObjectMap.get', spt, fb.dyn(fac)))
     fb.op('Sub', dst=age, a=t, b=age)
+    # our occupation of it under way (besieged by us, progress > 0): remaining s (krem; -1 otherwise)
+    kocc = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=kocc, value=False)
+    ksg = b.field(pv, 'siege')
+    fb.op('JNull', reg=ksg, offset='knocc')
+    fb.op('JNotEq', a=b.field(ksg, 'besiegingFaction'), b=fac, offset='knocc')
+    fb.op('JSLte', a=b.call('ent.comp.SiegeComponent.getOccupationActionProgress', ksg), b=zero, offset='knocc')
+    krr, kpp = _cap_rem(fb, b, cx, pv, t, 'knocc')
+    fb.op('Mov', dst=kpr, src=kpp)
+    fb.op('Mov', dst=krem, src=krr)
+    fb.op('Bool', dst=kocc, value=True)
+    fb.label('knocc')
+    # slow: never while our occupation progresses (a capture near its end isn't stale)
     fb.op('Mov', dst=why, src=fb.string('slow'))
+    fb.op('JTrue', cond=kocc, offset='kslow')
     fb.op('JSGt', a=age, b=b.const('f64', PRESS_MAX), offset='drop')
+    fb.label('kslow')
     # keep: our power there (any task: the siege armies are busy) + our cover vs their side
     cover_at(reach, ve, True)
     y = _army_loop(fb, b, my_armies, mlen, j, 'kp', 'kpdone')
@@ -251,7 +275,25 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('Add', dst=reach, a=reach, b=p)
     fb.op('JAlways', offset='kp')
     fb.label('kpdone')
-    their_side(hold, pv)
+    # their side: at-war armies that can reach it (aimod_react, LOCAL) + enemy cover + militia + other raiders; while
+    # our occupation progresses only armies that arrive before it ends count: within max(LOCAL, (remaining s +
+    # CONTEST_SLACK) x CONTEST_SPD) (AI-POLICY §4: threat ETA included, a nearly done capture fights on). Smugglers
+    # dropped Ash-bat 16 s before the pillage ended at a 4.6 order balance for a Fremen stack 400 away that never came
+    fb.op('Call3', dst=ha, fun=react, arg0=fac, arg1=ve, arg2=local)
+    fb.op('JFalse', cond=kocc, offset='kfull')
+    fb.op('Add', dst=q, a=krem, b=b.const('f64', CONTEST_SLACK))
+    fb.op('Mul', dst=q, a=q, b=b.const('f64', CONTEST_SPD))
+    fb.op('JSGte', a=q, b=local, offset='krad')
+    fb.op('Mov', dst=q, src=local)
+    fb.label('krad')
+    fb.op('Call3', dst=ha, fun=threat_in, arg0=fac, arg1=ve, arg2=q)  # no movers from outside q: it is the ETA
+    fb.label('kfull')
+    cover_at(hc, ve, False)
+    fb.op('Call1', dst=hm, fun=militia, arg0=pv)
+    fb.op('Call3', dst=hn, fun=neutral, arg0=fac, arg1=ve, arg2=local)
+    fb.op('Add', dst=hold, a=ha, b=hc)
+    fb.op('Add', dst=hold, a=hold, b=hm)
+    fb.op('Add', dst=hold, a=hold, b=hn)
     fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', ve))
     fb.op('Mul', dst=q, a=reach, b=tf)
     fb.op('Mul', dst=r, a=hold, b=keep)
@@ -284,7 +326,8 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.label('drop_quiet')
     clear_press()
     _log_ev(fb, b, cx, helpers, 'strat', [('f', fb.get(fac, 'kind')), ('act', 'drop'), ('why', why), ('tgt', ve),
-                                          ('age', age), ('hold', hold), ('reach', reach)])
+                                          ('age', age), ('hold', hold), ('reach', reach), ('ha', ha), ('hc', hc),
+                                          ('hm', hm), ('hn', hn), ('tf%', tf), ('pr%', kpr), ('rem', krem)])
     fb.op('Null', dst=tgt)
     fb.op('Mov', dst=hold, src=zero)
     fb.op('Mov', dst=reach, src=zero)
@@ -456,7 +499,13 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     aargs = b.call('$HAI.getDefaultStructureArgs', fb.string('Annex'))
     fb.op('SetField', obj=aargs, field=cx.field(fb.regs[aargs], 'allowEnemy'), src=t_false)
     ann = _new_array(fb, b, cx)
+    # vanilla's Annex reach (map `ascan`, annex-reach below): expand iff vanilla's Annex has a candidate
+    ascan = _global_map(fb, b, cx, 'ascan')
+    b.call('haxe.ds.ObjectMap.set', ascan, fb.dyn(fac), fb.dyn(b.field(_state(fb, b, cx), 'time')))
     b.call('logic.ai.$AIMilitary.getSiegeableVillages', ann, fb.string('Annex'), fac, aargs)
+    asnul = fb.reg(cx.t('dyn'))
+    fb.op('Null', dst=asnul)
+    b.call('haxe.ds.ObjectMap.set', ascan, fb.dyn(fac), asnul)
     fb.op('Mov', dst=post, src=b.const('i32', 4))
     fb.op('JSGt', a=b.field(ann, 'length'), b=zi, offset='log')
     fb.op('Mov', dst=post, src=b.const('i32', 5))
@@ -650,6 +699,17 @@ def strat_levers(cx, new_ids):
     fb.op('JNull', reg=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rscan'), fb.dyn(owner)), offset='noraid')
     fb.op('Add', dst=ext, a=ext, b=b.const('i32', RAID_ZONES))
     fb.label('noraid')
+    # vanilla's Annex scan (map `ascan` faction -> the game time of the call, set by the getSiegeableVillages wrapper
+    # below; stale next frame): + ANNEX_ZONES for every faction (1-2 candidates per pick gave the Annex value nothing
+    # to choose; far ones still pay vanilla's per-zone score, the cost ratio and compactness)
+    fb.op('JSLte', a=dcr, b=b.const('f64', 0), offset='noann')  # no distance cost: FAR_ZONES already (not both)
+    asv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'ascan'), fb.dyn(owner))
+    fb.op('JNull', reg=asv, offset='noann')
+    asq = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=asq, src=asv)
+    fb.op('JNotEq', a=asq, b=b.field(_state(fb, b, cx), 'time'), offset='noann')
+    fb.op('Add', dst=ext, a=ext, b=b.const('i32', ANNEX_ZONES))
+    fb.label('noann')
     fb.op('JSLte', a=ext, b=b.const('i32', 0), offset='end')
     z = b.call('ent.Entity.get_zone', 1)
     fb.op('JNull', reg=z, offset='end')
@@ -672,6 +732,46 @@ def strat_levers(cx, new_ids):
     new_ids.add(w)
     report['far-annex'] = _redirect(cx, 'logic.ai.AIMilitary.isInSupplyRange',
                                     ['logic.ai.$AIMilitary.getSiegeableVillages'], w)
+    # Annex scan marker: vanilla's getSiegeableVillages(out, k, faction, args) calls with k "Annex" (target choice in
+    # tryAction / forceAction, the gauge's target test in increaseGauges, peaceful annex) set map `ascan`
+    # faction -> now around the call, read by the supply-range wrapper above
+    orig = cx.fn('logic.ai.$AIMilitary.getSiegeableVillages')
+    ft = cx.code.types[orig.type.value].definition
+    args = [a.value for a in ft.args]
+    fb = FB(cx, args, ft.ret.value, fun_type=orig.type.value)
+    b = B(fb)
+    res = fb.reg(ft.ret.value)
+    g0 = fb.try_()
+    fb.op('JNull', reg=1, offset='mk')
+    fb.op('JNull', reg=2, offset='mk')
+    fb.op('JNotEq', a=b.call('String.__compare', 1, fb.dyn(fb.string('Annex'))), b=b.const('i32', 0), offset='mk')
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'ascan'), fb.dyn(2), fb.dyn(b.field(_state(fb, b, cx), 'time')))
+    fb.label('mk')
+    fb.end_try(g0)
+    fb.op('CallN', dst=res, fun=orig.findex.value, args=list(range(len(args))))
+    g1 = fb.try_()
+    fb.op('JNull', reg=2, offset='um')
+    nd = fb.reg(cx.t('dyn'))
+    fb.op('Null', dst=nd)
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'ascan'), fb.dyn(2), nd)
+    fb.label('um')
+    fb.end_try(g1)
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    new_ids.add(w)
+    tid = orig.findex.value
+    nr = 0
+    for caller, want in (('logic.ai.AIMilitary.tryAction', 1), ('logic.ai.AIMilitary.forceAction', 1),
+                         ('logic.ai.AIMilitary.increaseGauges', 0),  # 0: any number (one per gauge kind)
+                         ('logic.ai.ResourceManager.checkPeacefulAnnexation', 1)):
+        sites = [op for op in cx.fn(caller).ops if op.op.startswith('Call') and op.df.get('fun') is not None
+                 and op.df['fun'].value == tid]
+        if (want and len(sites) != want) or not sites:
+            raise ValueError(f'annex-reach: expected {want} getSiegeableVillages calls in {caller}, found {len(sites)}')
+        for op in sites:
+            op.df['fun'].value = w
+        nr += len(sites)
+    report['annex-reach'] = nr
     # aggressiveness gate (tryAnnexation only)
     orig = cx.fn('logic.ai.AIMilitary.get_aggressiveness')
     fb = FB(cx, [cx.t('logic.ai.AIMilitary')], cx.t('f64'), fun_type=orig.type.value)

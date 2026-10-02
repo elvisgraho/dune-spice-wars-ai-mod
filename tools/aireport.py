@@ -364,6 +364,7 @@ def summarize(events, faction=None, all_orders=False):
     spaced = Counter()                      # (faction, why, kind, tgt, near)
     retreats, heals, bunkers, discs, raids, strats, peaces, wzbs = [], [], [], [], [], [], [], []
     worms, lowpicks, ascores, gathers, rallies = [], [], [], [], []
+    acands = []
     standoff = []                           # treaty / patrol / turret rows (rules/peace.py, strand.py, build.py)
     for e in events:
         k, f, t = e.get('e'), e.get('f'), when(e, t0)
@@ -432,6 +433,9 @@ def summarize(events, faction=None, all_orders=False):
             spaced[(f, e.get('why') or 'space', e.get('k'), ent(e.get('tgt')), ent(e.get('near')))] += 1
         elif k == 'sfloor':  # sietch / renegade-base strike short of its garrison's army count
             spaced[(f, 'floor', 'n%s<%s' % (e.get('n'), e.get('min')), ent(e.get('tgt')), '-')] += 1
+        elif k == 'sweak':  # sietch / renegade-base pick below ENTER x militia + threat by our measure
+            spaced[(f, 'weak', 'n%s M%dk H%dk' % (e.get('n'), (e.get('M') or 0) // 1000, (e.get('H') or 0) // 1000),
+                    ent(e.get('tgt')), '-')] += 1
         elif k == 'bunker':
             bunkers.append(e)
         elif k == 'disc':
@@ -444,7 +448,7 @@ def summarize(events, faction=None, all_orders=False):
             peaces.append(e)
         elif k == 'rally':
             rallies.append(e)
-        elif k == 'gather':
+        elif k in ('gather', 'stage'):
             gathers.append(e)
         elif k in ('treaty', 'patrol', 'turret', 'fpeace', 'pannex', 'uhqcap', 'uhqp', 'uhqx', 'dmz'):
             standoff.append(e)
@@ -452,7 +456,9 @@ def summarize(events, faction=None, all_orders=False):
             worms.append(e)
         elif k in ('ascore', 'alone'):
             ascores.append(e)
-        elif k in ('lowpick', 'noregen'):
+        elif k == 'acand':
+            acands.append(e)
+        elif k in ('lowpick', 'noregen', 'selfsup'):
             lowpicks.append(e)
         elif k == 'wzb':
             wzbs.append(e)
@@ -560,7 +566,7 @@ def summarize(events, faction=None, all_orders=False):
     if spaced:
         out.append('\n## Refused siege launches (tools/rules; logged once per faction per 10 s): faction why kind '
                    'target <- reason structure (defend = ours under siege, space = one we already run nearby, '
-                   'retry = its last launch ended at once, floor = sietch / renegade-base pick with fewer armies than '
+                   'retry = its last launch ended at once, weak = sietch / renegade-base pick below 1.5 x its side (our measure), floor = sietch / renegade-base pick with fewer armies than '
                    'its garrison), count')
         out += [f'{f} {w} {kk} {tg} <- {nr} x{n}' for (f, w, kk, tg, nr), n in spaced.most_common(12)]
 
@@ -592,8 +598,14 @@ def summarize(events, faction=None, all_orders=False):
 
     if gathers:
         out.append('\n## Gather (tools/rules/gather.py): leaders held in Engage until the pack is within 15 '
-                   '(max 10 s per order): faction army -> target, d its distance, dmax the farthest counted, n')
+                   '(max 10 s per order): faction army -> target, d its distance, dmax the farthest counted, n; '
+                   "stage (stage.py) = Regroup point moved out to 130 from the target, d = vanilla point's "
+                   'distance, arr = had arrived there')
         for e in gathers[-16:]:
+            if e.get('e') == 'stage':
+                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('a'))[:20]:<20} -> "
+                           f"{ent(e.get('tgt'))[:20]:<20} stage d{e.get('d')} arr{e.get('arr')}")
+                continue
             out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('a'))[:20]:<20} -> {ent(e.get('tgt'))[:20]:<20} "
                        f"d{e.get('d')} dmax{e.get('dmax')} n{e.get('n')}")
 
@@ -646,10 +658,19 @@ def summarize(events, faction=None, all_orders=False):
                        + ('= vanilla' if same else f"<- vanilla {ent(e.get('vb'))[:22]} v0 {e.get('v0')} now {e.get('vs')}") + f" n{e.get('n')}" + (f" dd{e.get('dd')}" if e.get('dd') else '') + (f" HOLD{e.get('hold')}" if e.get('hold') else '')
                        + (f" ring {ent(e.get('rt'))[:18]} s{e.get('rs')} dd{e.get('rdd')} h{e.get('ddh')}" if e.get('rt') and ent(e.get('rt')) != ent(e.get('tgt')) else ''))
 
+    if acands:
+        out.append('\n## Annex candidates (tools/rules/siege.py `acand`, every candidate of one scoring per faction per 30 s): '
+                   'v0 vanilla score, hops = zones from our main base (vanilla -10 each, capped at 3), sp special bonus, '
+                   'cf compactness x100, cen centre factor x100, dd Fremen ring x100, c / cmin cost, s final; n candidates')
+        for e in acands[-40:]:
+            out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('tgt'))[:22]:<22} v0 {e.get('v0')} h{e.get('hops')} "
+                       f"sp{e.get('sp')} cf{e.get('cf')} cen{e.get('cen')} dd{e.get('dd')} c{e.get('c')}/{e.get('cmin')} "
+                       f"s{e.get('s')} n{e.get('n')}")
+
     if lowpicks:
         out.append('\n## Low-life picks (tools/rules/heal.py pick-life): worn armies kept out of vanilla mission picks '
                    '(once per army per 30 s), noregen = no-regen army kept out of the Resupply query: faction army src')
-        c = Counter((e.get('f'), ent(e.get('a'))[:22], e.get('src') or 'noregen') for e in lowpicks)
+        c = Counter((e.get('f'), ent(e.get('a'))[:22], e.get('src') or ('selfsup' if e.get('e') == 'selfsup' else 'noregen')) for e in lowpicks)
         out += [f'  {f} {a} {s} x{n}' for (f, a, s), n in c.most_common(12)]
 
     if worms:

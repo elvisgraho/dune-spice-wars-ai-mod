@@ -72,6 +72,7 @@ def build_desert_step(cx, helpers):
     fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', a, tgt))
     fb.op('JSGt', a=d, b=b.const('f64', DSTEP_R), offset='u')
     fb.op('JSLte', a=d, b=b.const('f64', DSTEP_IN), offset='u')
+    _skip_striking(fb, b, cx, helpers, a, 'u')  # en-route strike: it fights first
     _throttle(fb, b, cx, 'dstep', a, DSTEP_T, 'u')
     # point DSTEP_IN from the target towards the army
     tx, ty = b.field(tgt, 'posx'), b.field(tgt, 'posy')
