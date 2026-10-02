@@ -21,9 +21,12 @@ def _raider_vs(fb, b, x, fac, yes, no):
     fb.op('JAlways', offset=no)
 
 
-def _approaching(fb, b, cx, x, p, d, skip):
+def _approaching(fb, b, cx, x, p, d, skip, r=None):
     """Fall through if mover x heads towards entity p (its path ends nearer to p than x is now, or no path is
-    known); jump to `skip` if it is moving elsewhere (e.g. milling around its own base)."""
+    known); jump to `skip` if it is moving elsewhere (e.g. milling around its own base). With r (a register): its
+    path must also end within r of p, i.e. it arrives: Atreides' Patrol / Resupply shuffles at Gun-dah ended
+    ~90-100 from Smugglers' Annarekh, read as an attack within FLEE_R, and the rally pulled Smugglers' hunters home
+    (22:02-22:28). Rally only: elsewhere a mover bound for a regroup point just outside r is still coming."""
     pe = b.call('ent.MobileEntity.getCurrentPathEnd', x)
     ok = f'appr{len(fb.ops)}'
     fb.op('JNull', reg=pe, offset=ok)
@@ -35,12 +38,16 @@ def _approaching(fb, b, cx, x, p, d, skip):
     fb.op('Add', dst=dx, a=dx, b=dy)
     fb.op('Mul', dst=dy, a=d, b=d)
     fb.op('JSGte', a=dx, b=dy, offset=skip)
+    if r is not None:
+        fb.op('Mul', dst=dy, a=r, b=r)
+        fb.op('JSGt', a=dx, b=dy, offset=skip)
     fb.label(ok)
 
 
-def build_threat(cx, pw, horizon_s=HORIZON, stats=False, reach=None, prey=False, discount=True):
+def build_threat(cx, pw, horizon_s=HORIZON, stats=False, reach=None, prey=False, discount=True, arrive=False):
     """aimod_threat(fac, p, r) -> power of the armies hostile to fac within r of p, or heading there and able to
-    arrive within horizon_s (a mover whose path ends farther from p than it is now doesn't count). Hostile = owned
+    arrive within horizon_s (a mover whose path ends farther from p than it is now doesn't count; arrive=True: nor one
+    whose path ends outside r, for the rally, see _approaching). Hostile = owned
     by a faction at war with fac, or a neutral raider (Army.raid: rebels, Fremen raids, marauders, ...) whose raid
     targets fac.
     stats=True: aimod_threat_stats(fac, p, r, skip, res, zone), same armies minus those owned by `skip`, each also
@@ -97,8 +104,14 @@ def build_threat(cx, pw, horizon_s=HORIZON, stats=False, reach=None, prey=False,
     if reach is not None:
         fb.op('JSGt', a=d, b=b.const('f64', reach), offset='mv')
         fb.op('JTrue', cond=b.call('ent.Entity.isFighting', x), offset='mv')
+        # p belongs to the army's own faction: its Defense (prio 5) pulls it out of a capture (Annex prio 3) at once
+        fb.op('JNull', reg=xo, offset='rnx')
+        fb.op('JNull', reg=fb.get(1, 'siege'), offset='rnx')  # p a structure (a hunted army gets no Defense)
+        fb.op('JEq', a=b.call('ent.Entity.get_owner', 1), b=xo, offset='rown')
+        fb.label('rnx')
         fb.op('JNotNull', reg=b.field(x, 'occupiedStructure'), offset='busy')
         fb.op('JNotNull', reg=b.field(x, 'contestingStructure'), offset='busy')
+        fb.label('rown')
         fb.op('JFalse', cond=b.call('ent.Unit.isMoving', x), offset='count')
         _approaching(fb, b, cx, x, 1, d, 'loop')
         fb.op('JAlways', offset='count')
@@ -109,7 +122,7 @@ def build_threat(cx, pw, horizon_s=HORIZON, stats=False, reach=None, prey=False,
     fb.op('Sub', dst=eta, a=d, b=2)
     fb.op('SDiv', dst=eta, a=eta, b=spd)
     fb.op('JSGt', a=eta, b=horizon, offset='loop')
-    _approaching(fb, b, cx, x, 1, d, 'loop')
+    _approaching(fb, b, cx, x, 1, d, 'loop', r=2 if arrive else None)
     if reach is not None:  # busy capturing within reach: it can break off (counts OCC_W)
         fb.op('JAlways', offset='count')
         fb.label('busy')
@@ -132,6 +145,13 @@ def build_threat(cx, pw, horizon_s=HORIZON, stats=False, reach=None, prey=False,
     fb.op('Mov', dst=oe, src=occ)
     fb.op('JEq', a=b.call('ent.Entity.get_owner', oe), b=b.call('ent.Entity.get_owner', x), offset=full)  # resting home
     fb.op('JSLte', a=b.call('ent.Entity.getDistTo', oe, 1), b=b.const('f64', BUSY_R), offset=full)
+    # p is a structure of the army's own faction (we attack its village): its Defense outranks the capture, it
+    # comes at full strength (Smugglers raided Aidval next to Fremen's Annex of Gur-Al'lulah, counted at OCC_W)
+    xow = b.call('ent.Entity.get_owner', x)
+    fb.op('JNull', reg=xow, offset=full + 'o')
+    fb.op('JNull', reg=fb.get(1, 'siege'), offset=full + 'o')  # p a structure (a hunted army gets no Defense)
+    fb.op('JEq', a=b.call('ent.Entity.get_owner', 1), b=xow, offset=full)
+    fb.label(full + 'o')
     fb.op('Call1', dst=p, fun=pw, arg0=x)
     # defending (p on our land): BUSY_W; an offensive (p off our land: hunt / raid / press target): OCC_W, the
     # break-off weight, so a busy stack next door still deters attacks on it
@@ -387,6 +407,19 @@ def build_home(cx, pw, land, own=False):
     fb.op('Call2', dst=d, fun=land, arg0=0, arg1=xe)
     fb.op('JSGt', a=d, b=1, offset='loop')
     fb.op('Call1', dst=p, fun=pw, arg0=x)
+    if not own:
+        # a home guard (standing still on its own faction's land, > OUT_R from our land) counts OUT_W, as in
+        # aimod_threat for a point on our land: it has to walk in first. At full weight two neighbours' guards held each other: Smugglers and
+        # Atreides each read need > their whole army from the other's stack at Gun-dah / Annarekh (`hold` 67-69%)
+        hg = _uid('hg')
+        fb.op('JNull', reg=xo, offset=hg)  # a raider (no owner) on a neutral zone (no owner) is no home guard
+        xz = b.call('ent.Entity.get_zone', x)
+        fb.op('JNull', reg=xz, offset=hg)
+        fb.op('JNotEq', a=b.field(xz, 'owner'), b=xo, offset=hg)
+        fb.op('JTrue', cond=b.call('ent.Unit.isMoving', x), offset=hg)
+        fb.op('JSLte', a=d, b=b.const('f64', OUT_R), offset=hg)  # right at our structures: full, as in aimod_threat
+        fb.op('Mul', dst=p, a=p, b=_ratio(fb, b, OUT_W))
+        fb.label(hg)
     fb.op('Add', dst=tot, a=tot, b=p)
     fb.op('JAlways', offset='loop')
     fb.label('end')

@@ -10,7 +10,8 @@ floor(t/P) != floor((t-dt)/P)), scan Game.inst.state.armies and log event `aw`:
         its AI order = what our army is busy with), sa/ty/tgt its AI order (enemy intent, AI factions only),
         oc/ct occupied/contested structure}, ...]
 Listed: at-war (State.areAtWar), non-militia, not transported, and (within RANGE of one of f's structures OR
-within RANGE of one of f's armies OR visible to f anywhere, e.g. spotted by an ornithopter).
+within RANGE of one of f's armies OR visible to f anywhere, e.g. spotted by an ornithopter). Neutral raiders (owner
+null, Army.raid) only within RANGE, with rk raid kind and rt = their raid targets f (only those count in en).
 Hooked by redirecting AIMilitary.regularUpdate's direct call to updateBlockers(dt) (runs only for live AI).
 """
 from inject import FB
@@ -118,6 +119,7 @@ def build_aware(cx, helpers):
     en, mine = b.const('f64', 0), b.const('f64', 0)
     my_armies = b.cast(fb.get(fac, 'armies', 'array'), 'hl.types.ArrayObj')
     mlen = b.field(my_armies, 'length')
+    rdr, rtg = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
     best, best_a = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     near = fb.reg(cx.t('ent.Entity'))
     near_a = fb.reg(cx.t('ent.Army'))
@@ -133,13 +135,25 @@ def build_aware(cx, helpers):
     fb.op('JTrue', cond=b.field(a, 'isMilitia'), offset='armies')
     fb.op('JTrue', cond=b.call('ent.Entity.isTransported', a), offset='armies')
     owner = b.call('ent.Entity.get_owner', a)
-    fb.op('JNull', reg=owner, offset='armies')
     pw = b.call('$HPowerScore.singlePowerScore', b.call('$HCombatStats.unitCombatStats', a))
+    # neutral raiders (owner null, Army.raid: rebels, renegades, Fremen raids, ...): listed near us with their raid
+    # kind (rk) and whether the raid targets us (rt); only those add to en
+    fb.op('Bool', dst=rdr, value=False)
+    fb.op('Bool', dst=rtg, value=False)
+    fb.op('JNotNull', reg=owner, offset='owned')
+    rd = b.field(a, 'raid')
+    fb.op('JNull', reg=rd, offset='armies')
+    fb.op('Bool', dst=rdr, value=True)
+    fb.op('JNotEq', a=b.field(rd, 'targetFaction'), b=fac, offset='hostile')
+    fb.op('Bool', dst=rtg, value=True)
+    fb.op('JAlways', offset='hostile')
+    fb.label('owned')
     fb.op('JNotEq', a=owner, b=fac, offset='foreign')
     fb.op('Add', dst=mine, a=mine, b=pw)
     fb.op('JAlways', offset='armies')
     fb.label('foreign')
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, fac, owner), offset='armies')
+    fb.label('hostile')
 
     # nearest own structure
     fb.op('Mov', dst=best, src=big)
@@ -179,6 +193,7 @@ def build_aware(cx, helpers):
     vis = b.call('ent.Entity.isVisibleForFaction', a, fac)
     fb.op('JSLte', a=best, b=rng, offset='keep')
     fb.op('JSLte', a=best_a, b=rng, offset='keep')
+    fb.op('JTrue', cond=rdr, offset='armies')  # raiders only near us
     fb.op('JFalse', cond=vis, offset='armies')
     fb.label('keep')
 
@@ -227,6 +242,10 @@ def build_aware(cx, helpers):
     fb.op('JNull', reg=fb.get(order, 'targetType'), offset='noorder')
     b.put(e, 'tgt', b.name_of(b.call('logic.ai.AIOrder.getTarget', order)))
     fb.label('noorder')
+    fb.op('JFalse', cond=rdr, offset='noraid')
+    b.put(e, 'rk', fb.get(a, 'raid', 'kind'))
+    b.put(e, 'rt', rtg)
+    fb.label('noraid')
     b.put(e, 'oc', fb.get(a, 'occupiedStructure', 'placeName'))
     b.put(e, 'ct', fb.get(a, 'contestingStructure', 'placeName'))
 
@@ -236,6 +255,9 @@ def build_aware(cx, helpers):
     fb.label('first')
     fb.op('Mov', dst=text, src=b.call(add, text, b.call('$Std.string', fb.dyn(e))))
     fb.op('Add', dst=n, a=n, b=one)
+    fb.op('JFalse', cond=rdr, offset='enadd')
+    fb.op('JFalse', cond=rtg, offset='armies')
+    fb.label('enadd')
     fb.op('Add', dst=en, a=en, b=pw)
     fb.op('JAlways', offset='armies')
 

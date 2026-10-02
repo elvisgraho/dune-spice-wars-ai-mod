@@ -7,6 +7,8 @@ Open work and checks. What exists is described in README / docs; this file lists
 - `ai-log` events + `mod log` (HEALTH line, orders, fights, marks, `--around`), `aw` scan
 - `hunt` runs without game exceptions; `busy-siege` removes the getUnits `.siege` crash
 - hunt armies-only force, chase-in-contact progress, contest size, `stuck` vs NoAvailableArmy (first Annex 20 s after the first pick), rally here / commit / `rlyk`, `pick-life`, raid refuse `alt`
+- raid start / `weak` abort (one measure; Harkonnen Birbat 71:50 aborted 7 s after start as Atreides' stack walked in, 303k -> 887k),
+- launch gate `Skip` (1-2 fires/min while `exposed`), sietch / renegade strike gate, contest floor, raider-contest group, far annex, siege position, Fremen ring, `dstop`
 
 ## Verify in-game (built, offline-checked only)
 
@@ -14,38 +16,30 @@ Open work and checks. What exists is described in README / docs; this file lists
 
 | Check | Pass when (per match) | n/a |
 |---|---|---|
-| launch gate `Skip` | `space` why exposed rows: the refused gauge (Liberation / Sietch / Raze / Dismantle) fires ≤ ~2/min while refused, not 120/min (Fremen Liberation 43:00-55:00, 1801 fires) | 0 |
-| sietch / renegade strike gate | no PillageSietch / Dismantle order while the director holds with S ≤ 0 and hostiles near home (Smugglers sent 15 armies to Ub-Al'khelon 54:41 at `strat` hold); `space` why exposed rows with k PillageSietch; sietch strikes still happen when home is safe | 0 |
-| contest floor | no contest `start` with `Ms` < DEF_HOPE_IN × their side (= goal / 2.5) (Atreides Fanih 27:10: 1 army 41k vs 297k); `objective` aborts are followed by a contest start or a `nogroup` row | 0 |
-| raider-contest group | raider-siege contests / neutral hunts never engage an owned army (Atreides chased a Fremen F_Harvester from its Qartnah raider contest 38:20 and 47:50, H 0, until `supply`) | 0 |
-| raid start / weak | no raid `abort weak` within 10 s of its `start` on the same numbers (Smugglers Ash-in 54:50) | 0 |
-| hunt proximity | a chase `start` goes to the at-war group nearest our free armies when it is within half the distance of a bigger one; no `objective` abort right after a chase start | 0 |
-| minor contest | hunt contest `start` on a non-own village > 300 from our land only when no closer chase scores higher; no `objective` abort for one; no contest of a raider siege of a third faction's village | 0 |
-| sietch heal safety | `heal` rows (detour / avoid) for an ownerless sietch (Karlon-like) with a fight on it; no Resupply re-issued every second into a sietch where we fight at raw < 0.65 (Fremen 60:00-63:40 at Karlon) | 0 |
-| far annex | Smugglers `ascore` n higher than before (1-8) and Annexes 2 zones out; none cancelled `InsufficientSupply` in a loop (`space` why retry) | 0 |
-| hunt chase / retreat `pursuit` | `retreat act pursuit` rows end micro chases after an order ended within ~15 s, right after a `chase` abort; none out of a fight the enemy is losing or on our own zone; no new chase on a given-up runner within 90 s | 2 |
-| hunt `desert` | `abort desert` rows when a chased prey enters the deep desert; no army at sup 0 after a chase | 2 |
-| `peace-gate` | `## Peace gate` rows only while our siege on the sender's structure is in Engage/Action and none of ours is besieged; that siege then ends Success or by our retreat, not a treaty cancel | 2 |
-| threat busy / outside | an at-war stack occupying a village > 60 away counts 25% in defense / rally on our land, 50% in offensives; a stack turning toward us counts fully | 2 |
-| tension contest | a hunt `start` contest on a neutral village being captured next to ours at a ratio between 1.0 and 1.5 once T is high; none at T 0 | 2 |
-| retreat commit | after a fight retreat the Resupply target stays the same ~15 s; on our land it lies away from the enemy | 2 |
-| `keep-capture` | `keepcap` rows for armies at our capture that micro would send to defend another structure; none walks off to a structure with no enemy | 2 |
-| bunker score | no `bunker` rows for neutral villages (only lost ones) | 2 |
-| `unstick` | `unstick` rows only for a lone siege army in the village with no siege running; the siege starts within ~20 s; no repeat every 12 s on one army | 2 |
-| siege position | `siege-pos` rows for our siege armies under enemy guns other than the target's: they stand on the far side and keep capturing | 2 |
-| main-base guns ×3 | sieges next to an enemy main base size up (pick `req` higher, more armies or none); no order reading 'winning' while its armies melt under a main base | 2 |
-| disengage | `retreat` act `disengage` when an army on Resupply still fights a powerless target: it leaves within seconds | 2 |
-| harvester run / `memory` | `HARVESTER RUN` / `mem` / `hfield` / `hflee` rows when our harvester is shot by more than its escort; it moves to another field within ~20 s and survives; no hflee loop | 2 |
-| Fremen ring | `## Annex value` Fremen rows with `dd` > 0 / `HOLD` once a desert can be ringed; ring village picked over special / spice ones; nearer ring kept (DD_FAR) | 2 |
-| sietch value | Annex value +ANNEX_SIETCH 10 on sietch zones | 2 |
-| renegade Takeover | a renegade Takeover of an own / home-ring village sets `defend` (`space` why defend), contest hunt from GATHER_R | 2 |
-| border standoff | no `rally` rows for an idle at-war stack on its own zone next to our village | 2 |
-| `dstop` | a Defense of a hopeless / conceded structure ends, no army walks back alone (Atreides Ye-wan 59:10 n 0: fired, outcome not readable) | 2 |
+| peaceful annex | Atreides `pannex` rows (r Success) only after an Annex pick with no army order (NoAvailableArmy etc.) and never before 4 villages owned; army Annexes still launch when armies are free; fewer `NoAvailableArmy` / `stuck` Annex outcomes (25 / 21 before); Influence never below 50 from it | 0 |
+| annex wait cap | `aswap` rows with `wait` >= 120 when the top 3 are unaffordable; no 28-min Annex gap with an affordable candidate listed (Atreides 05:23-33:50); the `Stocks` lines show whether Authority itself was short | 0 |
+| contest arrival | hunt `nogo late` rows for contests that couldn't arrive; no contest arriving after the capture ended (Smugglers Tuoiel 70:00 -> 70:36); contests on stalled captures still start | 0 |
+| gather 20 s | no Military order cancelled (`src <none>`) in Action seconds after it started with its armies 100+ out (Atreides Pel-fir Dismantle 75:04 -> 75:09, A_Ship alone) | 0 |
+| rally standoff / raiders | no rally -> giveup -> rally loop on a village whose only active attackers are raiders or a stack shuffling inside its own land (Harkonnen Tab-esek vs rebels + Atreides at Nundad, 22:16-72:24, 4 `dstop`); the rebels at a rebelling village of ours die within minutes (vanilla Defense picks with cand > 0) | 0 |
+| discovery reach | `disc` rows with `FAR dl...`; no Smugglers-like Discovery orders to events 1000+ from our land (CrashedShuttle (1710,936), InfiltrationCell (1081,421) every 1-2 min) | 0 |
+| renegade base sizing | Dismantle picks at req 1.50 (`pick` rows, RenegadeBase); `sengage` on one only at M >= 1.5 x H; fewer Dismantles cancelled in Action (Atreides 75:09 at 1.2, 86:13 at 1.33) | 0 |
+| busy defenders | raids / presses on a village next to its owner's running capture count that capture's armies in full (`raid` H); no raid losing > 50% to a relief from an Annex next door (Smugglers Aidval 60:10, -57%) | 0 |
+| defense ratio data | vanilla Defense `pick` rows (`Rejected picks ... def`) show req 1.15 flat instead of 1.00-3.50 / 0.80-2.50; *unverified* that VillageDefense is the constant they read | 0 |
+| turret steering | `turret` rows at a village facing a standing at-war stack; MissileBatteries appear there within a few minutes (rows seen: Sad-san / Aidval with vanilla sc -2, check whether a battery slot existed) and stop once our cover reaches ENTER x the stack; one set per bunker pair | 0 |
+| force peace | Atreides `fpeace` rows (r 1) only right after a `giveup` / `dhope` on a village besieged by a non-Fremen at-war faction; the attacker's siege ends at once (treaty cancel), war becomes peace; never without a siege on us; <= 1 try per 60 s | 1 |
+| wind fallback | `wind` rows when the windy-village filter empties the Annex list; Annex launches follow (Atreides `wind` 05:00-11:06 then no Annex until 33:50: Authority-starved, see Open issues) | 1 |
+| uhq cap / placement | Smugglers `uhqcap` rows once n reaches max(3, 2 x villages); no HQ count above the cap; first HQs land in distinct factions (`uhqp` newf > 0 until every faction hosts one); Authority not drained by HQs | 0 |
+| uhq extensions | `uhqx` rows: TraffickingStation sc 40 on every HQ; production extensions only on hosts at their minimum (Bootleg: Solari or Plascrete >= 8, Water Thieves >= 9 water, Spyware >= 1 knowledge; no Whisperers Lair below 2 Intel / Influence); no host-gain / other extensions built; check sc magnitudes (production units *unverified*) | 0 |
+| hunt proximity | a chase `start` goes to the at-war group nearest our free armies when it is within half the distance of a bigger one; no `objective` abort right after a chase start | 2 |
+| minor contest | hunt contest `start` on a non-own village > 300 from our land only when no closer chase scores higher; no `objective` abort for one; no contest of a raider siege of a third faction's village | 2 |
+
+Dropped after 3 matches without a trigger (built, *unverified* in game): hunt chase / retreat `pursuit`, hunt `desert` abort, `peace-gate`, threat busy / outside weights, tension contest, `keep-capture`, bunker score, `unstick`, main-base guns x3, `disengage`, sietch value, renegade Takeover defend.
 
 ## Open issues (evidence in logs)
+- [ ] Harvester run didn't save it: Fremen F_Harvester_Mobile `hrun` 21:50 and 22:10 (H 165k, M 0, ok), killed by the Smugglers hunt ~22:27; every `hfield` pick in between was a SpiceArea at danger 100 (dg 100 / 99 / 93): the field list offered nothing outside the danger zone, or DANGER_KEY lost to distance. Next: log the candidate count and the best non-danger field's distance in `hfield`
+- [ ] No reinforcement of a running siege (user note: "commit more army"): Harkonnen's Birbat Annex (10 armies, Action 62:07, held b 1-11) collapsed when Atreides relieved it (~65:00, b 0.12); vanilla has no add-to-order (AIOrder has only removeUnit(s)). In this match no Harkonnen army was free (strat `hold`, the rest rallying vs 2x Fremen at Ara-Al'wan), so a relief rule wouldn't have changed it; build it as a hunt on the relief group (§4 "reinforce if free armies arrive in time") once a log shows idle armies within JOIN_R of a losing siege
 - [ ] Raid army taken by a vanilla Annex 1 s after launch (Smugglers Arstah 61:00, Annex Sandmon prio 3 took its only army): the raid-gauge hold had timed out (gauge full > 20 s on NotEnoughArmies) and armies freed at once. Raid should also skip while vanilla's Annex pick could take its armies, or the Annex should not take a raid army before Action
 - [ ] Sietch strikes oversized: 15 armies at 12-18× live order balance (Ub-Al'khelon 54:41, Gur-Al'iel 58:57: siege-join added 2 / 7 at JOIN_TO KILL × 212.5k static militia); vanilla's pick counted Fremen armies standing at the sietch (est 444M vs live 57M). Read `canSpawnMilitia` / spawn timing before sizing on live militia
-- [ ] `objective` abort followed by no contest (Fremen 41:36 → raider siege of Harkonnen's O-ram, Smugglers 50:33 → Tal-ras); raider sieges of third-faction villages no longer count (`aimod_sieged`); next match: read the hunt `nogroup` rows for any objective abort without a contest
 - [ ] Enemy villages almost never targeted: vanilla desiredStatus is 0 toward most at-war factions, so Annex / Pillage skip them (`Annexation:Invalid` 73-132× per faction). Raid lifts the gate (3 of 43 raids hit at-war villages); Annex only via a `strat` press. Next: post-fight Annex / pillage choice (policy §5b utility)
 - [ ] Raid relief underestimated: Atreides raided Pel-Al'ram (Fremen) 49:10, 10 armies 440k vs h 111k, lost 73% when Fremen relieved it (rally 49:44). Read `--around 49:10`: where were those armies, why not in REACT_R
 - [ ] Raid militia losses 30-70% at est 2-2.5× (Harkonnen Aegdud 12:20, Smugglers Haanim 04:40, Fremen Gunpo 05:00): armies gather inside militia reach during Regroup. Needs a regroup point outside it (start: `fillAttackSteps` closure f@40868 `--asm`, REVERSING Regroup)
@@ -54,16 +48,15 @@ Open work and checks. What exists is described in README / docs; this file lists
 - [ ] Siege supply starvation: the militia fight drains (Alwahad: 5 armies 85 → 0-1 supply in ~50 s before occupation). Design a §4 trigger (step into supply / rotate) before code; never cancel a near-complete capture
 - [ ] Undersized neutral Annex (vanilla 1.0): 2 armies, ~50 s militia fight, one focused down (Fremen Ashdak ×3). Open: fight retreat exemption for a capture whose militia is nearly dead; no vanilla add-to-order for armies freed after launch
 - [ ] Orders cancelled right after start (`src <none>`, 0.04-1 s): hunts, and Discovery re-issued every 1-2 s (Fremen CrashedHarvester 26 s). Likely a refused Shuttle path step (`checkOrderTerminations`); log the ability result
-- [ ] Vanilla Defense re-rolls its ratio every 0.5 s (Insane 1.0-3.5): failed picks ×37-120 on one structure. Contest hunts cover it; data patch Min = Max would fix vanilla
-- [ ] Fremen Annexation gauge stuck near 100 with `NoStructuresWithSufficientWind` (`valueCache[1185]`)
-- [ ] Rally point falls back far: R's safety counts movers heading to R, so an enemy walking at D disqualifies structures behind D (Harkonnen Qafiel → Carthag 530). Static threat for R, or cap R's distance
 - [ ] Rally timeout commit sends a strung-out force: armies 300-500 out arrive in waves (Harkonnen Qafiel 48:40, front 7-8 fought at raw 0-20); `gather` holds a leader 10 s at most
-- [ ] Tooling: `fight` me% counts armies leaving the order as losses (Harkonnen Gur-Al'iel 58:57 "-92%" = expiring Landsraad temporaries); `mod log` "Enemy siege actions near us" reads besiegers' `aiOrder` (often null): use `aimod_sieged`; `--around` ignores `--faction`; `aw` omits neutral raiders; hunt ArmyFight orders listed `open` after their `end`
+- [ ] Harkonnen villages rebelled (Tab-esek, Fon-ron: `Rebels` hunts 13:00-52:50): stability falls on water shortage (REVERSING Rebellion). Economy: the AI never fixes the cause
+- [ ] Tooling: `fight` me% counts armies leaving the order as losses (Harkonnen Gur-Al'iel 58:57 "-92%" = expiring Landsraad temporaries); `mod log` "Enemy siege actions near us" reads besiegers' `aiOrder` (often null): use `aimod_sieged`
 
 ## Next (policy-ordered)
-- [ ] Standoff procedure (design agreed): idle at-war stack at our border (enter / leave 30 s) → home guard = (stack × ENTER − our cover) / OWN_T at the threatened village, surplus free for raid / annex; when the guard is most of the army, steer building to MissileBattery there (REVERSING "AI building choice")
+- [ ] Strategy candidates from expert play: [docs/strategy/CANDIDATES.md](docs/strategy/CANDIDATES.md) (C1-C17 biases with exits; C16 / C17 gear sets and operations: docs/strategy/ARMORY-OPS.md, built when a log shows the failure; R1-R6 research first, R1 operations, R4 faction abilities and R5 hegemony reads unlock the most; overrides O1-O5 in GENERAL)
+- [ ] Force peace for a besieged main base (needs its own hopeless test: `dhl` / rally concession never mark a main base)
 - [ ] Contact tension step 3 (policy §5c, after the contest row passes): truce partners not attacked by default, Fremen excepted (free betrayal at T 1 held T_HOLD); others declare war at B ≥ 1 on a soft contact village, one per long cooldown (code facts in §5c)
-- [ ] Threat weighting: check BUSY_W 0.25 isn't low (armies finishing a capture next door break off in seconds); consider ETA weighting
+- [ ] Threat weighting: check BUSY_W 0.25 isn't low (armies finishing a capture next door break off in seconds; built only for a target of their own faction: `busy defenders`); consider ETA weighting
 - [ ] Strategic director (§5b): utility ranking vs neutral expansion, home race on every offensive, front patrols
 - [ ] Intel memory (§3a): remembered enemy armies with decaying confidence, `perceived(F)`, `aimod_threat` from memory
 - [ ] Peace gate (§3b) part 2: hunts on F's armies as protected orders; our own peace offers to a faction we besiege (`Trading.doTrade` / `requestTrade`, trade kinds a2 1/6 undecoded); refuse while in charge (B ≥ 1.5)
@@ -86,4 +79,7 @@ Open work and checks. What exists is described in README / docs; this file lists
 - Distance to "our structures" over all `faction.structures`: Smugglers' UWHeadquarters in enemy villages made deep chases look local; use our land only.
 - Flat "any safe structure wins" heal penalty: sent armies across the map to the base; use a finite detour.
 - Data-only fix for the stuck turret (FSpecialLeave `ai.state` = Move/Resupply): fires only in Regroup/Engage/Resupply phases, never in the siege Action where it is stuck, and the order's `noMoveAbilities` would still block its Move.
+- Temporary armies (no safe regen) leaving lost fights: vanilla drops them from the retreat on purpose; left as is (user decision).
+- Power-loss cancel constants (`AI_*Attack_PowerLossCancelRatio`): no AI code reads them (no constant index load, no name reference).
 - Traced `checkPeacefulAnnexation` (~186/min) and `tryLaunchOperationFromOrder` (~109/min, always False): flood the log.
+- Fandom wiki (dunespicewars.fandom.com) via WebFetch / curl: HTTP 402 / Cloudflare challenge; read effects from `work/data.original.cdb` instead (building / ability sheets).

@@ -236,7 +236,9 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     then + DD_ADD x best chance x w (x DD_LINK, x cmin / cost): a flat bonus like ANNEX_SPECIAL. floor ANNEX_FLOOR.
     Top 3: when the best scored is unaffordable now (AIController.getMissingResources of its cost at priority 3 non-empty)
     and the 2nd or 3rd is affordable, the unaffordable ones above it get 0.99 / 0.98 x its score (log `aswap` from, to,
-    s); none affordable: unchanged (vanilla reserves Authority and waits on the best). Never the pressed village. Ring hold (same factions): a candidate next to an unowned deep desert is a ring village (map
+    s); none affordable: vanilla reserves Authority and waits on the best, for ASWAP_WAIT s at most (map `aswt` faction
+    -> since when the best is unaffordable): then the best affordable candidate anywhere, every one scored above it
+    to 0.98 x its score (log `aswap` with wait). Never the pressed village. Ring hold (same factions): a candidate next to an unowned deep desert is a ring village (map
     'dring' -> now); when a candidate is on an uncontested ring in progress (aimod_ddhold) with fewer than DD_TRIES
     Annex launches (map 'dtries', counted by the launch gate), or one of our armies runs an Annex order on such a
     village, every candidate that isn't a ring village is dropped (Fremen Adur: the spice village was annexed while
@@ -807,9 +809,14 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JNull', reg=t2, offset='an_lgb0')
     prs2 = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'spv'), fb.dyn(fac))
     fb.op('JEq', a=fb.dyn(t1), b=prs2, offset='an_lgb0')  # the director's pressed village stands
+    aswt = _global_map(fb, b, cx, 'aswt')  # faction -> since when the best is unaffordable
     affordable(t1, 'af1no')
+    b.call('haxe.ds.ObjectMap.remove', aswt, fb.dyn(fac))
     fb.op('JAlways', offset='an_lgb0')  # the best is affordable: vanilla takes it
     fb.label('af1no')
+    fb.op('JNotNull', reg=b.call('haxe.ds.ObjectMap.get', aswt, fb.dyn(fac)), offset='aswt_ok')
+    b.call('haxe.ds.ObjectMap.set', aswt, fb.dyn(fac), fb.dyn(now))
+    fb.label('aswt_ok')
     pick, ps_ = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('f64'))
     fb.op('Mov', dst=pick, src=t2)
     fb.op('Mov', dst=ps_, src=s2)
@@ -819,7 +826,7 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JNull', reg=t3, offset='an_lgb0')
     fb.op('Mov', dst=pick, src=t3)
     fb.op('Mov', dst=ps_, src=s3)
-    affordable(t3, 'an_lgb0')
+    affordable(t3, 'af3no')
     # t2 unaffordable and above t3: below t3 too
     fb.op('Mul', dst=q, a=ps_, b=_ratio(fb, b, 0.98))
     b.call('haxe.ds.ObjectMap.set', res, fb.dyn(t2), fb.dyn(q))
@@ -828,6 +835,56 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     b.call('haxe.ds.ObjectMap.set', res, fb.dyn(t1), fb.dyn(q))
     _throttle(fb, b, cx, 'aswap', fac, ASCORE_T, 'an_lgb0')
     _log_ev(fb, b, cx, helpers, 'aswap', [('f', fb.get(fac, 'kind')), ('from', t1), ('to', pick), ('s', ps_)])
+    fb.op('JAlways', offset='an_lgb0')
+    # nothing affordable in the top 3 for ASWAP_WAIT s: the best affordable candidate anywhere, every (unaffordable)
+    # one scored above it drops just below it (Atreides waited 28 min on Arn-lab, c 131-148, with cheaper candidates
+    # at cmin 105-123 in the list; vanilla reserves Authority for its pick and launches nothing meanwhile)
+    fb.label('af3no')
+    wv = b.call('haxe.ds.ObjectMap.get', aswt, fb.dyn(fac))
+    fb.op('JNull', reg=wv, offset='an_lgb0')
+    wq = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=wq, src=wv)
+    fb.op('Sub', dst=wq, a=now, b=wq)
+    fb.op('JSLt', a=wq, b=b.const('f64', ASWAP_WAIT), offset='an_lgb0')
+    fb.op('Null', dst=pick)
+    fb.op('Mov', dst=ps_, src=zero)
+    sw = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=i, src=zi)
+    b.loop_head('aw4')
+    fb.op('JSGte', a=i, b=n, offset='aw4d')
+    s5 = b.cast(b.call('hl.types.ArrayObj.getDyn', 0, i), 'ent.Structure')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=s5, offset='aw4')
+    fb.op('Mov', dst=sw, src=s5)
+    wv5 = b.call('haxe.ds.ObjectMap.get', res, fb.dyn(sw))
+    fb.op('JNull', reg=wv5, offset='aw4')
+    fb.op('SafeCast', dst=q, src=wv5)
+    fb.op('JSLte', a=q, b=ps_, offset='aw4')
+    affordable(sw, 'aw4')
+    fb.op('Mov', dst=pick, src=sw)
+    fb.op('Mov', dst=ps_, src=q)
+    fb.op('JAlways', offset='aw4')
+    fb.label('aw4d')
+    fb.op('JNull', reg=pick, offset='an_lgb0')
+    fb.op('Mov', dst=i, src=zi)
+    b.loop_head('aw5')
+    fb.op('JSGte', a=i, b=n, offset='aw5d')
+    s6 = b.cast(b.call('hl.types.ArrayObj.getDyn', 0, i), 'ent.Structure')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=s6, offset='aw5')
+    fb.op('Mov', dst=sw, src=s6)
+    fb.op('JEq', a=sw, b=pick, offset='aw5')
+    wv6 = b.call('haxe.ds.ObjectMap.get', res, fb.dyn(sw))
+    fb.op('JNull', reg=wv6, offset='aw5')
+    fb.op('SafeCast', dst=q, src=wv6)
+    fb.op('JSLt', a=q, b=ps_, offset='aw5')
+    fb.op('Mul', dst=q, a=ps_, b=_ratio(fb, b, 0.98))
+    b.call('haxe.ds.ObjectMap.set', res, fb.dyn(sw), fb.dyn(q))
+    fb.op('JAlways', offset='aw5')
+    fb.label('aw5d')
+    _throttle(fb, b, cx, 'aswap', fac, ASCORE_T, 'an_lgb0')
+    _log_ev(fb, b, cx, helpers, 'aswap', [('f', fb.get(fac, 'kind')), ('from', t1), ('to', pick), ('s', ps_),
+                                          ('wait', wq)])
     fb.label('an_lgb0')
     fb.op('JNotNull', reg=best, offset='an_lgb')
     fb.op('JSLte', a=nh, b=zi, offset='end')  # held with no ring candidate (its Annex runs): still logged
@@ -1222,6 +1279,80 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     fb.end_try(guard)
     fb.op('JTrue', cond=blocked, offset='block')
     fb.op('Call4', dst=void, fun=orig.findex.value, arg0=0, arg1=1, arg2=tgt, arg3=3)
+    # 4. peaceful annex fallback (Atreides' PeacefullyAnnex ability): an Annex whose army launch above created no order
+    # on the target (NoAvailableArmy / NotEnoughArmies / ArmyNotStrongEnough: Atreides' affordable Annexes ended
+    # NoAvailableArmy x25 / stuck x21 while its armies held the Nundad standoff) is done by the ability when it can be
+    # used on the target, we own >= PANNEX_MIN_VILLAGES villages and Influence >= PANNEX_INF. Armies first: they
+    # annex for free, and peaceful-first spent the opening's scarce Influence while armies idled. Vanilla's own
+    # peaceful check (ResourceManager) rarely fires. Log `pannex`. The gauge gets Success after vanilla's failure
+    # result (Annex has no onFailure blocks); the Ret comes after the trap (a jump out of it leaves it installed).
+    pdone = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=pdone, value=False)
+    gpa = fb.try_()
+    fb.op('JNotEq', a=b.call('String.__compare', 1, fb.dyn(fb.string('Annex'))), b=b.const('i32', 0), offset='pa_no')
+    pfac = b.field(b.field(0, 'controller'), 'owner')
+    fb.op('JNull', reg=pfac, offset='pa_no')
+    fb.op('JSLt', a=b.field(b.call('ent.Faction.getVillages', pfac), 'length'), b=b.const('i32', PANNEX_MIN_VILLAGES),
+          offset='pa_no')
+    pinf = fb.reg(cx.t('f64'))
+    fb.op('Call2', dst=pinf, fun=cx.fn('ent.Faction.getResource').findex.value, arg0=pfac, arg1=b.const('i32', RES_INFLUENCE))
+    fb.op('JSLt', a=pinf, b=b.const('f64', PANNEX_INF), offset='pa_no')
+    pse = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=pse, src=tgt)
+    pords = b.field(b.field(b.field(0, 'controller'), 'aiOrders'), 'orders')
+    fb.op('JNull', reg=pords, offset='pa_no')
+    pk, pix = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=pk, src=b.field(pords, 'length'))
+    b.loop_head('pa_o')
+    fb.op('JSLte', a=pk, b=b.const('i32', 0), offset='pa_free')
+    fb.op('Sub', dst=pk, a=pk, b=b.const('i32', 1))
+    po = b.cast(b.call('hl.types.ArrayObj.getDyn', pords, pk), 'logic.ai.AIOrder')
+    fb.op('JNull', reg=po, offset='pa_o')
+    ptt = b.field(po, 'targetType')
+    fb.op('JNull', reg=ptt, offset='pa_o')
+    fb.op('EnumIndex', dst=pix, value=ptt)
+    fb.op('JNotEq', a=pix, b=b.const('i32', T_STRUCT), offset='pa_o')
+    fb.op('JEq', a=b.call('logic.ai.AIOrder.getTarget', po), b=pse, offset='pa_no')  # the armies went
+    fb.op('JAlways', offset='pa_o')
+    fb.label('pa_free')
+    pabm = b.call('ent.Faction.get_abilities', pfac)
+    fb.op('JNull', reg=pabm, offset='pa_no')
+    cua = cx.fn('logic.faction.AbilityManager.canUseAbilityOn')
+    cua_args = [a.value for a in cx.code.types[cua.type.value].definition.args]
+    dt_t = cx.t('DisplayTarget')
+    dt_names = [c.name.resolve(cx.code) for c in cx.code.types[dt_t].definition.constructs]
+    pdt = fb.reg(dt_t)
+    fb.op('MakeEnum', dst=pdt, construct=dt_names.index('Structure'), args=[tgt])
+    pdo = fb.reg(cx.t('dynobj'))
+    fb.op('New', dst=pdo)
+    fb.op('DynSet', obj=pdo, field=cx.s('src'), src=fb.dyn(pdt))
+    fb.op('DynSet', obj=pdo, field=cx.s('struct'), src=fb.dyn(tgt))
+    pva = fb.reg(cua_args[2])
+    fb.op('ToVirtual', dst=pva, src=pdo)
+    pn3, pn4 = fb.reg(cua_args[3]), fb.reg(cua_args[4])
+    fb.op('Null', dst=pn3)
+    fb.op('Null', dst=pn4)
+    pab = fb.string('PeacefullyAnnex')
+    pok = fb.reg(cx.t('bool'))
+    fb.op('CallN', dst=pok, fun=cua.findex.value, args=[pabm, pab, pva, pn3, pn4])
+    fb.op('JFalse', cond=pok, offset='pa_no')
+    uao = cx.fn('logic.faction.AbilityManager.useAbilityOn')
+    pres = fb.reg(cx.code.types[uao.type.value].definition.ret.value)
+    fb.op('CallN', dst=pres, fun=uao.findex.value, args=[pabm, pab, pva, pn3, pn4])
+    _log_ev(fb, b, cx, helpers, 'pannex', [('f', fb.get(pfac, 'kind')), ('tgt', pse), ('inf', pinf), ('r', fb.dyn(pres))])
+    pend = cx.fn('logic.ai.AIMilitary.onActionEnd')
+    prt = cx.code.types[pend.type.value].definition.args[2].value
+    prn = [c.name.resolve(cx.code) for c in cx.code.types[prt].definition.constructs]
+    preason = fb.reg(prt)
+    fb.op('MakeEnum', dst=preason, construct=prn.index('Success'), args=[])  # the gauge is satisfied (x0)
+    pgk = b.call('logic.ai.AIMilitary.getMilitaryGaugeKindFromSiegeActionKind', 0, 1)
+    fb.op('Call4', dst=void, fun=pend.findex.value, arg0=0, arg1=pgk, arg2=preason, arg3=3)
+    fb.op('Bool', dst=pdone, value=True)
+    fb.label('pa_no')
+    fb.end_try(gpa)
+    fb.op('JFalse', cond=pdone, offset='pa_skip')
+    fb.op('Ret', ret=void)  # done peacefully: no launch record, no stuck count
+    fb.label('pa_skip')
     # remember the launch (retry, in the scoring wrapper) only when it created an order on the target: a pick that
     # ended NoAvailableArmy / NotEnoughArmies blocked every Atreides candidate for RETRY s and the gauge spun on
     # Invalid every ~1.5 s (00:17-00:46, 02:45-03:19)
@@ -1490,6 +1621,15 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
           offset='req_early')
     fb.op('Mov', dst=enter, src=_ratio(fb, b, EARLY_REQ))
     fb.label('req_early')
+    # a renegade base (Dismantle): its garrison and spawns make a fight at NEUTRAL_REQ a coin toss (Atreides lost
+    # Dismantles at est 1.26 / 1.33, won at 1.64): ENTER, as at the target (siege-engage)
+    rb0, _ = _vfield(fb, b, 1, 'enemyStructure')
+    fb.op('JNull', reg=rb0, offset='req_rb')
+    rbs = b.cast(fb.dyn(rb0), 'ent.Structure')
+    fb.op('JNull', reg=rbs, offset='req_rb')
+    fb.op('JFalse', cond=b.call('ent.Structure.isRenegadeBase', rbs), offset='req_rb')
+    fb.op('Mov', dst=enter, src=_ratio(fb, b, ENTER))
+    fb.label('req_rb')
     rq, ri = _vfield(fb, b, 1, 'requiredPowerBalance')
     fb.op('JNull', reg=rq, offset='req_tf')
     fb.op('SafeCast', dst=req, src=rq)
@@ -1720,6 +1860,10 @@ def build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain, neutral
     fb.op('Mov', dst=req, src=enter)
     fb.op('JNotNull', reg=b.call('ent.Entity.get_owner', se), offset='owned')
     fb.op('Mov', dst=req, src=nreq)
+    fb.op('JFalse', cond=b.call('ent.Structure.isRenegadeBase', s), offset='nrb')
+    fb.op('Mov', dst=req, src=enter)  # a renegade base: ENTER, as at launch (siege-join)
+    fb.op('JAlways', offset='owned')
+    fb.label('nrb')
     fb.op('JSGte', a=b.field(b.call('ent.Faction.getVillages', fac), 'length'), b=b.const('i32', EARLY_VILLAGES),
           offset='owned')
     fb.op('Mov', dst=req, src=_ratio(fb, b, EARLY_REQ))  # opening (as at launch)
@@ -1741,7 +1885,7 @@ def build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain, neutral
     return fb.build()
 
 
-def build_discovery(cx, helpers, threat, pw, terrain, new_ids):
+def build_discovery(cx, helpers, threat, pw, terrain, land, supok, new_ids):
     """Discovery gate on the single addOrder call in AIController.checkWorldEvents. Vanilla sends its nearest idle
     army, alone, to a world event (ruins, black market, ...) up to one zone into anyone's land, with no threat check:
     lone armies wandered next to a rival's army blob and got picked off or dragged into sieges from there. Refused
@@ -1749,6 +1893,9 @@ def build_discovery(cx, helpers, threat, pw, terrain, new_ids):
     and for DISC_RETRY s after build_disc_abort gave the event up (map `dfail`), and for DISC_RELAUNCH s after a
     launch on the same event (map `dlaunch`: a re-pick means the trip ended at once; Fremen re-launched one on
     AbandonnedFremenCamp every 1.5-7 s for a minute, cancelled in Waiting each time).
+    Also refused when the round trip doesn't fit the army's supply budget (aimod_supok(army, 2 x aimod_land(event))):
+    vanilla picks events anywhere; Smugglers sent lone armies 1000-1160 from their land (CrashedShuttle, Hiereg,
+    CrashedShip) every 1-2 min, each turned back by supply in Fremen land (log `dl` = the event's distance to our land).
     Refusal = no order (the result is unused; vanilla still stamps lastResolvedWorldEventTime and retries later).
     Logs `disc` (refusals only). Original call otherwise or on any error."""
     add = cx.fn('logic.ai.AIOrders.addOrder')
@@ -1760,7 +1907,8 @@ def build_discovery(cx, helpers, threat, pw, terrain, new_ids):
     res = fb.reg(ft.ret.value)
     blocked = fb.reg(cx.t('bool'))
     fb.op('Bool', dst=blocked, value=False)
-    h, m, tf = (fb.reg(cx.t('f64')) for _ in range(3))
+    h, m, tf, dl = (fb.reg(cx.t('f64')) for _ in range(4))
+    fb.op('Mov', dst=dl, src=b.const('f64', 0))
     tgt = fb.reg(cx.t('ent.Entity'))
     guard = fb.try_()
     fac = b.field(b.field(0, 'controller'), 'owner')
@@ -1792,6 +1940,18 @@ def build_discovery(cx, helpers, threat, pw, terrain, new_ids):
     fb.op('Bool', dst=blocked, value=True)
     fb.op('JAlways', offset='done')
     fb.label('dlok')
+    # too far for the army's supply: out and back from our land (supply drains off our zones only)
+    fb.op('Call2', dst=dl, fun=land, arg0=fac, arg1=tgt)
+    ua = b.cast(u, 'ent.Army')
+    fb.op('JNull', reg=ua, offset='dsup')
+    fb.op('Add', dst=m0, a=dl, b=dl)
+    sok = fb.reg(cx.t('bool'))
+    fb.op('Call3', dst=sok, fun=supok, arg0=ua, arg1=m0, arg2=b.const('f64', 1))
+    fb.op('JTrue', cond=sok, offset='dsup')
+    fb.op('Bool', dst=blocked, value=True)
+    fb.op('JAlways', offset='done')
+    fb.label('dsup')
+    fb.op('Mov', dst=dl, src=b.const('f64', 0))  # logged dl > 0 only for a FAR refusal
     fb.op('JSLte', a=h, b=b.const('f64', 0), offset='done')
     fb.op('Call1', dst=m, fun=pw, arg0=u)
     fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', tgt))
@@ -1817,7 +1977,7 @@ def build_discovery(cx, helpers, threat, pw, terrain, new_ids):
     fb.op('Mov', dst=ue, src=u)
     _throttle(fb, b, cx, 'discx', tgt, 30, 'dnolog')  # re-asked every 1-2 s for the same event: once per 30 s
     _log_ev(fb, b, cx, helpers, 'disc', [('f', fb.get(owner, 'kind')), ('tgt', tgt), ('army', ue), ('H', h),
-                                         ('M', m), ('tf%', tf)])
+                                         ('M', m), ('tf%', tf), ('dl', dl)])
     fb.label('dnolog')
     fb.end_try(guard2)
     fb.op('Null', dst=res)
@@ -1934,3 +2094,66 @@ def fix_busy_siege(cx):
             ops[i] = j
             return {'busy-siege': f'f{g.findex.value} op{i} NullCheck -> JNull +{skip - i - 1}'}
     raise ValueError('busy-siege: NullCheck s; Field s.siege after the Military test not found')
+
+
+def build_wind_fallback(cx, helpers, new_ids):
+    """Wind fallback: vanilla getSiegeableVillages (considerWater, once one of our zones has a SpiceArea, our Water
+    goal unmet (ResourceManager.compareGoals < 0) and we own > 1 structure) keeps only candidates whose zone
+    windForce >= valueCache[1185] AI_WindTrap_MinimumWind 4, and returns NoStructuresWithSufficientWind when none is
+    left. On a map with only low-wind villages in reach that is a deadlock: Fremen annexed nothing from 6:00 to the
+    end (11:11), the Annexation gauge re-firing every 0.5 s (709 x NoStructuresWithSufficientWind), aggressiveness 0,
+    2 structures. Every call site (vanilla and ours, one measure) goes through this wrapper: that result with
+    considerWater set -> the same call again with considerWater false (restored after), so windy villages stay
+    preferred while any exists and otherwise any candidate is taken. Logs `wind` (f, k) once per faction per 60 s."""
+    orig = cx.fn('logic.ai.$AIMilitary.getSiegeableVillages')
+    oid = orig.findex.value
+    ft = cx.code.types[orig.type.value].definition
+    args = [a.value for a in ft.args]
+    ret_t = ft.ret.value
+    vfields = [f.name.resolve(cx.code) for f in cx.code.types[args[3]].definition.fields]
+    if 'considerWater' not in vfields:
+        raise ValueError('wind-fallback: args.considerWater not found')
+    wfi = vfields.index('considerWater')
+    cons = [c.name.resolve(cx.code) for c in cx.code.types[ret_t].definition.constructs]
+    nowind = cons.index('NoStructuresWithSufficientWind')
+    fb = FB(cx, args, ret_t, fun_type=orig.type.value)
+    b = B(fb)
+    res = fb.reg(ret_t)
+    fb.op('Call4', dst=res, fun=oid, arg0=0, arg1=1, arg2=2, arg3=3)
+    fb.op('JNull', reg=res, offset='ret')
+    fb.op('JNull', reg=3, offset='ret')
+    idx = fb.reg(cx.t('i32'))
+    fb.op('EnumIndex', dst=idx, value=res)
+    fb.op('JNotEq', a=idx, b=b.const('i32', nowind), offset='ret')
+    old = fb.reg(cx.t('bool'))
+    fb.op('Field', dst=old, obj=3, field=wfi)
+    fb.op('JFalse', cond=old, offset='ret')
+    off = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=off, value=False)
+    fb.op('SetField', obj=3, field=wfi, src=off)
+    g = fb.try_()
+    fb.op('JNull', reg=0, offset='wc')
+    b.call('hl.types.ArrayObj.splice', 0, b.const('i32', 0), b.field(0, 'length'))  # no leftovers of the first call
+    fb.label('wc')
+    fb.op('Call4', dst=res, fun=oid, arg0=0, arg1=1, arg2=2, arg3=3)
+    fb.op('JNull', reg=2, offset='wl')
+    _throttle(fb, b, cx, 'wind', 2, 60, 'wl')
+    _log_ev(fb, b, cx, helpers, 'wind', [('f', fb.get(2, 'kind')), ('k', 1)])
+    fb.label('wl')
+    fb.end_try(g)
+    fb.op('SetField', obj=3, field=wfi, src=old)
+    fb.label('ret')
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    new_ids.add(w)
+    n = 0
+    for f in cx.code.functions:
+        if f.findex.value == w:
+            continue
+        for op in f.ops:
+            if op.op.startswith('Call') and op.df.get('fun') is not None and op.df['fun'].value == oid:
+                op.df['fun'].value = w
+                n += 1
+    if n < 1:
+        raise ValueError('wind-fallback: no getSiegeableVillages call site')
+    return {'wind-fallback': n}

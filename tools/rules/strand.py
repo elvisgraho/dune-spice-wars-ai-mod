@@ -105,3 +105,81 @@ def build_strand(cx, helpers, idle, unsafe):
     fb.end_try(guard)
     fb.op('Ret', ret=void)
     return fb.build()
+
+
+def build_patrol_gate(cx, helpers, hsafe, own, pw, new_ids):
+    """Patrol gate: vanilla `checkPatrols` walks idle 100% armies to its best border village with no threat check.
+    Harkonnen sent 4 armies (247k) to patrol Ara-Al'wan, 25 from the Fremen stack (450k+) pillaging Aeg-waz: they
+    walked into it and were ground down (fight balance 0.07 -> 0, 31:30-33:10). The per-border call site (not the
+    main-base one) goes through this wrapper: a Patrol is dropped when the hostile power at its village (undiscounted
+    threat within SAFE_R, the heal / strand safety measure: armies rest there) exceeds OWN_T x (our armies there +
+    the whole patrol group): the group couldn't hold it. A group that would win still reinforces a threatened border.
+    Dropped: the armies stay idle where they are (free for rally, hunts, sieges). Logs `patrol` (s, a first army,
+    n armies, h, m) once per village per 30 s. Fails safe: in a trap, vanilla's order on error."""
+    orig = cx.fn('logic.ai.AIOrders.addOrder')
+    ids = {orig.findex.value, helpers.get('addOrder')}
+    cp = cx.fn('logic.ai.AIMilitary.checkPatrols')
+    sites = [op for op in cp.ops if op.op.startswith('Call') and op.df.get('fun') is not None
+             and op.df['fun'].value in ids]
+    if len(sites) != 2:
+        raise ValueError(f'patrol-gate: expected 2 addOrder calls in checkPatrols, found {len(sites)}')
+    site = sites[1]  # the per-border loop (the first one sends everyone to the main base when no border exists)
+    callee = site.df['fun'].value
+    ft = cx.code.types[orig.type.value].definition
+    args = [a.value for a in ft.args]
+    fb = FB(cx, args, ft.ret.value, fun_type=orig.type.value)
+    b = B(fb)
+    res = fb.reg(ft.ret.value)
+    fb.op('Null', dst=res)
+    skip = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=skip, value=False)
+    guard = fb.try_()
+    fb.op('JNull', reg=1, offset='end')
+    idx = fb.reg(cx.t('i32'))
+    fb.op('EnumIndex', dst=idx, value=1)
+    fb.op('JNotEq', a=idx, b=b.const('i32', PATROL), offset='end')
+    fb.op('JNull', reg=3, offset='end')
+    n = b.field(3, 'length')
+    fb.op('JSLte', a=n, b=b.const('i32', 0), offset='end')
+    fb.op('JNull', reg=4, offset='end')
+    fac = b.field(b.field(0, 'controller'), 'owner')
+    fb.op('JNull', reg=fac, offset='end')
+    h, m, p = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    rr = b.const('f64', SAFE_R)
+    fb.op('Call3', dst=h, fun=hsafe, arg0=fac, arg1=4, arg2=rr)
+    fb.op('JSLte', a=h, b=b.const('f64', 0), offset='end')
+    na = fb.reg(cx.t('ent.Army'))
+    fb.op('Null', dst=na)
+    fb.op('CallN', dst=m, fun=own, args=[fac, 4, rr, na])
+    k = fb.reg(cx.t('i32'))
+    a0 = fb.reg(cx.t('ent.Army'))
+    fb.op('Null', dst=a0)
+    fb.op('Mov', dst=k, src=b.const('i32', 0))
+    b.loop_head('grp')
+    fb.op('JSGte', a=k, b=n, offset='grpd')
+    a = b.cast(b.call('hl.types.ArrayObj.getDyn', 3, k), 'ent.Army')
+    fb.op('Incr', dst=k)
+    fb.op('JNull', reg=a, offset='grp')
+    fb.op('Mov', dst=a0, src=a)
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', a, 4), b=rr, offset='grp')  # already counted in own
+    fb.op('Call1', dst=p, fun=pw, arg0=a)
+    fb.op('Add', dst=m, a=m, b=p)
+    fb.op('JAlways', offset='grp')
+    fb.label('grpd')
+    fb.op('Mul', dst=p, a=m, b=_ratio(fb, b, OWN_T))
+    fb.op('JSLte', a=h, b=p, offset='end')
+    fb.op('Bool', dst=skip, value=True)
+    s = b.cast(4, 'ent.Structure')
+    _throttle(fb, b, cx, 'patrol', s, 30, 'end')
+    _log_ev(fb, b, cx, helpers, 'patrol', [('f', fb.get(fac, 'kind')), ('s', s), ('a', a0), ('n', n), ('h', h),
+                                           ('m', m)])
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('JTrue', cond=skip, offset='ret')
+    fb.op('CallN', dst=res, fun=callee, args=list(range(len(args))))
+    fb.label('ret')
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    new_ids.add(w)
+    site.df['fun'].value = w
+    return {'patrol-gate': 1}

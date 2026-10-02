@@ -364,7 +364,7 @@ def cmd_log(args):
         print(health(src))
     events = aireport.parse_lines(lines)
     if args.around:
-        print(aireport.around(events, aireport.parse_clock(args.around), args.window))
+        print(aireport.around(events, aireport.parse_clock(args.around), args.window, args.faction))
     elif args.raw:
         print('\n'.join(l[l.find('AIMOD'):] for l in lines if not args.faction or args.faction in l))
     else:

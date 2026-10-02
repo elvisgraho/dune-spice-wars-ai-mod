@@ -69,6 +69,51 @@ def _near_base(fb, b, cx, state, fac, e, mbr, wr):
     fb.label(ok)
 
 
+def _late(fb, b, cx, v, d, t, late_lbl, ok_lbl, fall=False):
+    """Contest arrival test (start and `objective` abort alike): jump to late_lbl when an army d away (CONTEST_SPD)
+    arrives after the occupation at village v ends (+ CONTEST_SLACK), else to ok_lbl (fall=True: ok falls through).
+    Remaining time = (1 - progress) / the progress rate since v was first judged (maps `cpgt` / `cpgp`; restarted
+    when progress drops or the record is older than CAP_STALE), (1 - progress) x CAP_EST before a rate is known
+    (< 5 s); a capture making no progress is never late. Returns the (arrival, remaining, progress) registers."""
+    u = _uid('lt')
+    sg = b.field(v, 'siege')
+    lp, lq, lrem, lp0 = (fb.reg(cx.t('f64')) for _ in range(4))
+    fb.op('Mov', dst=lq, src=b.const('f64', 0))
+    fb.op('Mov', dst=lrem, src=b.const('f64', 0))
+    fb.op('Mov', dst=lp, src=b.const('f64', 0))
+    fb.op('JNull', reg=sg, offset=u + 'ok')
+    fb.op('Mov', dst=lp, src=b.call('ent.comp.SiegeComponent.getOccupationActionProgress', sg))
+    cpgt, cpgp = _global_map(fb, b, cx, 'cpgt'), _global_map(fb, b, cx, 'cpgp')
+    vt = b.call('haxe.ds.ObjectMap.get', cpgt, fb.dyn(v))
+    fb.op('JNull', reg=vt, offset=u + 'new')
+    fb.op('SafeCast', dst=lp0, src=b.call('haxe.ds.ObjectMap.get', cpgp, fb.dyn(v)))
+    fb.op('JSLt', a=lp, b=lp0, offset=u + 'new')  # a new capture there: restart
+    fb.op('SafeCast', dst=lq, src=vt)
+    fb.op('Sub', dst=lq, a=t, b=lq)
+    fb.op('JSGt', a=lq, b=b.const('f64', CAP_STALE), offset=u + 'new')
+    fb.op('JSLt', a=lq, b=b.const('f64', 5), offset=u + 'est')
+    fb.op('Sub', dst=lp0, a=lp, b=lp0)
+    fb.op('JSLte', a=lp0, b=b.const('f64', 0), offset=u + 'ok')  # no progress: stalled, worth contesting
+    fb.op('SDiv', dst=lp0, a=lp0, b=lq)  # rate per s
+    fb.op('Sub', dst=lrem, a=b.const('f64', 1), b=lp)
+    fb.op('SDiv', dst=lrem, a=lrem, b=lp0)
+    fb.op('JAlways', offset=u + 'cmp')
+    fb.label(u + 'new')
+    b.call('haxe.ds.ObjectMap.set', cpgt, fb.dyn(v), fb.dyn(t))
+    b.call('haxe.ds.ObjectMap.set', cpgp, fb.dyn(v), fb.dyn(lp))
+    fb.label(u + 'est')
+    fb.op('Sub', dst=lrem, a=b.const('f64', 1), b=lp)
+    fb.op('Mul', dst=lrem, a=lrem, b=b.const('f64', CAP_EST))
+    fb.label(u + 'cmp')
+    fb.op('SDiv', dst=lq, a=d, b=b.const('f64', CONTEST_SPD))
+    fb.op('Add', dst=lrem, a=lrem, b=b.const('f64', CONTEST_SLACK))
+    fb.op('JSGt', a=lq, b=lrem, offset=late_lbl)
+    fb.label(u + 'ok')
+    if not fall:
+        fb.op('JAlways', offset=ok_lbl)
+    return lq, lrem, lp
+
+
 def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieged, cover, defend, neutral, react):
     """aimod_hunt(mil, dt): abort pass every CHECK s, start pass every START s (see module doc). Threat is always
     aimod_hthreat around the prey's faction (a third party at war with it doesn't count, one allied with it only
@@ -407,6 +452,8 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Mov', dst=dv, src=du)
     fb.op('JAlways', offset='ou')
     fb.label('oudone')
+    fb.op('JSGte', a=dv, b=big, offset='obj')
+    _late(fb, b, cx, v, dv, t, 'obj', _uid('olt'), fall=True)  # same arrival test as the contest start
     hv, rv = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     besieger(v)  # same measure as the contest start
     threat_at(hv, ve, dv)
@@ -696,6 +743,15 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('JAlways', offset='mloop')
     fb.label('mdone2')
     fb.op('JSGte', a=dmin, b=big, offset='next')  # no free army in reach (our turrets alone don't hunt)
+    # contest that can't arrive before the capture ends: skip (Smugglers' contest of Fremen's Annex of Tuoiel started
+    # 329 away 36 s into the 72 s capture and arrived after it)
+    fb.op('JNotEq', a=mode, b=one, offset='lt_ok')
+    lq, lrem, lp = _late(fb, b, cx, v, dmin, t, 'lt_late', 'lt_ok')
+    fb.label('lt_late')
+    _throttle(fb, b, cx, 'hlate', v, 30, 'next')
+    _log_hunt(fb, b, cx, helpers, fac, 'nogo', 'late', anc, lq, lrem, {'pr': lp})
+    fb.op('JAlways', offset='next')
+    fb.label('lt_ok')
     threat_at(h, anc, dmin)
     threat_at(p, prey, dmin)  # the abort pass looks at the group
     fb.op('JSGte', a=h, b=p, offset='hmax')

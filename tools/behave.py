@@ -1,5 +1,5 @@
 """AI rules built on the enemy army awareness scan (testbed patch `aware-ai`, installed with `ai-log`): wiring only.
-The code lives in tools/rules/: common (thresholds, bytecode helpers), world (shared queries), heal, hunt, siege, raid, strat, strand, memory, deploy, peace.
+The code lives in tools/rules/: common (thresholds, bytecode helpers), world (shared queries), heal, hunt, siege, raid, strat, strand (+ patrol gate), memory, deploy, peace (+ treaty scope, force peace), build (turret steering), uhq (Underworld HQ cap, placement, extensions).
 Thresholds and rationale: docs/AI-POLICY.md §4; mechanics and hook points: docs/REVERSING.md "AI rules".
 
 Shared queries (appended functions): aimod_pw, aimod_threat(fac, p, r) (at-war power + neutral raiders targeting fac
@@ -38,6 +38,8 @@ from rules.gather import *  # noqa: F401,F403
 from rules.rally import *  # noqa: F401,F403
 from rules.spos import *  # noqa: F401,F403
 from rules.tension import *  # noqa: F401,F403
+from rules.build import *  # noqa: F401,F403
+from rules.uhq import *  # noqa: F401,F403
 
 
 def install(cx, helpers, new_ids):
@@ -80,7 +82,7 @@ def install(cx, helpers, new_ids):
     threat_stats = build_threat(cx, pw, stats=True)
     new_ids.add(threat_stats)
     report.update(build_turret_stats(cx, cover, silence, threat_stats, new_ids))
-    report['discovery-gate'] = build_discovery(cx, helpers, threat, pw, terrain, new_ids)
+    report['discovery-gate'] = build_discovery(cx, helpers, threat, pw, terrain, land, supok, new_ids)
     threat_far = build_threat(cx, pw, DISC_HORIZON)
     discabort = build_disc_abort(cx, helpers, pw, threat_far, terrain)
     militia = build_militia(cx)
@@ -100,9 +102,18 @@ def install(cx, helpers, new_ids):
                       home, homeown, helpers['scores'], neutral)
     fpow = build_fpow(cx, pw)
     strat = build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, defend, militia, home,
-                        short, neutral)
+                        short, neutral, threat)
     report.update(strat_levers(cx, new_ids))
     report.update(build_peace_gate(cx, helpers, defend, new_ids))
+    report.update(build_treaty_scope(cx, helpers, new_ids))
+    # Underworld HQs (rules/uhq.py): cap, placement, extension scores (under turret-steer on the same scoring call)
+    uhqval, uhqgain = build_uhq_value(cx), build_uhq_best_gain(cx)
+    new_ids.update({uhqval, uhqgain})
+    report.update(build_uhq_cap(cx, helpers, new_ids))
+    report.update(build_uhq_place(cx, helpers, uhqgain, new_ids))
+    uhqx = build_uhq_ext(cx, helpers, uhqval, new_ids)
+    report['uhq-ext'] = 1
+    report.update(build_turret_steer(cx, helpers, threat, cover, new_ids, inner=uhqx))
     sengage = build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain, neutral)
     idle = build_free(cx, pw, 0, 0, patrol_ok=False)
     helpers['wormheld'] = build_wormheld(cx)  # worm-flee hold: out of vanilla's Resupply / mission picks
@@ -110,6 +121,7 @@ def install(cx, helpers, new_ids):
     report.update(pick_life(cx, helpers, idle, new_ids))
     report.update(no_regen_heal(cx, helpers, new_ids))
     strand = build_strand(cx, helpers, idle, unsafe)
+    report.update(build_patrol_gate(cx, helpers, hsafe, own, pw, new_ids))
     undeploy = build_undeploy(cx, helpers)
     report.update(build_ability_gate(cx, new_ids))
     danger = build_danger(cx)
@@ -119,17 +131,21 @@ def install(cx, helpers, new_ids):
     wormflee = build_worm_flee(cx, helpers)
     dstep = build_desert_step(cx, helpers)
     gather = build_gather(cx, helpers)
-    rally = build_rally(cx, helpers, pw, react, threat, terrain, cover, mission)
+    # rally: active threat at D and rally-point safety count movers only when they arrive there (not border shuffles)
+    threat_arrive = build_threat(cx, pw, arrive=True)
+    rally = build_rally(cx, helpers, pw, react, threat_arrive, terrain, cover, mission)
+    fpeace = build_force_peace(cx, helpers)
     spos = build_spos(cx, helpers, cover)
     report.update(build_keep_capture(cx, helpers, new_ids))
     report.update(gather_busy(cx, new_ids))
-    tick = build_chain(cx, [memory, wormflee, ttick, strat, hunt, raid, rally, sengage, gather, spos, dstep, discabort, undeploy, strand])
-    new_ids.update({hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, gather, rally, spos,
+    tick = build_chain(cx, [memory, wormflee, ttick, strat, hunt, raid, rally, fpeace, sengage, gather, spos, dstep, discabort, undeploy, strand])
+    new_ids.update({hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, gather, rally, threat_arrive, fpeace, spos,
                     memory, tick})
     report['strand'] = 1
     report['worm-flee'] = 1
     report['desert-step'] = 1
     report.update(log_worm_kill(cx, helpers, new_ids))
+    report.update(build_wind_fallback(cx, helpers, new_ids))  # last: also redirects our own rules' calls
     report['undeploy'] = 1
     report['raid'] = 1
     report['strat'] = 1

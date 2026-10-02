@@ -18,6 +18,8 @@ TEN_GATE = 0.99    # tension at the cap: an at-war owner's partner village is li
                    # desiredStatus 0 (its other villages stay unlisted); strength checks (siege-join, launch) still decide
 TEN_FAIL = 0.5     # a vanilla launch on a tension partner that creates no order (too strong for us) x this on that pair
 HEAL_COMMIT = 15   # s: a fight retreat keeps the heal structure it picked first this long (rules/heal.py)
+RETREAT_CLEAR = 150  # a fight-retreat heal target this close to the fight's centre is in the fight (= RALLY_MIN)
+INFIGHT_T = 30     # s: an army that left its own heal structure while losing a fight there judges it at OWN_T this long
 STICKY = 2.0       # current resupply target is abandoned only when threat > own * STICKY
 PENALTY = 1 << 28  # overwhelming threat: added to squared distance (map ~2000 -> 4e6), so any safe structure wins
 DETOUR = 250       # contested threat: key + DETOUR^2, i.e. a safe structure wins only if not much farther
@@ -115,7 +117,9 @@ GATHER_T = 1       # s: gather pass (Engage orders: leaders wait for the pack)
 GATHER_ORD_R = 400 # armies of the order this close to the target count; farther ones are stragglers, not waited for
 GATHER_GAP = 15    # an army more than this closer to the target than the farthest counted one waits (~2.5 s walk)
 GATHER_MIN = 80    # ... unless already this close (in reach of the prey / militia) or fighting
-GATHER_MAX = 10    # s: an order holds its leaders at most this long in all (a far laggard can't stall the attack)
+GATHER_MAX = 20    # s: an order holds its leaders at most this long in all (a far laggard can't stall the attack;
+                   # 10 released Atreides' fast A_Ship 17 ahead: it reached the renegade base alone, died, and its
+                   # death as the only besieger cancelled the 9-army Dismantle)
 DSTEP_R = 250      # desert step: our siege / raid armies in the deep desert within this of the target ...
 DSTEP_IN = 40      # ... move to this far from the target on their side (the village's zone, still in the fight)
 DSTEP_T = 8        # ... at most this often per army (micro re-engages; no move spam)
@@ -130,6 +134,48 @@ WORM_DIRS = 16     # ... directions per ring
 HFLEE_T = 20       # s: an attacked team harvester is released to vanilla's re-route at most this often (it packs up)
 RALLY_T = 2        # s: rally pass (rules/rally.py): gather strength when a structure faces more than we can beat
 RALLY_MIN_H = 80000  # ... and that power is at least this (a lone raider is vanilla Defense's business)
+STAND_R = 200      # turret steering (rules/build.py): at-war power within this of our village (turret range 80 +
+                   # an idle stack at the next village, Gun-dah 115 from Annarekh) ...
+STAND_MIN_H = RALLY_MIN_H  # ... at least this ...
+STAND_T = 30       # s: ... standing there this long (a passing army is no standoff) ...
+STAND_BONUS = 100  # ... lifts MissileBattery there to vanilla score + this (vanilla building scores ~10-40)
+ATTR_PEACE_FORCE = 30  # attribute row Allow_PeaceForce (Atreides): may impose ImproveRelations for Influence
+CAP_EST = 90       # s: hunt contest: an occupation's full length before its progress rate is known (Fremen Annex of Tuoiel 72 s)
+CAP_STALE = 300    # s: a progress record older than this is restarted
+CONTEST_SPD = 6    # units/s: army speed for a contest's arrival time (aw spd 6-8.4)
+CONTEST_SLACK = 10 # s: a contest still starts when it arrives this late (the capture may stall in the fight)
+ASWAP_WAIT = 120   # s: Annex value: nothing affordable in the top 3 this long -> the best affordable candidate anywhere
+RES_INFLUENCE = 10  # resource sheet index of Influence (ent.Faction.getResource)
+PANNEX_INF = 100   # peaceful annex (siege.py launch gate): Atreides use PeacefullyAnnex (50 Influence) only with at least
+                   # this much Influence, so force peace / diplomacy keep a reserve
+PANNEX_MIN_VILLAGES = 4  # ... and only once we own this many villages: the opening's idle armies annex for free
+                   # while Influence is scarce (user: early peaceful annexes wasted it)
+# Underworld HQs (rules/uhq.py; Smugglers). Vanilla installs whenever <= 1 HQ has an empty extension list (no cap: all
+# Authority went into HQs) and scores regular extensions only by cdb aiWeights (Whisperers Lair on no-Intel villages).
+UHQ_MIN = 3        # HQ cap = max(UHQ_MIN, UHQ_PER_VILLAGE x our villages); built ones are never removed
+UHQ_PER_VILLAGE = 2
+UHQ_MB_R = 500     # placement: a host village within this of its owner's main base scores up to ...
+UHQ_MB_W = 1.0     # ... x (1 + this) at the base (falls linearly to x 1 at UHQ_MB_R): hardly ever recaptured there
+UHQ_PLACE_W = 1.0  # placement: + this x the best production-extension gain at the village (vanilla score ~20-60)
+UHQ_EXT_BASE = 10  # extension score = this (vanilla AI_BuildingScore_BaseValue) + gain (Solari-equivalent / day), only
+                   # when the host produces at least one listed resource's minimum; else no score: the slot waits
+UHQ_HU = 40        # Harvesters' Union (id TraffickingStation, +2% spice for us and allies): first everywhere
+RES_SOLARI, RES_PLASCRETE, RES_FUEL, RES_WATER, RES_KNOWLEDGE, RES_INTEL = 1, 2, 4, 5, 9, 54  # resource sheet rows
+# extension id -> flat score, or [(resource row, share of the host's production, Solari-equivalent weight, minimum host
+# production / day for the extension to qualify: any one listed resource at its minimum)]; an id not
+# listed scores nothing on a regular HQ (host-gain ones: Worker's Guild, Water Network / Seller, Activist Quarters;
+# Contraband Caches, Scavenger Caches, Hidden Explosives, Covert Recruiters, Local Gang, Back-Alley Doctor,
+# Propaganda Cell, Dead Drops, Corrupted Administrators: unused in expert play). Major HQs stay vanilla.
+UHQ_EXT = {
+    'TraffickingStation': UHQ_HU,
+    'BootlegMarket': [(RES_SOLARI, 0.3, 1, 8), (RES_PLASCRETE, 0.3, 1, 8)],  # plascrete paid as Solari (user: >= 8)
+    'WaterSmugglers': [(RES_WATER, 0.3, 3, 9)],  # user: >= 9 water
+    'WhisperersLair': [(RES_INTEL, 0.3, 6, 2), (RES_INFLUENCE, 0.3, 6, 2)],  # influence paid as Intel
+    'Spywares': [(RES_KNOWLEDGE, 0.3, 5, 1)],  # user: knowledge 1
+    'EnergyDiversions': [(RES_FUEL, 0.3, 8, 2)],
+}
+FP_RETRY = 60      # s: force-peace (rules/peace.py) tries at most this often per faction
+FP_SKIP = ('Fremen',)  # never forced: they break treaties at no Landsraad cost, the Influence is wasted
 RALLY_R = 600      # our defenders within this of the danger structure count and are gathered
 RALLY_MIN = 150    # the rally point is at least this far from the danger structure; structures this close aren't
                    # healed / fled to while the rally runs (aimod_unsafe overwhelming)

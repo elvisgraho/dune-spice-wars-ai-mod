@@ -6,7 +6,7 @@ short, and 2 kept healing at Sadnin 84 from the siege: Fremen units reached them
 Sadnin, healed, fought again, while another army walked in alone. Safe-heal saw no threat within 80 of Sadnin.
 
 Every RALLY_T s per faction: the danger structure D = our structure on our land with the most at-war power around it
-(aimod_react within LOCAL, at least RALLY_MIN_H; active: aimod_threat within FLEE_R minus at-war armies standing still
+(aimod_react within LOCAL, at least RALLY_MIN_H; active: aimod_threat (arrive variant: movers count only if their path ends there) within FLEE_R minus at-war armies standing still
 on their own faction's zone there > 0: someone at it or heading there, not a standoff at the border) that our defenders within RALLY_R (non-harvester armies not on a Military mission) plus our
 turret cover there, x terrain, can't beat by ENTER (enough: nothing to do, the contest hunt / vanilla Defense fight
 it with everyone). The rally point R = our structure on our land at least RALLY_MIN from D with no at-war power
@@ -202,13 +202,50 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     sk = fb.reg(cx.t('i32'))
     sx = _army_loop(fb, b, sarr, b.field(sarr, 'length'), sk, 'so', 'sok')
     sxo = b.call('ent.Entity.get_owner', sx)
-    fb.op('JNull', reg=sxo, offset='so')
+    spe_t = cx.code.types[cx.fn('ent.MobileEntity.getCurrentPathEnd').type.value].definition.ret.value
+    spe = fb.reg(spe_t)
+    fb.op('JNotNull', reg=sxo, offset='so_ow')
+    # ... and neutral raiders on us (rebels of a rebelling village, marauders): raider sieges are the contest hunt's
+    # and vanilla Defense's, not a rally posture. Rebels at Harkonnen's Tab-esek, with Atreides' stack standing 82
+    # away, made a rally -> giveup -> `dstop` of the Defense against the rebels every ~150 s: the rebellion never ended
+    srd = b.field(sx, 'raid')
+    fb.op('JNull', reg=srd, offset='so')
+    fb.op('JNotEq', a=b.field(srd, 'targetFaction'), b=fac, offset='so')
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', sx, se), b=b.const('f64', FLEE_R), offset='so_sub')
+    fb.op('JFalse', cond=b.call('ent.Unit.isMoving', sx), offset='so')
+    fb.op('Mov', dst=spe, src=b.call('ent.MobileEntity.getCurrentPathEnd', sx))
+    fb.op('JNull', reg=spe, offset='so')
+    fb.op('JAlways', offset='so_pe')
+    fb.label('so_ow')
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', _state(fb, b, cx), fac, sxo), offset='so')
-    fb.op('JTrue', cond=b.call('ent.Unit.isMoving', sx), offset='so')
-    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', sx, se), b=b.const('f64', FLEE_R), offset='so')
     sxz = b.call('ent.Entity.get_zone', sx)
     fb.op('JNull', reg=sxz, offset='so')
     fb.op('JNotEq', a=b.field(sxz, 'owner'), b=sxo, offset='so')
+    fb.op('JFalse', cond=b.call('ent.Unit.isMoving', sx), offset='so_st')
+    # a mover whose path ends on its own land too shuffles inside it (Patrol / Resupply at its border village):
+    # Atreides' stack at Nundad, 82 from Harkonnen's Tab-esek, kept Harkonnen in rally -> giveup -> rally all match
+    fb.op('Mov', dst=spe, src=b.call('ent.MobileEntity.getCurrentPathEnd', sx))
+    fb.op('JNull', reg=spe, offset='so')
+    sgs = fb.reg(cx.t('$Game'))
+    fb.op('GetGlobal', dst=sgs, **{'global': cx.global_of('$Game')})
+    swd = b.field(b.field(sgs, 'inst'), 'world')
+    fb.op('JNull', reg=swd, offset='so')
+    spz = b.call('world.World.getZoneAt', swd, b.field(spe, 'x'), b.field(spe, 'y'))
+    fb.op('JNull', reg=spz, offset='so')
+    fb.op('JNotEq', a=b.field(spz, 'owner'), b=sxo, offset='so')
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', sx, se), b=b.const('f64', FLEE_R), offset='so_sub')
+    fb.label('so_pe')
+    sdx, sdy = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))  # not near yet: counted only if its path ends within FLEE_R
+    fb.op('Sub', dst=sdx, a=b.field(spe, 'x'), b=b.field(se, 'posx'))
+    fb.op('Sub', dst=sdy, a=b.field(spe, 'y'), b=b.field(se, 'posy'))
+    fb.op('Mul', dst=sdx, a=sdx, b=sdx)
+    fb.op('Mul', dst=sdy, a=sdy, b=sdy)
+    fb.op('Add', dst=sdx, a=sdx, b=sdy)
+    fb.op('JSGt', a=sdx, b=b.const('f64', FLEE_R * FLEE_R), offset='so')
+    fb.op('JAlways', offset='so_sub')
+    fb.label('so_st')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', sx, se), b=b.const('f64', FLEE_R), offset='so')
+    fb.label('so_sub')
     fb.op('Call1', dst=p, fun=pw, arg0=sx)
     fb.op('Sub', dst=act, a=act, b=p)
     fb.op('JAlways', offset='so')

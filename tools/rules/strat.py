@@ -67,7 +67,8 @@ def _has_action(fb, b, cx, s, fac, name, yes, no):
     fb.op('JAlways', offset=yes)
 
 
-def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, defend, militia, home, short, neutral):
+def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, defend, militia, home, short, neutral,
+                threat):
     """aimod_strat(mil, dt) (see module doc)."""
     fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
     b = B(fb)
@@ -152,6 +153,56 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('Call2', dst=need, fun=home, arg0=fac, arg1=b.const('f64', HOME_R))
     fb.op('Mul', dst=need, a=need, b=enter)
     fb.op('SDiv', dst=need, a=need, b=own_t)
+    # turrets hold too: at each structure of ours on our land with at-war power standing within STAND_R, our cover
+    # there (its own guns included) replaces guard armies, min(cover, ENTER x that power) / OWN_T (the standoff
+    # guard (stack x ENTER - cover) / OWN_T). A battery built by turret-steer frees armies here
+    cvc = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=cvc, src=zero)
+    sts = b.cast(fb.get(fac, 'structures', 'array'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=sts, offset='cvdone')
+    nul_e = fb.reg(cx.t('ent.Entity'))
+    fb.op('Null', dst=nul_e)
+    se_ = fb.reg(cx.t('ent.Entity'))
+    cvs = _new_array(fb, b, cx)  # structures credited so far
+    k_ = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=k_, src=zi)
+    b.loop_head('cvl')
+    fb.op('JSGte', a=k_, b=b.field(sts, 'length'), offset='cvdone')
+    s_ = b.cast(b.call('hl.types.ArrayObj.getDyn', sts, k_), 'ent.Structure')
+    fb.op('Incr', dst=k_)
+    fb.op('JNull', reg=s_, offset='cvl')
+    z_ = b.call('ent.Entity.get_zone', s_)
+    fb.op('JNull', reg=z_, offset='cvl')
+    fb.op('JNotEq', a=b.field(z_, 'owner'), b=fac, offset='cvl')
+    fb.op('Mov', dst=se_, src=s_)
+    fb.op('Call3', dst=h, fun=threat, arg0=fac, arg1=se_, arg2=b.const('f64', STAND_R))
+    fb.op('JSLte', a=h, b=zero, offset='cvl')
+    # one credit per turret cluster: a structure within COVER_R of one already credited shares its batteries (a
+    # bunker pair would count the same battery twice)
+    ck = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=ck, src=zi)
+    b.loop_head('cvd')
+    fb.op('JSGte', a=ck, b=b.field(cvs, 'length'), offset='cvnew')
+    ce_ = b.cast(b.call('hl.types.ArrayObj.getDyn', cvs, ck), 'ent.Entity')
+    fb.op('Incr', dst=ck)
+    fb.op('JNull', reg=ce_, offset='cvd')
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', se_, ce_), b=b.const('f64', COVER_R), offset='cvl')
+    fb.op('JAlways', offset='cvd')
+    fb.label('cvnew')
+    b.call('hl.types.ArrayObj.push', cvs, fb.dyn(se_))
+    fb.op('CallN', dst=q, fun=cover, args=[fac, se_, nul_e, t_true, no_arr])
+    fb.op('Mul', dst=h, a=h, b=enter)
+    fb.op('JSLte', a=q, b=h, offset='cvmin')
+    fb.op('Mov', dst=q, src=h)
+    fb.label('cvmin')
+    fb.op('SDiv', dst=q, a=q, b=own_t)
+    fb.op('Add', dst=cvc, a=cvc, b=q)
+    fb.op('JAlways', offset='cvl')
+    fb.label('cvdone')
+    fb.op('Sub', dst=need, a=need, b=cvc)
+    fb.op('JSGte', a=need, b=zero, offset='cvpos')
+    fb.op('Mov', dst=need, src=zero)
+    fb.label('cvpos')
     fb.op('Sub', dst=S, a=S, b=need)
 
     # ---- 1 defend: no press
@@ -460,7 +511,7 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('JFalse', cond=annex, offset='mset')
     fb.op('Mov', dst=mode, src=fb.string('annex'))
     fb.label('mset')
-    _log_ev(fb, b, cx, helpers, 'strat', [('f', fb.get(fac, 'kind')), ('post', ps), ('S', S), ('need', need),
+    _log_ev(fb, b, cx, helpers, 'strat', [('f', fb.get(fac, 'kind')), ('post', ps), ('S', S), ('need', need), ('cv', cvc),
                                           ('T', T), ('tgt', tgt), ('mode', mode), ('hold', hold),
                                           ('reach', reach), ('war', war)])
     fb.label('end')

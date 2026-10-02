@@ -24,6 +24,54 @@
       "expected": 0.8,
       "value": 0.65,
       "why": "see previous entry"
+    },
+    {
+      "sheet": "constant",
+      "id": "AI_PowerBalance_VillageDefense_Min",
+      "path": [
+        "values",
+        3,
+        "val"
+      ],
+      "expected": 1,
+      "value": 1.15,
+      "why": "Vanilla Defense (checkStructures) re-rolls its required ratio in [Min, Max] every 0.5 s (Insane 1.0-3.5): the same defense was refused 400-1600x and sent at random moments. Fixed 1.15 = ENTER 1.5 / own-zone terrain 1.3 (vanilla's estimate has no terrain factor): enter on our own land. Short of it, rules/rally.py gathers."
+    },
+    {
+      "sheet": "constant",
+      "id": "AI_PowerBalance_VillageDefense_Max",
+      "path": [
+        "values",
+        3,
+        "val"
+      ],
+      "expected": 3.5,
+      "value": 1.15,
+      "why": "see previous entry"
+    },
+    {
+      "sheet": "constant",
+      "id": "AI_PowerBalance_VillageDefense_Min",
+      "path": [
+        "values",
+        1,
+        "val"
+      ],
+      "expected": 0.8,
+      "value": 1.15,
+      "why": "Medium too: the testbed's human-slot faction (Atreides, AI after P) reads the Medium values (its defense picks rolled 0.80-2.50)"
+    },
+    {
+      "sheet": "constant",
+      "id": "AI_PowerBalance_VillageDefense_Max",
+      "path": [
+        "values",
+        1,
+        "val"
+      ],
+      "expected": 2.5,
+      "value": 1.15,
+      "why": "see previous entry"
     }
   ]
 }

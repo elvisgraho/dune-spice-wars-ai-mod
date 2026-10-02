@@ -14,7 +14,7 @@ Close the game before `testbed on/off`, `install` and `uninstall`.
 | `log --faction Harkonnen` | Only one faction |
 | `log --all` | Include patrol/resupply/discovery orders |
 | `log --raw` | Raw AIMOD lines |
-| `log --around 12:30` | Timeline of every AI decision within ±60 s of game time 12:30 (`--window 30` to narrow) |
+| `log --around 12:30` | Timeline of every AI decision within ±60 s of game time 12:30 (`--window 30` to narrow, `--faction F` for one faction) |
 | `launch` | Start the game via Steam |
 | `verify` | Check game files match the pinned build (fails after a game update) |
 | `build` / `install` | Build / install the AI mod data pack only (release; testbed must be off) |

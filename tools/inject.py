@@ -449,6 +449,30 @@ def _snap_before(fb, d, c):
     put(fb, d, 'gauges', s)
     put(fb, d, 'armies', fb.get(a, 'owner', 'armies', 'array', 'length'))
     put(fb, d, 'structs', fb.get(a, 'owner', 'structures', 'array', 'length'))
+    # stocks (resource sheet indices: 6 Authority, 10 Influence, 1 Solari) and the net Authority rate: explains an
+    # Annex gauge that fires with no pick (vanilla reserves for an unaffordable target and waits)
+    cx = fb.cx
+    fr = fb.reg(cx.t('ent.Faction'))
+    fb.op('SafeCast', dst=fr, src=fb.get(a, 'owner'))
+    skip = f'_snapres{len(fb.ops)}'
+    fb.op('JNull', reg=fr, offset=skip)
+    for key, k in (('au', 6), ('inf', 10), ('sol', 1)):
+        ki, v = fb.reg(cx.t('i32')), fb.reg(cx.t('f64'))
+        fb.op('Int', dst=ki, ptr=cx.code.add_i32(k).value)
+        fb.op('Call2', dst=v, fun=cx.fn('ent.Faction.getResource').findex.value, arg0=fr, arg1=ki)
+        put(fb, d, key, fb.dyn(v))
+    gp = cx.fn('ent.Faction.getResourceProduction')
+    gpa = [t.value for t in cx.code.types[gp.type.value].definition.args]
+    ki, v = fb.reg(cx.t('i32')), fb.reg(cx.t('f64'))
+    fb.op('Int', dst=ki, ptr=cx.code.add_i32(6).value)
+    nulls = []
+    for t in gpa[2:]:
+        r = fb.reg(t)
+        fb.op('Null', dst=r)
+        nulls.append(r)
+    fb.op('CallN', dst=v, fun=gp.findex.value, args=[fr, ki] + nulls)
+    put(fb, d, 'aup', fb.dyn(v))
+    fb.label(skip)
 
 
 def _fight_after(fb, d, c):

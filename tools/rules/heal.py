@@ -397,6 +397,29 @@ def build_unsafe(cx, threat, own, pw, terrain):
     return fb.build()
 
 
+def _retreat_clear(fb, b, cx, d, heal_log):
+    """Fight retreat (warzone key closure, arg 1 = a healing structure): a structure within RETREAT_CLEAR of the
+    warzone centroid is inside the fight, + PENALTY (any farther one wins; all inside: the nearest still does); a main
+    base never (its guns).
+    Smugglers retreated from Tsimrekh to Annarekh, 75 from the fight: the retreat fired every 5 s for a minute
+    while they stood there at balance 0.25 -> 0 and lost half their army (296k -> 154k). Logs heal act `infight`."""
+    done = _uid('rc')
+    # a main base is exempt: its guns fight with us (leaving it would abandon the base to a fight at its walls)
+    fb.op('JTrue', cond=b.call('ent.Structure.get_isMainBase', 1), offset=done)
+    c = b.call('logic.state.Warzone.get_centroid', 0)
+    fb.op('JNull', reg=c, offset=done)
+    dx, dy = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Sub', dst=dx, a=b.field(1, 'posx'), b=b.field(c, 'x'))
+    fb.op('Sub', dst=dy, a=b.field(1, 'posy'), b=b.field(c, 'y'))
+    fb.op('Mul', dst=dx, a=dx, b=dx)
+    fb.op('Mul', dst=dy, a=dy, b=dy)
+    fb.op('Add', dst=dx, a=dx, b=dy)
+    fb.op('JSGte', a=dx, b=b.const('f64', RETREAT_CLEAR * RETREAT_CLEAR), offset=done)
+    fb.op('Add', dst=d, a=d, b=b.const('f64', PENALTY))
+    heal_log('infight', None, None)
+    fb.label(done)
+
+
 def _retreat_side(fb, b, cx, d):
     """Fight retreat on our land (the warzone centroid's zone is the structure owner's): a healing structure on the
     enemy's side of the fight (dot(s - c, e - c) > 0, e = centroid of warzone.getEnemies) gets + DETOUR^2: the
@@ -632,8 +655,33 @@ def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
                 fb.op('CallN', dst=mn_, fun=own, args=[sown, se, near_r, 0])
                 fb.op('Call1', dst=pn, fun=pw, arg0=0)
                 fb.op('Add', dst=mn_, a=mn_, b=pn)
-                fb.op('Mul', dst=mn_, a=mn_, b=_ratio(fb, b, OVERWHELM * OWN_T))
+                # in a fight there it heals nothing: it stays only while we hold the place (x terrain), the
+                # fight retreat's question; the OVERWHELM margin is for resting next to idle hostiles
+                # (Smugglers at Annarekh stayed vs 287k with 192k, fight balance 0.14 -> 0, lost half the army)
+                # ... and for INFIGHT_T s after such a flee (map `infl` army -> time): out of contact on the way
+                # out it would read the OVERWHELM margin again, turn back and be engaged again
+                fx = fb.reg(cx.t('f64'))
+                infl = _global_map(fb, b, cx, 'infl')
+                inf = fb.reg(cx.t('bool'))
+                fb.op('Mov', dst=inf, src=b.call('ent.Entity.isFighting', 0))
+                fb.op('Mov', dst=fx, src=_ratio(fb, b, OWN_T))
+                fxl, fxs = _uid('fx'), _uid('fxs')
+                fb.op('JTrue', cond=inf, offset=fxl)
+                iv = b.call('haxe.ds.ObjectMap.get', infl, fb.dyn(0))
+                fb.op('JNull', reg=iv, offset=fxs)
+                iq = fb.reg(cx.t('f64'))
+                fb.op('SafeCast', dst=iq, src=iv)
+                fb.op('Sub', dst=iq, a=b.field(_state(fb, b, cx), 'time'), b=iq)
+                fb.op('JSLt', a=iq, b=b.const('f64', INFIGHT_T), offset=fxl)
+                fb.label(fxs)
+                fb.op('Mov', dst=fx, src=_ratio(fb, b, OVERWHELM * OWN_T))
+                fb.label(fxl)
+                fb.op('Mul', dst=mn_, a=mn_, b=fx)
                 fb.op('JSLte', a=hn, b=mn_, offset='stay')
+                fxn = _uid('fxn')
+                fb.op('JFalse', cond=inf, offset=fxn)
+                b.call('haxe.ds.ObjectMap.set', infl, fb.dyn(0), fb.dyn(b.field(_state(fb, b, cx), 'time')))
+                fb.label(fxn)
                 fb.op('Add', dst=d, a=d, b=b.const('f64', PENALTY))
                 heal_log('flee', hn, mn_)
                 fb.op('JAlways', offset='ok')
@@ -654,6 +702,7 @@ def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
             heal_log('avoid', None, None)
             fb.label('ok')
             if args[0] == cx.t('logic.state.Warzone'):
+                _retreat_clear(fb, b, cx, d, heal_log)
                 _retreat_side(fb, b, cx, d)
                 _retreat_commit(fb, b, cx, d)
             fb.end_try(guard)

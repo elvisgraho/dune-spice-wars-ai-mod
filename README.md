@@ -4,7 +4,7 @@ Goal: better skirmish AI, **combat first** (engage/retreat, targeting, army cohe
 
 State: tooling, combat testbed and AI decision logging work in-game. AI behavior rules (tools/rules/, wired by tools/behave.py) run in the testbed only; open checks are in [progress.md](progress.md).
 
-**Read in this order:** this file → [progress.md](progress.md) → [docs/AI-POLICY.md](docs/AI-POLICY.md) (**binding** for any AI behavior change) → [docs/REVERSING.md](docs/REVERSING.md) (code facts, ids) → [docs/TESTBED.md](docs/TESTBED.md). Don't re-research anything listed under Key facts.
+**Read in this order:** this file → [progress.md](progress.md) → [docs/AI-POLICY.md](docs/AI-POLICY.md) (**binding** for any AI behavior change) → [docs/REVERSING.md](docs/REVERSING.md) (code facts, ids) → [docs/TESTBED.md](docs/TESTBED.md). Expert-play knowledge per faction and the implementable ideas from it: [docs/strategy/](docs/strategy/GENERAL.md) ([CANDIDATES](docs/strategy/CANDIDATES.md)). Don't re-research anything listed under Key facts.
 
 ## Quick start (Windows)
 
@@ -24,7 +24,7 @@ Main menu: **O** starts the test match; in game press **P** once. Details: [docs
 | `index` | Write `work/funcs.tsv` + `work/strings.txt` from `hlboot.dat` |
 | `find <regex>...` | Search function names (`--strings` for the string table). Several args = OR (don't type `\|` in cmd) |
 | `dec <findex or name>... [--asm]` | Decompile to pseudo-Haxe (or disassemble) |
-| `log [file] [--faction F] [--all] [--raw] [--around MM:SS]` | Summarize AI decisions from `game.log`; archives raw lines to `work/logs/` |
+| `log [file] [--faction F] [--all] [--raw] [--around MM:SS]` | Summarize AI decisions from `game.log` (`--faction` also filters `--around`); archives raw lines to `work/logs/` |
 | `launch` | Start the game through Steam |
 
 ## Key facts (build 19145763)
@@ -59,21 +59,24 @@ Details and function ids: [docs/REVERSING.md](docs/REVERSING.md).
 - Supply drains only in hostile / neutral zones, 50/day (day = 30 s, ≈ 0.28 per unit walked), refills only near a structure that `canSupply`; occupying (capture / pillage running) or investigating doesn't drain, the militia fight does. Deep desert drains several times faster (attribute 455). Siege orders cancel at once with `InsufficientSupply` when supply < the path estimate and never check supply after.
 - Pillage: idle armies ≥ 90%, 2 days; `getAvailableOccupationActions(faction)` decides who may (attributes 68/69/70); neutral villages are pillageable. `Devastated` 20 days (×0.5, no siege action), pillager gets `Pillaged` (+100% Annex cost there).
 - Village-less zones (deep desert too) go to the single owner of all neighbouring village / main-base zones (`Zone.updateOwner`); deep desert only with `DeepDesert_Surounded_GainControl` (Fremen hegemony bonus 1).
-- Neutral armies are raiders (`Army.raid`, owner null), hostile only to `raid.targetFaction`; vanilla ignores them. A raider siege (no `besiegingFaction`) blocks every faction's siege actions there. `Army.aiOrder` is often null on besiegers: read siege state from the structure.
+- Neutral armies are raiders (`Army.raid`, owner null), hostile only to `raid.targetFaction`; vanilla ignores them.
+- Rebellion: a village at Critical stability (water) spawns a `Rebels` raid on itself; only killing those rebels ends it.
+- Renegade bases: each faction's renegade raid score grows with every base not in a fight; past a threshold a `Renegade_Pillagers` raid spawns at the base nearest that faction and pillages it. A neighbouring base is a standing raid source; its garrison isn't hostile to us. A raider siege (no `besiegingFaction`) blocks every faction's siege actions there. `Army.aiOrder` is often null on besiegers: read siege state from the structure.
 - World events (`checkWorldEvents`): the nearest idle army goes **alone**, no threat check. Liberation picks the daily target's villages anywhere on the map.
 - Siege Action: idle order armies get `doAction(ArmySiege)` every tick while the village isn't under attack; an army inside the footprint never moves and loops. Micro Repositions a fight group's first army to any own structure with a besieger flag, however far.
 - Fremen artillery: F_Special → F_Special_2 (speed 0) installed as an emergency ability whenever the order balance < 4 (also at 1.0); vanilla never uninstalls it.
 - Harvesting teams (no Refinery, e.g. Fremen): harvesters are armies moved by `doAction("MoveAndDeploy")`, no threat check, never recalled. Sandworms: only `ent.Harvester` recalls (`isWormTarget`); armies fight on until eaten; a target off sand is dropped.
 - Orders: AIOrderType 0 Basic, 1 Military, 2 Defense(Entity), 3 Protect, 4 Resupply, 5 Discovery, 6 Patrol, 7 Investigate, 8 SendAssassin. `ArmyFight` needs an `AIEntityGroup` target and walks every army to `entities[0]`. Unnamed cancels (`src <none>`): `checkOrderTerminations` (units dead, group gone, refused Shuttle step) and `addOrder`'s onComplete.
 - Transport: `Entity.isTransported` = in transport / transit / hidden (worm ride); such armies read 0 power.
-- Diplomacy: combat only at `War`; Truce / Tribute / Alliance forbid it. Breakable treaties cancel every order targeting either party; the AI accepts peace by trade value only, even mid-capture.
-- Building choice: `BuildingManager.checkBuildings` → `$HScoring.getBuildingStructureScore`, weighted random; turrets score on static border exposure only, never on enemy armies.
-- Smugglers' `UWHeadquarters` are in `faction.structures` but stand in other factions' villages.
+- Diplomacy: combat only at `War`; Truce / Tribute / Alliance forbid it. a Breakable treaty cancels every AI's orders targeting either party, also of AIs not in the treaty (vanilla; `treaty-scope` limits it to the parties' orders on each other); the AI accepts peace by trade value only, even mid-capture. Atreides (attribute Allow_PeaceForce) can impose a Non-aggression Pact for Influence (`sendTrade` style ForcePeace, confirmed at once); the vanilla AI never does (`force-peace` does it when a village's defense is lost).
+- Water: with a spice village owned and the Water goal unmet, vanilla Annex takes only zones with wind >= 4 and returns `NoStructuresWithSufficientWind` when none is in reach (stalled Fremen for the rest of a match; `wind-fallback` drops the filter then).
+- Building choice: `BuildingManager.checkBuildings` → `$HScoring.getBuildingStructureScore`, weighted random among the best 2 (Insane); turrets score on static border exposure only, never on enemy armies (`turret-steer` adds standing at-war stacks). Patrols (`checkPatrols`) walk idle 100% armies to a border village with no threat check.
+- Smugglers' `UWHeadquarters` are in `faction.structures` but stand in other factions' villages (`ent.Headquarter.structHost`). Vanilla installs a new one whenever ≤ 1 has no extension (no cap) and scores regular extensions by cdb `aiWeights` only.
 
 **Our layer** (testbed patch `ai-log`: tools/inject.py + aware.py + behave.py + rules/)
 - Logging: wrapper functions appended, existing `Call` ops redirected; events in `game.log` as `AIMOD {…}`, summarized by `mod log` (`wzb`: every fight's retreat balance every 5 s).
 - `aw` scan (every 10 s per AI faction): the world model of at-war armies, base of every army-aware rule.
-- Rules (goal order AI-POLICY §5a; what each decides and its thresholds: AI-POLICY; hooks and ids: REVERSING): `strat` director, `hunt` (chases, contests, neutral raiders), `rally`, `raid`, siege launch gate / sizing / `siege-join` / `siege-engage` / `retry` / `stuck`, Annex value, `discovery-gate`, `safe-heal`, `retreat-terrain`, `strand`, `undeploy`, `ability-gate`, `memory`, `worm-flee`, `desert-step`, `gather`, `siege-pos`, `keep-capture`, `unstick`, `tension`, `peace-gate`, `busy-siege` (vanilla crash fix). "Our land" = our structures on zones we own. State between calls: added global ObjectMaps.
+- Rules (goal order AI-POLICY §5a; what each decides and its thresholds: AI-POLICY; hooks and ids: REVERSING): `strat` director, `hunt` (chases, contests, neutral raiders), `rally`, `raid`, siege launch gate / sizing / `siege-join` / `siege-engage` / `retry` / `stuck`, Annex value, `discovery-gate`, `safe-heal`, `retreat-terrain`, `strand`, `undeploy`, `ability-gate`, `memory`, `worm-flee`, `desert-step`, `gather`, `siege-pos`, `keep-capture`, `unstick`, `tension`, `peace-gate`, `treaty-scope`, `force-peace`, `wind-fallback`, `patrol-gate`, `turret-steer`, `uhq` (Smugglers Underworld HQ cap / placement / extensions), `busy-siege` (vanilla crash fix). "Our land" = our structures on zones we own. State between calls: added global ObjectMaps.
 
 ## Documentation rule (mandatory)
 
@@ -84,7 +87,7 @@ Docs are a reference for a fresh agent: they describe the **current** state, not
 
 ## Layout
 
-- `tools/` `mod.py` CLI · `boot.py` bytecode patching · `inject.py` decision logging · `aware.py` enemy army scan · `behave.py` wiring of the AI rules · `rules/` the rules (`common` thresholds + bytecode helpers, `world` shared queries, `heal`, `hunt`, `siege`, `raid`, `strat`, `strand`, `memory`, `deploy`, `peace`) · `aireport.py` log summary · `pak.py` Heaps archives · `hxser.py` Haxe serializer
+- `tools/` `mod.py` CLI · `boot.py` bytecode patching · `inject.py` decision logging · `aware.py` enemy army scan · `behave.py` wiring of the AI rules · `rules/` the rules (`common` thresholds + bytecode helpers, `world` shared queries, `heal`, `hunt`, `siege`, `raid`, `strat`, `strand`, `memory`, `deploy`, `peace`, `build`, `uhq`) · `aireport.py` log summary · `pak.py` Heaps archives · `hxser.py` Haxe serializer
 - `patches/data.json` data changes (checked old→new) · `patches/bytecode.json` code patch registry
 - `testbed/scenario.json` test scenario · `testbed/ailog.json` extra traced functions · `validation/` test-case records
 - Generated, git-ignored: `.venv/ work/ dist/ backup/`
