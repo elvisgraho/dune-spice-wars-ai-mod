@@ -30,10 +30,11 @@ def _nan(fb, b, cx):
 
 
 def _is_kind(fb, b, s, kind, no):
-    """Jump to `no` unless structure s has kind `kind`."""
+    """Jump to `no` unless structure s has kind `kind` (a dyn String register built once, outside loops: a string
+    per iteration allocates)."""
     k = b.field(s, 'kind')
     fb.op('JNull', reg=k, offset=no)
-    fb.op('JNotEq', a=b.call('String.__compare', k, fb.dyn(fb.string(kind))), b=b.const('i32', 0), offset=no)
+    fb.op('JNotEq', a=b.call('String.__compare', k, kind), b=b.const('i32', 0), offset=no)
 
 
 def _gain(fb, b, cx, v, spec, out, ok):
@@ -112,6 +113,7 @@ def build_uhq_best_gain(cx):
 
 def _count_hqs(fb, b, cx, fac, n, no):
     """n = our regular UWHeadquarters count."""
+    uwk = fb.dyn(fb.string('UWHeadquarters'))
     structs = b.cast(fb.get(fac, 'structures', 'array'), 'hl.types.ArrayObj')
     fb.op('JNull', reg=structs, offset=no)
     ln = b.field(structs, 'length')
@@ -123,7 +125,7 @@ def _count_hqs(fb, b, cx, fac, n, no):
     s = b.cast(b.call('hl.types.ArrayObj.getDyn', structs, i), 'ent.Structure')
     fb.op('Incr', dst=i)
     fb.op('JNull', reg=s, offset=loop)
-    _is_kind(fb, b, s, 'UWHeadquarters', loop)
+    _is_kind(fb, b, s, uwk, loop)
     fb.op('Incr', dst=n)
     fb.op('JAlways', offset=loop)
     fb.label(done)
@@ -191,6 +193,7 @@ def build_uhq_place(cx, helpers, gain, new_ids):
     fb.op('Mov', dst=nkept, src=b.const('f64', 0))
     v = fb.reg(cx.t('ent.Structure'))
     own = fb.reg(cx.t('ent.Faction'))
+    uwk = fb.dyn(fb.string('UWHeadquarters'))
 
     def covered(tag):
         """cov = one of our regular HQs stands in a village owned by `own`."""
@@ -201,7 +204,7 @@ def build_uhq_place(cx, helpers, gain, new_ids):
         s = b.cast(b.call('hl.types.ArrayObj.getDyn', structs, j), 'ent.Structure')
         fb.op('Incr', dst=j)
         fb.op('JNull', reg=s, offset=f'{tag}c')
-        _is_kind(fb, b, s, 'UWHeadquarters', f'{tag}c')
+        _is_kind(fb, b, s, uwk, f'{tag}c')
         host = b.field(b.cast(fb.dyn(s), 'ent.Headquarter'), 'structHost')
         fb.op('JNull', reg=host, offset=f'{tag}c')
         fb.op('JNotEq', a=b.call('ent.Entity.get_owner', host), b=own, offset=f'{tag}c')
@@ -305,7 +308,7 @@ def build_uhq_ext(cx, helpers, val, new_ids):
     fb.op('JNull', reg=so, offset='end')
     s = b.cast(so, 'ent.Structure')
     fb.op('JNull', reg=s, offset='end')
-    _is_kind(fb, b, s, 'UWHeadquarters', 'end')
+    _is_kind(fb, b, s, fb.dyn(fb.string('UWHeadquarters')), 'end')
     fb.op('JNotEq', a=b.call('ent.Entity.get_owner', s), b=1, offset='end')
     host = b.field(b.cast(fb.dyn(s), 'ent.Headquarter'), 'structHost')
     fb.op('JNull', reg=host, offset='end')
@@ -315,6 +318,11 @@ def build_uhq_ext(cx, helpers, val, new_ids):
     v0 = fb.reg(cx.t('f64'))
     fb.op('Mov', dst=v0, src=res)
     fb.op('Call2', dst=res, fun=val, arg0=host, arg1=ks)
+    # log only an extension we'd build (NaN = skip): the first pair scored was always a skipped Bootleg Market, so the
+    # per-HQ throttle hid every Harvesters' Union / production pick
+    fb.op('JSGte', a=res, b=b.const('f64', -(1 << 30)), offset='lg')
+    fb.op('JAlways', offset='end')
+    fb.label('lg')
     _throttle(fb, b, cx, 'uhqx', s, 60, 'end')
     _log_ev(fb, b, cx, helpers, 'uhqx', [('f', fb.get(1, 'kind')), ('s', host), ('k', ks), ('sc', res), ('van', v0)])
     fb.label('end')

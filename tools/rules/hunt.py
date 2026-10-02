@@ -72,39 +72,11 @@ def _near_base(fb, b, cx, state, fac, e, mbr, wr):
 def _late(fb, b, cx, v, d, t, late_lbl, ok_lbl, fall=False):
     """Contest arrival test (start and `objective` abort alike): jump to late_lbl when an army d away (CONTEST_SPD)
     arrives after the occupation at village v ends (+ CONTEST_SLACK), else to ok_lbl (fall=True: ok falls through).
-    Remaining time = (1 - progress) / the progress rate since v was first judged (maps `cpgt` / `cpgp`; restarted
-    when progress drops or the record is older than CAP_STALE), (1 - progress) x CAP_EST before a rate is known
-    (< 5 s); a capture making no progress is never late. Returns the (arrival, remaining, progress) registers."""
+    Remaining time: _cap_rem (rules/common.py); a capture making no progress is never late. Returns the (arrival, remaining, progress) registers."""
     u = _uid('lt')
-    sg = b.field(v, 'siege')
-    lp, lq, lrem, lp0 = (fb.reg(cx.t('f64')) for _ in range(4))
+    lq = fb.reg(cx.t('f64'))
     fb.op('Mov', dst=lq, src=b.const('f64', 0))
-    fb.op('Mov', dst=lrem, src=b.const('f64', 0))
-    fb.op('Mov', dst=lp, src=b.const('f64', 0))
-    fb.op('JNull', reg=sg, offset=u + 'ok')
-    fb.op('Mov', dst=lp, src=b.call('ent.comp.SiegeComponent.getOccupationActionProgress', sg))
-    cpgt, cpgp = _global_map(fb, b, cx, 'cpgt'), _global_map(fb, b, cx, 'cpgp')
-    vt = b.call('haxe.ds.ObjectMap.get', cpgt, fb.dyn(v))
-    fb.op('JNull', reg=vt, offset=u + 'new')
-    fb.op('SafeCast', dst=lp0, src=b.call('haxe.ds.ObjectMap.get', cpgp, fb.dyn(v)))
-    fb.op('JSLt', a=lp, b=lp0, offset=u + 'new')  # a new capture there: restart
-    fb.op('SafeCast', dst=lq, src=vt)
-    fb.op('Sub', dst=lq, a=t, b=lq)
-    fb.op('JSGt', a=lq, b=b.const('f64', CAP_STALE), offset=u + 'new')
-    fb.op('JSLt', a=lq, b=b.const('f64', 5), offset=u + 'est')
-    fb.op('Sub', dst=lp0, a=lp, b=lp0)
-    fb.op('JSLte', a=lp0, b=b.const('f64', 0), offset=u + 'ok')  # no progress: stalled, worth contesting
-    fb.op('SDiv', dst=lp0, a=lp0, b=lq)  # rate per s
-    fb.op('Sub', dst=lrem, a=b.const('f64', 1), b=lp)
-    fb.op('SDiv', dst=lrem, a=lrem, b=lp0)
-    fb.op('JAlways', offset=u + 'cmp')
-    fb.label(u + 'new')
-    b.call('haxe.ds.ObjectMap.set', cpgt, fb.dyn(v), fb.dyn(t))
-    b.call('haxe.ds.ObjectMap.set', cpgp, fb.dyn(v), fb.dyn(lp))
-    fb.label(u + 'est')
-    fb.op('Sub', dst=lrem, a=b.const('f64', 1), b=lp)
-    fb.op('Mul', dst=lrem, a=lrem, b=b.const('f64', CAP_EST))
-    fb.label(u + 'cmp')
+    lrem, lp = _cap_rem(fb, b, cx, v, t, u + 'ok')  # stalled / no siege: never late, worth contesting
     fb.op('SDiv', dst=lq, a=d, b=b.const('f64', CONTEST_SPD))
     fb.op('Add', dst=lrem, a=lrem, b=b.const('f64', CONTEST_SLACK))
     fb.op('JSGt', a=lq, b=lrem, offset=late_lbl)
@@ -296,6 +268,7 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Mov', dst=core, src=e)
     fb.label('nomin')
     fb.op('JTrue', cond=neu, offset='mwar')
+    fb.op('JEq', a=eo, b=fac, offset='nowar')  # areAtWar(us, us) logs a vanilla warning per call
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, fac, eo), offset='nowar')
     fb.label('mwar')
     fb.op('Add', dst=war, a=war, b=one)
@@ -933,6 +906,29 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     b.call('hl.types.ArrayObj.push', garr, fb.dyn(x))
     fb.op('JAlways', offset='grp')
     fb.label('grpdone')
+    # contest: the abort pass judges the group at its core (the member nearest our land) incl. enemy turret cover
+    # there, the start only at our village: Fremen's contest of Sandmur started (T 0) and aborted `turret` 3 s later,
+    # the core standing by Harkonnen's Fa-lulah (T 100k). Same measure here: under cover at the core -> no start
+    fb.op('JNotEq', a=best_mode, b=one, offset='ct_ok')
+    cco = fb.reg(cx.t('ent.Entity'))
+    fb.op('Null', dst=cco)
+    csd, cq = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=csd, src=big)
+    cg = _army_loop(fb, b, garr, b.field(garr, 'length'), j, 'ctg', 'ctgd')
+    fb.op('Mov', dst=ent_r, src=cg)
+    fb.op('Call2', dst=cq, fun=land, arg0=fac, arg1=ent_r)
+    fb.op('JSGte', a=cq, b=csd, offset='ctg')
+    fb.op('Mov', dst=csd, src=cq)
+    fb.op('Mov', dst=cco, src=cg)
+    fb.op('JAlways', offset='ctg')
+    fb.label('ctgd')
+    fb.op('JNull', reg=cco, offset='ct_ok')
+    cover_at(cq, cco, no_ent, False)
+    fb.op('JSLte', a=cq, b=zero, offset='ct_ok')
+    _throttle(fb, b, cx, 'hturt', best_anc, 30, 'end')
+    _log_hunt(fb, b, cx, helpers, fac, 'nogo', 'turret', best_anc, best_h, best_m, {'T': cq})
+    fb.op('JAlways', offset='end')
+    fb.label('ct_ok')
     # force (policy §1.6 concentrate, not everything): our free armies in reach (same tests as the evaluation),
     # nearest first, until HUNT_TO (KILL for a restricted start) x their side / terrain; past HUNT_CAP x group + 1
     # armies, stop once the entry ratio (ENTER, or KILL restricted) holds. Their side = max(the start's threat,

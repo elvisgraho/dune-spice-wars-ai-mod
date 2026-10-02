@@ -339,7 +339,10 @@ def build_unsafe(cx, threat, own, pw, terrain):
     sietch: Fremen kept retreating to Karlon in Atreides land, into the fight there, rated safe as owner-less);
     0 safe, 1 contested: threat(owner, s) > own(owner, s, without self) *
     (sticky ? STICKY : 1), 2 overwhelming: threat > (own + power of self) * OVERWHELM, or within RALLY_MIN of the
-    owner's running rally's danger structure (map `rly`, `rlyt` within RALLY_HOLD: no heal / flee trip next to it)."""
+    owner's running rally's danger structure (map `rly`, `rlyt` within RALLY_HOLD: no heal / flee trip next to it),
+    or when self's straight walk to s passes within CROSS_R of the owner's structure under at-war siege (besieger or
+    occupier at war with the owner, threat within LOCAL >= RALLY_MIN_H) or of the rally's danger structure (_crosses; not one self stands within
+    CROSS_R of: that fight is the retreat logic's)."""
     fb = FB(cx, [cx.t('ent.Structure'), cx.t('ent.Army'), cx.t('bool'), cx.t('ent.Faction')], cx.t('i32'))
     b = B(fb)
     res = fb.reg(cx.t('i32'))
@@ -370,6 +373,73 @@ def build_unsafe(cx, threat, own, pw, terrain):
     fb.op('Int', dst=res, ptr=cx.code.add_i32(2).value)
     fb.op('JAlways', offset='end')
     fb.label('norly')
+    # the walk there passes our structure under at-war siege, or the rally's danger structure: through the enemy
+    # (Fremen liberating Tsimlat: Harkonnen's strand sent 4 armies from Tabiel past them to Had-Al'riyah, rated safe
+    # by the threat around it alone); not when self already stands within CROSS_R of it (in that fight)
+    crossed = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=crossed, value=False)
+    cguard = fb.try_()  # inside vanilla's heal sort: an exception here must not escape (flag, no jump out)
+    fb.op('JNull', reg=1, offset='nocross')
+    sx, sy = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    ax, ay = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    px, py = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=sx, src=b.field(s, 'posx'))
+    fb.op('Mov', dst=sy, src=b.field(s, 'posy'))
+    fb.op('Mov', dst=ax, src=b.field(1, 'posx'))
+    fb.op('Mov', dst=ay, src=b.field(1, 'posy'))
+    cr, ch = b.const('f64', CROSS_R), b.const('f64', RALLY_MIN_H)
+    ce = fb.reg(cx.t('ent.Entity'))
+    cq = fb.reg(cx.t('f64'))
+    cbf = fb.reg(cx.t('ent.Faction'))
+    crs = b.cast(fb.get(owner, 'structures', 'array'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=crs, offset='crly')
+    ci, cn = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=cn, src=b.field(crs, 'length'))
+    fb.op('Mov', dst=ci, src=b.const('i32', 0))
+    b.loop_head('cl')
+    fb.op('JSGte', a=ci, b=cn, offset='crly')
+    c = b.cast(b.call('hl.types.ArrayObj.getDyn', crs, ci), 'ent.Structure')
+    fb.op('Incr', dst=ci)
+    fb.op('JNull', reg=c, offset='cl')
+    # an active siege (SiegeComponent is on every village: besieger or occupier set) by a faction at war with us;
+    # cheap tests first: this runs inside vanilla's heal sort, once per key
+    csg = b.field(c, 'siege')
+    fb.op('JNull', reg=csg, offset='cl')
+    fb.op('Mov', dst=cbf, src=b.field(csg, 'besiegingFaction'))
+    fb.op('JNotNull', reg=cbf, offset='cbf')
+    fb.op('Mov', dst=cbf, src=b.call('ent.comp.SiegeComponent.getOccupierFaction', csg))
+    fb.op('JNull', reg=cbf, offset='cl')
+    fb.label('cbf')
+    fb.op('JEq', a=cbf, b=owner, offset='cl')
+    fb.op('Mov', dst=ce, src=c)
+    fb.op('JEq', a=ce, b=s, offset='cl')
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', 1, ce), b=cr, offset='cl')
+    fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', _state(fb, b, cx), owner, cbf), offset='cl')
+    fb.op('Call3', dst=cq, fun=threat, arg0=owner, arg1=ce, arg2=b.const('f64', LOCAL))
+    fb.op('JSLt', a=cq, b=ch, offset='cl')
+    fb.op('Mov', dst=px, src=b.field(ce, 'posx'))
+    fb.op('Mov', dst=py, src=b.field(ce, 'posy'))
+    _crosses(fb, b, cx, ax, ay, sx, sy, px, py, CROSS_R, 'cross')
+    fb.op('JAlways', offset='cl')
+    fb.label('crly')
+    rd2 = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rly'), fb.dyn(owner))
+    fb.op('JNull', reg=rd2, offset='nocross')
+    fb.op('Mov', dst=ce, src=b.cast(rd2, 'ent.Entity'))
+    fb.op('JNull', reg=ce, offset='nocross')
+    fb.op('JEq', a=ce, b=s, offset='nocross')
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', 1, ce), b=cr, offset='nocross')
+    fb.op('Mov', dst=px, src=b.field(ce, 'posx'))
+    fb.op('Mov', dst=py, src=b.field(ce, 'posy'))
+    _crosses(fb, b, cx, ax, ay, sx, sy, px, py, CROSS_R, 'cross')
+    fb.op('JAlways', offset='nocross')
+    fb.label('cross')
+    fb.op('Bool', dst=crossed, value=True)
+    fb.label('nocross')
+    fb.end_try(cguard)
+    fb.op('JFalse', cond=crossed, offset='ncr')
+    fb.op('Int', dst=res, ptr=cx.code.add_i32(2).value)
+    fb.op('JAlways', offset='end')
+    fb.label('ncr')
     rng = b.const('f64', SAFE_R)
     h, m = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     fb.op('Call3', dst=h, fun=threat, arg0=owner, arg1=s, arg2=rng)
@@ -389,6 +459,12 @@ def build_unsafe(cx, threat, own, pw, terrain):
     fb.op('Mul', dst=m, a=m, b=_ratio(fb, b, STICKY))
     fb.label('cmp')
     fb.op('JSLte', a=h, b=m, offset='end')
+    # the owner's active main base: never merely contested, its guns fight with us (only overwhelming counts):
+    # Fremen's retreat from Grim-po skipped Tabr 236 away as contested and fled 320 to Sabnun
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', 0), offset='nmb')
+    fb.op('JNotEq', a=b.call('ent.Entity.get_owner', 0), b=owner, offset='nmb')
+    fb.op('JSLte', a=h, b=m2, offset='end')
+    fb.label('nmb')
     fb.op('Int', dst=res, ptr=cx.code.add_i32(1).value)
     fb.op('JSLte', a=h, b=m2, offset='end')
     fb.op('Int', dst=res, ptr=cx.code.add_i32(2).value)
@@ -482,7 +558,76 @@ def _retreat_side(fb, b, cx, d):
     fb.label(done)
 
 
-def _retreat_commit(fb, b, cx, d):
+def _gather_point(fb, b, cx, jf, d, d0, lvl, is_army):
+    """One place to fall back to (heal key, arg 1 = a healing structure): while jf's rally runs, its rally point
+    (map `rlyp`) for an army / a fight within RALLY_R of the rally's D; else the structure jf's last fight retreat committed to (map `rgp`, set by _retreat_commit) within
+    RG_T s, for a fight / an army within LOCAL of that fight's centroid (`rgx` / `rgy`). It wins (key 0) unless
+    overwhelming (lvl 2), fled from (army at it in contact), in the fight or on the enemy's side (any penalty but the
+    contested detour on the original key d0): each
+    army otherwise picked its own nearest safe structure (Fremen at Grim-po: two fled 320 to Sabnun, the rest
+    elsewhere) and the force couldn't regroup."""
+    done, hit = _uid('gp'), _uid('gph')
+    fb.op('JNull', reg=jf, offset=done)
+    fb.op('JSGt', a=lvl, b=b.const('i32', 1), offset=done)
+    # only the contested detour may have been added (no flee / overwhelming / in-fight / enemy-side penalty)
+    lim = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=lim, src=d0)
+    gl = _uid('gpl')
+    fb.op('JSLt', a=lvl, b=b.const('i32', 1), offset=gl)
+    fb.op('Add', dst=lim, a=lim, b=b.const('f64', DETOUR * DETOUR))
+    fb.label(gl)
+    fb.op('JSGt', a=d, b=lim, offset=done)
+    se = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=se, src=1)
+    q, px, py = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    # where the asking army / the fight is
+    if is_army:
+        fb.op('Mov', dst=px, src=b.field(0, 'posx'))
+        fb.op('Mov', dst=py, src=b.field(0, 'posy'))
+    else:
+        c = b.call('logic.state.Warzone.get_centroid', 0)
+        fb.op('JNull', reg=c, offset=done)
+        fb.op('Mov', dst=px, src=b.field(c, 'x'))
+        fb.op('Mov', dst=py, src=b.field(c, 'y'))
+    rly = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rly'), fb.dyn(jf))
+    nor = _uid('gpn')
+    fb.op('JNull', reg=rly, offset=nor)
+    # a rally runs: its point, for armies / fights in its reach (RALLY_R of D; a fight at another front keeps its
+    # own choice)
+    rde = b.cast(rly, 'ent.Entity')
+    fb.op('JNull', reg=rde, offset=nor)
+    dx, dy = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Sub', dst=dx, a=px, b=b.field(rde, 'posx'))
+    fb.op('Sub', dst=dy, a=py, b=b.field(rde, 'posy'))
+    fb.op('Mul', dst=dx, a=dx, b=dx)
+    fb.op('Mul', dst=dy, a=dy, b=dy)
+    fb.op('Add', dst=dx, a=dx, b=dy)
+    fb.op('JSGt', a=dx, b=b.const('f64', RALLY_R * RALLY_R), offset=nor)
+    fb.op('JEq', a=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rlyp'), fb.dyn(jf)), b=fb.dyn(se),
+          offset=hit)
+    fb.op('JAlways', offset=done)  # in the rally's reach: only its point
+    fb.label(nor)
+    fb.op('JNotEq', a=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rgp'), fb.dyn(jf)), b=fb.dyn(se),
+          offset=done)
+    tv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rgpt'), fb.dyn(jf))
+    fb.op('JNull', reg=tv, offset=done)
+    fb.op('SafeCast', dst=q, src=tv)
+    fb.op('Sub', dst=q, a=b.field(_state(fb, b, cx), 'time'), b=q)
+    fb.op('JSGt', a=q, b=b.const('f64', RG_T), offset=done)
+    for v, nm in ((px, 'rgx'), (py, 'rgy')):
+        gv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, nm), fb.dyn(jf))
+        fb.op('JNull', reg=gv, offset=done)
+        fb.op('SafeCast', dst=q, src=gv)
+        fb.op('Sub', dst=v, a=v, b=q)
+        fb.op('Mul', dst=v, a=v, b=v)
+    fb.op('Add', dst=px, a=px, b=py)
+    fb.op('JSGt', a=px, b=b.const('f64', LOCAL * LOCAL), offset=done)
+    fb.label(hit)
+    fb.op('Mov', dst=d, src=b.const('f64', 0))
+    fb.label(done)
+
+
+def _retreat_commit(fb, b, cx, d, jf):
     """Fight retreat (warzone key closure, arg 0 = the Warzone, arg 1 = a healing structure, d = its key): the
     structure the retreat picks first is kept HEAL_COMMIT s (key 0: it wins the sort), then re-chosen. Vanilla
     re-issues the retreat Resupply every tick and the keys move with the threat, so the target flipped every few
@@ -519,6 +664,16 @@ def _retreat_commit(fb, b, cx, d):
     b.call('haxe.ds.ObjectMap.set', hcs, wz, pb)
     b.call('haxe.ds.ObjectMap.set', hct, wz, fb.dyn(now))
     b.call('haxe.ds.ObjectMap.remove', hcr, wz)
+    # the faction's fall-back point for this area (_gather_point): other retreats / heal trips nearby join it
+    rgd = _uid('rgd')
+    fb.op('JNull', reg=jf, offset=rgd)
+    gc = b.call('logic.state.Warzone.get_centroid', 0)
+    fb.op('JNull', reg=gc, offset=rgd)
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'rgp'), fb.dyn(jf), pb)
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'rgpt'), fb.dyn(jf), fb.dyn(now))
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'rgx'), fb.dyn(jf), fb.dyn(b.field(gc, 'x')))
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'rgy'), fb.dyn(jf), fb.dyn(b.field(gc, 'y')))
+    fb.label(rgd)
     fb.op('JNotEq', a=pb, b=fb.dyn(se), offset=done)
     fb.op('Mov', dst=d, src=b.const('f64', 0))
     fb.op('JAlways', offset=done)
@@ -584,6 +739,8 @@ def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
             b = B(fb)
             d = fb.reg(cx.t('f64'))
             fb.op('Call2', dst=d, fun=tgt.findex.value, arg0=0, arg1=1)  # original key, outside any trap
+            d0 = fb.reg(cx.t('f64'))
+            fb.op('Mov', dst=d0, src=d)
 
             jf_box = [None]  # the judging faction register, set below before any heal_log call
 
@@ -629,6 +786,8 @@ def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
             jf_box[0] = jf
             sticky = fb.reg(cx.t('bool'))
             fb.op('Bool', dst=sticky, value=False)
+            lvl = fb.reg(cx.t('i32'))
+            fb.op('Int', dst=lvl, ptr=cx.code.add_i32(0).value)
             if args[0] == army_t:
                 fb.op('Mov', dst=me, src=0)
                 o = b.field(0, 'aiOrder')
@@ -690,7 +849,6 @@ def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
                 heal_log('stay', hn, mn_)
                 fb.op('JAlways', offset='ok')
                 fb.label('away')
-            lvl = fb.reg(cx.t('i32'))
             fb.op('Call4', dst=lvl, fun=unsafe, arg0=1, arg1=me, arg2=sticky, arg3=jf)
             fb.op('JSLte', a=lvl, b=b.const('i32', 0), offset='ok')
             fb.op('JSGt', a=lvl, b=b.const('i32', 1), offset='hard')
@@ -704,7 +862,9 @@ def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
             if args[0] == cx.t('logic.state.Warzone'):
                 _retreat_clear(fb, b, cx, d, heal_log)
                 _retreat_side(fb, b, cx, d)
-                _retreat_commit(fb, b, cx, d)
+            _gather_point(fb, b, cx, jf, d, d0, lvl, args[0] == army_t)
+            if args[0] == cx.t('logic.state.Warzone'):
+                _retreat_commit(fb, b, cx, d, jf)
             fb.end_try(guard)
             fb.op('Ret', ret=d)
             w = fb.build()
@@ -762,8 +922,9 @@ def _defense_extras(cx, helpers, idle, new_ids):
     fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=pk.type.value)
     b = B(fb)
     res = fb.reg(ft.ret.value)
-    # rally: a Defense of a structure within RALLY_MIN of the rally's danger D doesn't get the rallying armies (they
-    # gather first; a Defense elsewhere does: the pick-life getUnits wrapper keeps them in the list)
+    # rally: a Defense of a structure within RALLY_MIN of the rally's danger D gets only armies already within
+    # RALLY_HERE of D (the rest gather first; a Defense elsewhere gets them: the pick-life getUnits wrapper keeps
+    # them in the list)
     guard0 = fb.try_()
     rde, ale = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('ent.Entity'))
     alv, _ = _vfield(fb, b, 1, 'allyStructure')
@@ -793,6 +954,12 @@ def _defense_extras(cx, helpers, idle, new_ids):
     fb.op('JNull', reg=rdz, offset='rk_done')
     fb.op('SafeCast', dst=rde, src=rdz)
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', ale, rde), b=b.const('f64', RALLY_MIN), offset='rk_done')
+    rpe = fb.reg(cx.t('ent.Entity'))
+    fb.op('Null', dst=rpe)
+    rpv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rlyp'), fb.dyn(b.field(b.field(0, 'controller'), 'owner')))
+    fb.op('JNull', reg=rpv, offset='rk_np')
+    fb.op('SafeCast', dst=rpe, src=rpv)
+    fb.label('rk_np')
     rk = fb.reg(cx.t('i32'))
     rlm = _global_map(fb, b, cx, 'rallied')
     rq, rnow = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
@@ -803,11 +970,21 @@ def _defense_extras(cx, helpers, idle, new_ids):
     fb.op('Sub', dst=rk, a=rk, b=b.const('i32', 1))
     rv = b.call('hl.types.ArrayObj.getDyn', cand, rk)
     fb.op('JNull', reg=rv, offset='rk')
+    # an army already at D (within RALLY_HERE) may defend it; any other (walking to the rally point, or arrived
+    # there) waits for the gathered force: Fremen's Defense of Ulmara took 2 armies standing at the rally point
+    # Tabr, 285 away, and went in 2 v 6
+    rva = b.cast(rv, 'ent.Army')
+    fb.op('JNull', reg=rva, offset='rk')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', rva, rde), b=b.const('f64', RALLY_HERE), offset='rk_rm')
+    fb.op('JNull', reg=rpe, offset='rk_rp')  # at the rally point (within RALLY_HERE of D too): the gathered force
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', rva, rpe), b=b.const('f64', RALLY_AT), offset='rk_rm')
+    fb.label('rk_rp')
     rsv = b.call('haxe.ds.ObjectMap.get', rlm, rv)
     fb.op('JNull', reg=rsv, offset='rk')
     fb.op('SafeCast', dst=rq, src=rsv)
     fb.op('Sub', dst=rq, a=rnow, b=rq)
     fb.op('JSGte', a=rq, b=b.const('f64', RALLY_HOLD), offset='rk')  # not walking to the rally point (anymore)
+    fb.label('rk_rm')
     b.call('hl.types.ArrayObj.remove', cand, rv)
     fb.op('JAlways', offset='rk')
     fb.label('rk_done')
@@ -896,6 +1073,30 @@ def _pick_life_wrapper(cx, helpers, ft, fun_type, inner, tag):
                                           ('src', tag)])
     fb.op('JAlways', offset='l')
     fb.label('nwh')
+    if tag in ('siege', 'defense'):
+        # the last army of one of our Military orders in Action finishes an occupation alone (rules/release.py split
+        # the rest off): taking it empties the order (removeUnit cancels it). A main-base defense still may
+        kords = b.field(b.field(b.field(0, 'controller'), 'aiOrders'), 'orders')
+        fb.op('JNull', reg=kords, offset='nkeep')
+        if tag == 'defense':
+            fb.op('JSGte', a=prio, b=b.const('i32', 10), offset='nkeep')
+        kk, kx = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+        fb.op('Mov', dst=kk, src=b.field(kords, 'length'))
+        b.loop_head('kp')
+        fb.op('JSLte', a=kk, b=zi, offset='nkeep')
+        fb.op('Sub', dst=kk, a=kk, b=one)
+        ko = b.cast(b.call('hl.types.ArrayObj.getDyn', kords, kk), 'logic.ai.AIOrder')
+        fb.op('JNull', reg=ko, offset='kp')
+        kou = b.field(ko, 'units')
+        fb.op('JNull', reg=kou, offset='kp')
+        fb.op('JFalse', cond=b.call('hl.types.ArrayObj.contains', kou, fb.dyn(a)), offset='kp')
+        fb.op('EnumIndex', dst=kx, value=b.field(ko, 'type'))
+        fb.op('JNotEq', a=kx, b=b.const('i32', MILITARY), offset='nkeep')
+        fb.op('JSGt', a=b.field(kou, 'length'), b=one, offset='nkeep')
+        fb.op('JSLt', a=b.field(ko, 'phase'), b=b.const('i32', ACTION), offset='nkeep')
+        b.call('hl.types.ArrayObj.remove', res, fb.dyn(a))
+        fb.op('JAlways', offset='l')
+        fb.label('nkeep')
     if tag == 'siege':
         # a siege launch takes no army from another Military order of 2+ armies before Action: removeUnit cancels
         # that whole order (Fremen's 8-army Liberate of Tuonah, 117 s in Regroup, died when a prio-3 Annex of

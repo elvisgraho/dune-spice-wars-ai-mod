@@ -369,7 +369,8 @@ def build_land(cx):
 def build_home(cx, pw, land, own=False):
     """aimod_home(fac, d) -> power of the hostile armies (at war with fac, or raiders targeting it) within d of our
     land (aimod_land) that are free to strike it: not fighting, not occupying or contesting a structure. With armies
-    of ours d away, these reach our land first (same speed).
+    of ours d away, these reach our land first (same speed). A total below HOME_MIN_H is 0. A home guard (where it will stand: position, or a mover's
+    path end, on its own faction's zone and > OUT_R from our land) counts OUT_W.
     own=True: aimod_homeown(fac, d, exclude) -> power of our combat armies (no harvesters) within d of our land that
     are not in `exclude` (an order's units): who is home before them."""
     extra = [cx.t('hl.types.ArrayObj')] if own else []
@@ -385,6 +386,24 @@ def build_home(cx, pw, land, own=False):
         state = _state(fb, b, cx)
         arr = b.field(state, 'armies')
         alen = b.field(arr, 'length')
+        # home-guard test of movers (below): the world for the path end's zone, our structures for its distance
+        world = fb.reg(cx.t('world.World'))
+        fb.op('Null', dst=world)
+        gs = fb.reg(cx.t('$Game'))
+        fb.op('GetGlobal', dst=gs, **{'global': cx.global_of('$Game')})
+        fb.op('JNull', reg=gs, offset='nowd')
+        gi = b.field(gs, 'inst')
+        fb.op('JNull', reg=gi, offset='nowd')
+        fb.op('Mov', dst=world, src=b.field(gi, 'world'))
+        fb.label('nowd')
+        ours = b.cast(fb.get(0, 'structures', 'array'), 'hl.types.ArrayObj')
+        on, j = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+        fb.op('Mov', dst=on, src=b.const('i32', 0))
+        fb.op('JNull', reg=ours, offset='noours')
+        fb.op('Mov', dst=on, src=b.field(ours, 'length'))
+        fb.label('noours')
+        qx, qy = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+        out2 = b.const('f64', OUT_R * OUT_R)
     x = _army_loop(fb, b, arr, alen, i, 'loop', 'end')
     if own:
         fb.op('JNotNull', reg=b.field(x, 'harvestComponent'), offset='loop')
@@ -408,21 +427,60 @@ def build_home(cx, pw, land, own=False):
     fb.op('JSGt', a=d, b=1, offset='loop')
     fb.op('Call1', dst=p, fun=pw, arg0=x)
     if not own:
-        # a home guard (standing still on its own faction's land, > OUT_R from our land) counts OUT_W, as in
-        # aimod_threat for a point on our land: it has to walk in first. At full weight two neighbours' guards held each other: Smugglers and
-        # Atreides each read need > their whole army from the other's stack at Gun-dah / Annarekh (`hold` 67-69%)
-        hg = _uid('hg')
-        fb.op('JNull', reg=xo, offset=hg)  # a raider (no owner) on a neutral zone (no owner) is no home guard
+        # a home guard counts OUT_W, as in aimod_threat for a point on our land: it has to walk in first. At full
+        # weight two neighbours' guards held each other: Smugglers and Atreides each read need > their whole army from
+        # the other's stack at Gun-dah / Annarekh (`hold` 67-69%). Judged where the army will stand: a stander at its
+        # position, a mover at its path end (as the rally's standoff test). Guard = that point on its own faction's
+        # zone and > OUT_R from every structure on our land. A vanilla Patrol inside Atreides land (3 of 8 armies
+        # moving) read full and cancelled Fremen's Yelat pillage at 0% (`home` H 237k vs M 126k); they never came.
+        # A mover heading for our border (path end within OUT_R) or off its land, or with no path end, stays full.
+        hg, mv, half = _uid('hg'), _uid('hgm'), _uid('hgh')
+        fb.op('JNull', reg=xo, offset=hg)  # a raider (no owner) is no home guard
+        fb.op('JTrue', cond=b.call('ent.Unit.isMoving', x), offset=mv)
         xz = b.call('ent.Entity.get_zone', x)
         fb.op('JNull', reg=xz, offset=hg)
         fb.op('JNotEq', a=b.field(xz, 'owner'), b=xo, offset=hg)
-        fb.op('JTrue', cond=b.call('ent.Unit.isMoving', x), offset=hg)
         fb.op('JSLte', a=d, b=b.const('f64', OUT_R), offset=hg)  # right at our structures: full, as in aimod_threat
+        fb.op('JAlways', offset=half)
+        fb.label(mv)
+        fb.op('JNull', reg=world, offset=hg)
+        pe = b.call('ent.MobileEntity.getCurrentPathEnd', x)
+        fb.op('JNull', reg=pe, offset=hg)
+        ex, ey = b.field(pe, 'x'), b.field(pe, 'y')
+        ez = b.call('world.World.getZoneAt', world, ex, ey)
+        fb.op('JNull', reg=ez, offset=hg)
+        fb.op('JNotEq', a=b.field(ez, 'owner'), b=xo, offset=hg)
+        # the path end within OUT_R of a structure on our land: walking up to our border, full
+        fb.op('JNull', reg=ours, offset=half)
+        fb.op('Mov', dst=j, src=b.const('i32', 0))
+        ol = _uid('hgo')
+        b.loop_head(ol)
+        fb.op('JSGte', a=j, b=on, offset=half)
+        s = b.cast(b.call('hl.types.ArrayObj.getDyn', ours, j), 'ent.Entity')
+        fb.op('Incr', dst=j)
+        fb.op('JNull', reg=s, offset=ol)
+        sz = b.call('ent.Entity.get_zone', s)
+        fb.op('JNull', reg=sz, offset=ol)
+        fb.op('JNotEq', a=b.field(sz, 'owner'), b=0, offset=ol)  # our land only (not UWHeadquarters in others' zones)
+        fb.op('Sub', dst=qx, a=ex, b=b.field(s, 'posx'))
+        fb.op('Sub', dst=qy, a=ey, b=b.field(s, 'posy'))
+        fb.op('Mul', dst=qx, a=qx, b=qx)
+        fb.op('Mul', dst=qy, a=qy, b=qy)
+        fb.op('Add', dst=qx, a=qx, b=qy)
+        fb.op('JSLte', a=qx, b=out2, offset=hg)
+        fb.op('JAlways', offset=ol)
+        fb.label(half)
         fb.op('Mul', dst=p, a=p, b=_ratio(fb, b, OUT_W))
         fb.label(hg)
     fb.op('Add', dst=tot, a=tot, b=p)
     fb.op('JAlways', offset='loop')
     fb.label('end')
+    if not own:
+        # below HOME_MIN_H no strike: a 20k raider band near Grimwan with no army of ours home (m 0) aborted Fremen's
+        # pillage at 10% (`home` h20k m0k, 17:21), Smugglers' Fondah / Grimwan likewise (18:24, 23:06)
+        fb.op('JSGte', a=tot, b=b.const('f64', HOME_MIN_H), offset='ret')
+        fb.op('Mov', dst=tot, src=b.const('f64', 0))
+        fb.label('ret')
     fb.op('Ret', ret=tot)
     return fb.build()
 
@@ -678,7 +736,8 @@ def build_defend(cx, sieged, helpers, threat, neutral, own, cover, terrain):
     within HOME_RING_R of one of fac's active main bases besieged / occupied by one (our home ring: a player groups
     up to stop it; Harkonnen annexed Gurlab while Smugglers annexed Zadak 177 from Carthag), else null. Renegades
     taking a village over count like a faction (_renegades_at); other raider sieges are the contest hunt's.
-    Hopeless ones are skipped: our armies within GATHER_R (+ our cover) x terrain below DEF_HOPE_IN x (threat +
+    Hopeless ones are skipped (never while an order of ours defending it / aimed within GATHER_R of it has an army in
+    transit, e.g. a worm ride: those read 0): our armies within GATHER_R (+ our cover) x terrain below DEF_HOPE_IN x (threat +
     other raiders + enemy cover) there, left at DEF_HOPE_OUT (map `dhl` structure -> when last hopeless, 30 s, log `dhope`): a lost
     cause must not freeze every offensive (Atreides at Adnih / Tuonah vs 600-900k Fremen sat 4.5 min doing nothing).
     Non-null = defensive posture: no new offensives (vanilla siege actions, chases) until it is resolved."""
@@ -715,6 +774,43 @@ def build_defend(cx, sieged, helpers, threat, neutral, own, cover, terrain):
         fb.label(gok)
         fb.op('Bool', dst=hop, value=False)
         g = fb.try_()
+        # reinforcements in transit (worm ride, shuttle: _army_loop skips them, they read 0 power): an order of ours
+        # defending s, or aimed within GATHER_R of it, with an army in transit -> not hopeless while they ride (Fremen
+        # at Sandmur: 4 armies on a worm to its Defense, judged hopeless at 107k vs 277k, the Defense stopped mid-ride
+        # by dstop, and an Annex of Burtar took the 2 armies left that would have followed)
+        tro = b.field(b.field(b.field(0, 'aiController'), 'aiOrders'), 'orders')
+        tdone, tol, tul = _uid('htd'), _uid('hto'), _uid('htu')
+        fb.op('JNull', reg=tro, offset=tdone)
+        tk, tj, tix = fb.reg(cx.t('i32')), fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+        tte = fb.reg(cx.t('ent.Entity'))
+        fb.op('Mov', dst=tk, src=b.field(tro, 'length'))
+        b.loop_head(tol)
+        fb.op('JSLte', a=tk, b=b.const('i32', 0), offset=tdone)
+        fb.op('Sub', dst=tk, a=tk, b=b.const('i32', 1))
+        to_ = b.cast(b.call('hl.types.ArrayObj.getDyn', tro, tk), 'logic.ai.AIOrder')
+        fb.op('JNull', reg=to_, offset=tol)
+        tun = b.field(to_, 'units')
+        fb.op('JNull', reg=tun, offset=tol)
+        tot = b.field(to_, 'type')
+        fb.op('EnumIndex', dst=tix, value=tot)
+        tnd, tchk = _uid('htn'), _uid('htc')
+        fb.op('JNotEq', a=tix, b=b.const('i32', DEFENSE), offset=tnd)
+        fb.op('EnumField', dst=tte, value=tot, construct=DEFENSE, field=0)
+        fb.op('JEq', a=tte, b=he, offset=tchk)
+        fb.label(tnd)
+        fb.op('Mov', dst=tte, src=b.call('logic.ai.AIOrder.getTarget', to_))
+        fb.op('JNull', reg=tte, offset=tol)
+        fb.op('JSGt', a=b.call('ent.Entity.getDistTo', tte, he), b=b.const('f64', GATHER_R), offset=tol)
+        fb.label(tchk)
+        fb.op('Mov', dst=tj, src=b.const('i32', 0))
+        b.loop_head(tul)
+        fb.op('JSGte', a=tj, b=b.field(tun, 'length'), offset=tol)
+        tu = b.cast(b.call('hl.types.ArrayObj.getDyn', tun, tj), 'ent.Army')
+        fb.op('Incr', dst=tj)
+        fb.op('JNull', reg=tu, offset=tul)
+        fb.op('JTrue', cond=b.call('ent.Entity.isTransported', tu), offset=lout)
+        fb.op('JAlways', offset=tul)
+        fb.label(tdone)
         loc = b.const('f64', LOCAL)
         fb.op('Call3', dst=hh, fun=threat, arg0=0, arg1=he, arg2=loc)
         fb.op('Call3', dst=hq, fun=neutral, arg0=0, arg1=he, arg2=loc)

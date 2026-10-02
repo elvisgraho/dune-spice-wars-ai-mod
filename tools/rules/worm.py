@@ -6,10 +6,11 @@ deployed F_Harvester near Haththah (zone worm activity 3) vanished together. `Sa
 `Unit.targettedByWorm`; `updateTargeting` re-checks its target every update and drops one that is no longer
 `canBeWormTarget` (off sand, near a sietch), so reaching rock is the escape.
 
-Every WORM_T s per faction: each of our armies with `isWormTarget()` and `isOnSand()` (at most every WFLEE_T s per
+Every WORM_T s per faction: each of our armies with `isWormTarget()` and `isOnSand()`, outside a protected zone (at most every WFLEE_T s per
 army): the AI order holding it is stopped (Cancel: a hunt / raid / siege would walk it back onto the sand), and it and
 the order's other armies on sand within WORM_NEAR of the worm each get `doAction("Move", {actionTarget:
-EWorldPosition})` to the nearest rock point (`World.isSandAt`, rings of WORM_STEP up to WORM_R, WORM_DIRS directions;
+EWorldPosition})` to the nearest safe point: rock (`World.isSandAt`) or sand in a zone the worm can't strike (_no_worm_zone: worm activity
+0 or Zone_NoSandworm, e.g. next to a Decoy Thumper) (rings of WORM_STEP up to WORM_R, WORM_DIRS directions;
 none found: WORM_R straight away from the worm). Moved armies go into map `wfled`: aimod_free refuses them for
 WORM_HOLD s (no hunt / raid relaunch onto the same sand; a moved harvester's zone is stamped in the faction memory so vanilla's team re-route picks another
 field), and aimod_wormheld keeps them out of vanilla's Resupply and
@@ -72,6 +73,25 @@ def _do_on(fb, b, cx, unit, action, target, fac):
     return res
 
 
+def _no_worm_zone(fb, b, cx, z, yes):
+    """Jump to `yes` when a sandworm can't strike in zone z (vanilla canBeWormTarget's environment test):
+    getCurrentWormActivity <= 0 (a main-base zone) or attribute Zone_NoSandworm (ZONE_NO_WORM: the regions next to
+    a Decoy Thumper operation). Falls through otherwise (z null: falls through)."""
+    no = _uid('nwz')
+    fb.op('JNull', reg=z, offset=no)
+    fb.op('JSLte', a=b.call('ent.Zone.getCurrentWormActivity', z), b=b.const('f64', 0), offset=yes)
+    has = cx.fn('ent.Object.hasAttribute')
+    hat = [a.value for a in cx.code.types[has.type.value].definition.args]
+    zo, n2, n3 = fb.reg(hat[0]), fb.reg(hat[2]), fb.reg(hat[3])
+    fb.op('Mov', dst=zo, src=z)
+    fb.op('Null', dst=n2)
+    fb.op('Null', dst=n3)
+    hr = fb.reg(cx.t('bool'))
+    fb.op('Call4', dst=hr, fun=has.findex.value, arg0=zo, arg1=b.const('i32', ZONE_NO_WORM), arg2=n2, arg3=n3)
+    fb.op('JTrue', cond=hr, offset=yes)
+    fb.label(no)
+
+
 def build_worm_flee(cx, helpers):
     """aimod_wormflee(mil, dt) (see module doc)."""
     fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
@@ -128,6 +148,7 @@ def build_worm_flee(cx, helpers):
     a = _army_loop(fb, b, my_armies, mlen, i, 'army', 'end')
     fb.op('JFalse', cond=b.call('ent.Unit.isWormTarget', a), offset='army')
     fb.op('JFalse', cond=b.call('ent.Entity.isOnSand', a), offset='army')
+    _no_worm_zone(fb, b, cx, b.call('ent.Entity.get_zone', a), 'army')  # protected: vanilla drops the target
     moved_now(a, 'army')
     _throttle(fb, b, cx, 'wflee', a, WFLEE_T, 'army')
     worm = b.field(a, 'targettedByWorm')
@@ -165,6 +186,7 @@ def build_worm_flee(cx, helpers):
         fb.op('Mul', dst=q, a=r, b=s)
         fb.op('Add', dst=py, a=ay, b=q)
         fb.op('JFalse', cond=b.call('world.WorldBase.isSandAt', world, px, py), offset='go')
+        _no_worm_zone(fb, b, cx, b.call('world.World.getZoneAt', world, px, py), 'go')  # thumper-protected sand
     fb.op('Add', dst=r, a=r, b=step)
     fb.op('JAlways', offset='ring')
     # no rock in reach: straight away from the worm (or stay if it is unknown)
@@ -236,7 +258,8 @@ def build_worm_flee(cx, helpers):
 def build_wormheld(cx):
     """aimod_wormheld(army) -> true while worm-flee moved it less than WORM_HOLD s ago (map `wfled`) and a sandworm
     (State.worms) is within WORM_NEAR of it: it waits on the rock instead of being re-ordered over the sand; also
-    while it walks to a rally point (map `rallied` within RALLY_HOLD, rules/rally.py)."""
+    while it walks to a rally point (map `rallied` within RALLY_HOLD, rules/rally.py). Never in a zone the worm can't
+    strike (_no_worm_zone)."""
     fb = FB(cx, [cx.t('ent.Entity')], cx.t('bool'))
     b = B(fb)
     ok = fb.reg(cx.t('bool'))
@@ -254,6 +277,9 @@ def build_wormheld(cx):
     fb.op('Bool', dst=ok, value=True)
     fb.op('JAlways', offset='end')
     fb.label('norly')
+    # in a zone the worm can't strike (thumper-protected neighbour, main-base zone): nothing to wait for (Fremen
+    # stood 60+ s at the edge of Aeg-wahad's Decoy Thumper region, out of Resupply / Defense)
+    _no_worm_zone(fb, b, cx, b.call('ent.Entity.get_zone', 0), 'end')
     wv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'wfled'), fb.dyn(0))
     fb.op('JNull', reg=wv, offset='end')
     fb.op('SafeCast', dst=q, src=wv)

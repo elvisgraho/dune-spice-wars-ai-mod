@@ -916,6 +916,7 @@ def build_scoring(cx, new_ids, helpers):
       full, re-picked the same village every ~2.5 s (Fremen Pelmah x39). Logs `space` why retry (10 s throttle);
     - stuck: FAIL_N launches on it within FAIL_WIN that created no order while an army of ours was free to go (map
       `afu` blocked-until, set by the launch wrapper) -> dropped for FAIL_BLOCK..FAIL_MAX s, logs `space` why stuck;
+    - DMZ (rules/dmz.py, aimod_dmzv): Pillage drops a DMZ village, its Annex / Liberate score x DMZ_W;
     - bunker preference: a positive score x BUNKER_W when the structure is within COVER_R of one of our structures
       on our land (their turrets cover each other) or within BUNKER_R of our main base.
     Original scores on any error."""
@@ -997,9 +998,47 @@ def build_scoring(cx, new_ids, helpers):
     fb.op('JSGte', a=gds, b=b.const('i32', 1), offset='tg')  # vanilla targets it anyway
     fb.op('Call2', dst=gq, fun=helpers['tension'], arg0=1, arg1=gse)
     fb.op('JSGte', a=gq, b=_ratio(fb, b, TEN_GATE), offset='tg')
+    tdk = fb.reg(cx.t('bool'))  # a DMZ village (its owner listed for the DMZ): kept, the DMZ step below decides
+    fb.op('Call2', dst=tdk, fun=helpers['dmzv'], arg0=1, arg1=gst)
+    fb.op('JTrue', cond=tdk, offset='tg')
     b.call('haxe.ds.ObjectMap.remove', res, fb.dyn(gse))
     fb.op('JAlways', offset='tg')
     fb.label('tgdone')
+    # DMZ (rules/dmz.py): a border village of an at-war neighbour holding >= DMZ_WAR of them is taken, not burnt:
+    # no Pillage target; its Annex / Liberate score x DMZ_W
+    dmode = fb.reg(cx.t('i32'))  # 0 other, 1 pillage, 2 annex / liberate
+    fb.op('Int', dst=dmode, ptr=cx.code.add_i32(1).value)
+    fb.op('JEq', a=b.call('String.__compare', 2, fb.dyn(fb.string('Pillage'))), b=b.const('i32', 0), offset='dmk')
+    fb.op('Int', dst=dmode, ptr=cx.code.add_i32(2).value)
+    fb.op('JEq', a=b.call('String.__compare', 2, fb.dyn(fb.string('Annex'))), b=b.const('i32', 0), offset='dmk')
+    fb.op('JEq', a=b.call('String.__compare', 2, fb.dyn(fb.string('Liberate'))), b=b.const('i32', 0), offset='dmk')
+    fb.op('JAlways', offset='dmdone')
+    fb.label('dmk')
+    di = fb.reg(cx.t('i32'))
+    dok = fb.reg(cx.t('bool'))
+    dsc = fb.reg(cx.t('f64'))
+    dse = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=di, src=b.const('i32', 0))
+    b.loop_head('dml')
+    fb.op('JSGte', a=di, b=n, offset='dmdone')
+    dst_ = b.cast(b.call('hl.types.ArrayObj.getDyn', 0, di), 'ent.Structure')
+    fb.op('Incr', dst=di)
+    fb.op('JNull', reg=dst_, offset='dml')
+    fb.op('Call2', dst=dok, fun=helpers['dmzv'], arg0=1, arg1=dst_)
+    fb.op('JFalse', cond=dok, offset='dml')
+    fb.op('Mov', dst=dse, src=dst_)
+    fb.op('JNotEq', a=dmode, b=b.const('i32', 1), offset='dmw')
+    b.call('haxe.ds.ObjectMap.remove', res, fb.dyn(dse))
+    fb.op('JAlways', offset='dml')
+    fb.label('dmw')
+    dv0 = b.call('haxe.ds.ObjectMap.get', res, fb.dyn(dse))
+    fb.op('JNull', reg=dv0, offset='dml')
+    fb.op('SafeCast', dst=dsc, src=dv0)
+    fb.op('JSLte', a=dsc, b=b.const('f64', 0), offset='dml')
+    fb.op('Mul', dst=dsc, a=dsc, b=_ratio(fb, b, DMZ_W))
+    b.call('haxe.ds.ObjectMap.set', res, fb.dyn(dse), fb.dyn(dsc))
+    fb.op('JAlways', offset='dml')
+    fb.label('dmdone')
     mine = b.cast(fb.get(1, 'structures', 'array'), 'hl.types.ArrayObj')
     fb.op('JNull', reg=mine, offset='end')
     mn = b.field(mine, 'length')
@@ -1129,9 +1168,21 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     # 1. defensive posture
     dfs = fb.reg(st_t)
     fb.op('Call1', dst=dfs, fun=defend, arg0=fac)
-    fb.op('JNull', reg=dfs, offset='bunker')
+    fb.op('JNull', reg=dfs, offset='rallyg')
     fb.op('Mov', dst=near, src=dfs)
     fb.op('Mov', dst=why, src=fb.string('defend'))
+    fb.op('Bool', dst=blocked, value=True)
+    fb.op('JAlways', offset='done')
+    # 1a. a rally running (map `rly`, rules/rally.py: the enemy is at or heading to D, not yet besieging): the armies
+    # gather there, no siege takes them away (Fremen's Annex of Sabbat took 3 armies from the rally point while
+    # Atreides walked to Grim-po)
+    fb.label('rallyg')
+    rlv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rly'), fb.dyn(fac))
+    fb.op('JNull', reg=rlv, offset='bunker')
+    rls = b.cast(rlv, 'ent.Structure')
+    fb.op('JNull', reg=rls, offset='bunker')
+    fb.op('Mov', dst=near, src=rls)
+    fb.op('Mov', dst=why, src=fb.string('rally'))
     fb.op('Bool', dst=blocked, value=True)
     fb.op('JAlways', offset='done')
 
@@ -1578,11 +1629,16 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
     reached, so a village gets 2 armies while more sit idle next to it: the militia fight drags on (~50 s), drains
     supply the whole time and can kill one of the two (Fremen on Ashdak, 3 attempts, 18 bunker redirects, none taken).
     1. neutral target (targetFaction null): requiredPowerBalance raised to NEUTRAL_REQ, except in the opening (we own
-       fewer than EARLY_VILLAGES villages: vanilla's EARLY_REQ, so the starting armies take the first villages);
+       fewer than EARLY_VILLAGES villages: vanilla's EARLY_REQ, so the starting armies take the first villages); a
+       sietch or a renegade base: ENTER;
+    3. a sietch / renegade base: fewer than SIETCH_ARMIES / RENEGADE_ARMIES armies (its garrison) -> empty pick,
+       logs `sfloor`; a simulated pick only when we own fewer armies than that (vanilla then recruits instead of
+       waiting);
     2. after the pick, the nearest other considered armies (vanilla getUnits idle list: life/supply >= 90%, not in
        an order of the action's priority or higher, so Discovery/Patrol armies are taken as vanilla does) within
        JOIN_R of the target with supok(a, land(target), SUP_ENTER) are appended one by one until our power there
-       (+ our turret cover) reaches JOIN_TO x (at-war threat within LOCAL + enemy turret cover + militia) / terrain:
+       (+ our turret cover) reaches JOIN_TO x (at-war threat within LOCAL + enemy turret cover + militia) / terrain
+       (a sietch / renegade base: and the army floor of 3.):
        a short militia fight, while the rest stays free for parallel captures (joining everyone sent 8 armies to a
        33k militia at match start and made captures sequential).
     Simulated picks (simulatePendingArmies: counts armies in recruitment) pass through unchanged. Logs `join` when
@@ -1621,13 +1677,16 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
           offset='req_early')
     fb.op('Mov', dst=enter, src=_ratio(fb, b, EARLY_REQ))
     fb.label('req_early')
-    # a renegade base (Dismantle): its garrison and spawns make a fight at NEUTRAL_REQ a coin toss (Atreides lost
-    # Dismantles at est 1.26 / 1.33, won at 1.64): ENTER, as at the target (siege-engage)
+    # a renegade base (Dismantle) or a sietch (PillageSietch): its garrison and spawns make a fight at NEUTRAL_REQ a
+    # coin toss (Atreides lost Dismantles at est 1.26 / 1.33, won at 1.64; Smugglers' whole army, 8 armies at est
+    # 1.32, lost Bur-Al'ur's sietch): ENTER, as at the target (siege-engage)
     rb0, _ = _vfield(fb, b, 1, 'enemyStructure')
     fb.op('JNull', reg=rb0, offset='req_rb')
     rbs = b.cast(fb.dyn(rb0), 'ent.Structure')
     fb.op('JNull', reg=rbs, offset='req_rb')
+    fb.op('JTrue', cond=b.call('ent.Structure.isSietch', rbs), offset='req_strong')
     fb.op('JFalse', cond=b.call('ent.Structure.isRenegadeBase', rbs), offset='req_rb')
+    fb.label('req_strong')
     fb.op('Mov', dst=enter, src=_ratio(fb, b, ENTER))
     fb.label('req_rb')
     rq, ri = _vfield(fb, b, 1, 'requiredPowerBalance')
@@ -1743,11 +1802,23 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
     fb.op('Add', dst=m, a=m, b=p)
     fb.op('JAlways', offset='sl')
     fb.label('sdone')
+    # a sietch / renegade base: also until the army floor (3.)
+    jmin = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=jmin, src=b.const('i32', 0))
+    fb.op('JNull', reg=st, offset='jmin_done')
+    fb.op('Mov', dst=jmin, src=b.const('i32', SIETCH_ARMIES))
+    fb.op('JTrue', cond=b.call('ent.Structure.isSietch', st), offset='jmin_done')
+    fb.op('Mov', dst=jmin, src=b.const('i32', RENEGADE_ARMIES))
+    fb.op('JTrue', cond=b.call('ent.Structure.isRenegadeBase', st), offset='jmin_done')
+    fb.op('Mov', dst=jmin, src=b.const('i32', 0))
+    fb.label('jmin_done')
     # add the nearest eligible idle army until we have q
     best = fb.reg(cx.t('ent.Army'))
     big = b.const('f64', 1 << 30)
     b.loop_head('jo')
-    fb.op('JSGte', a=m, b=q, offset='jdone')
+    fb.op('JSLt', a=m, b=q, offset='jgo')
+    fb.op('JSGte', a=b.field(res, 'length'), b=jmin, offset='jdone')
+    fb.label('jgo')
     fb.op('Null', dst=best)
     fb.op('Mov', dst=bd, src=big)
     a = _army_loop(fb, b, cand, cn, i, 'jl', 'jpick')
@@ -1776,6 +1847,55 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
                                          ('req%', req), ('H', h), ('M', m), ('tf%', tf)])
     fb.label('done')
     fb.end_try(guard2)
+    # 3. army floor: a sietch / renegade base always spawns its whole garrison (SIETCH_ARMIES 8 / RENEGADE_ARMIES 10
+    # defenders); fewer armies than that are each fought by more than one (Smugglers' 8 armies, half of them 20k
+    # Sneaks / Demos, lost Bur-Al'ur's sietch at est 1.32): a short pick is emptied (vanilla: not enough armies)
+    # Simulated picks (tryArmyAction after an empty real pick: all our armies + recruits): non-empty = NotEnoughArmies
+    # (wait for busy armies), empty = ArmyNotStrongEnough (vanilla requests recruitment). A short simulated pick stays
+    # only when we own at least the floor's count of armies, else it is emptied too: with fewer armies than the
+    # garrison, waiting would never end and nothing would be recruited
+    guard3 = fb.try_()
+    fb.op('JNull', reg=res, offset='fl_done')
+    fes, _ = _vfield(fb, b, 1, 'enemyStructure')
+    fb.op('JNull', reg=fes, offset='fl_done')
+    fst = b.cast(fb.dyn(fes), 'ent.Structure')
+    fb.op('JNull', reg=fst, offset='fl_done')
+    fmin = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=fmin, src=b.const('i32', SIETCH_ARMIES))
+    fb.op('JTrue', cond=b.call('ent.Structure.isSietch', fst), offset='fl_chk')
+    fb.op('JFalse', cond=b.call('ent.Structure.isRenegadeBase', fst), offset='fl_done')
+    fb.op('Mov', dst=fmin, src=b.const('i32', RENEGADE_ARMIES))
+    fb.label('fl_chk')
+    fn = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=fn, src=b.field(res, 'length'))
+    fb.op('JSLte', a=fn, b=b.const('i32', 0), offset='fl_done')
+    fb.op('JSGte', a=fn, b=fmin, offset='fl_done')
+    fb.op('JFalse', cond=sim, offset='fl_empty')
+    fcu, _ = _vfield(fb, b, 1, 'consideredUnits')
+    fb.op('JNull', reg=fcu, offset='fl_empty')
+    fca = fb.reg(cx.t('hl.types.ArrayObj'))
+    fb.op('SafeCast', dst=fca, src=fb.dyn(fcu))
+    fb.op('JNull', reg=fca, offset='fl_empty')
+    fcn, fci = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))  # fighting armies we own (the list holds harvesters too)
+    fb.op('Mov', dst=fcn, src=b.const('i32', 0))
+    fa = _army_loop(fb, b, fca, b.field(fca, 'length'), fci, 'fl_c', 'fl_cd')
+    fb.op('JNotNull', reg=b.field(fa, 'harvestComponent'), offset='fl_c')
+    fb.op('Incr', dst=fcn)
+    fb.op('JAlways', offset='fl_c')
+    fb.label('fl_cd')
+    fb.op('JSGte', a=fcn, b=fmin, offset='fl_done')
+    fb.label('fl_empty')
+    b.loop_head('fl_pop')
+    fb.op('JSLte', a=b.field(res, 'length'), b=b.const('i32', 0), offset='fl_log')
+    b.call('hl.types.ArrayObj.pop', res)
+    fb.op('JAlways', offset='fl_pop')
+    fb.label('fl_log')
+    ffac = b.field(b.field(0, 'controller'), 'owner')
+    fb.op('JNull', reg=ffac, offset='fl_done')
+    _throttle(fb, b, cx, 'sfloor', fst, PICK_LOG_T, 'fl_done')
+    _log_ev(fb, b, cx, helpers, 'sfloor', [('f', fb.get(ffac, 'kind')), ('tgt', fst), ('n', fn), ('min', fmin)])
+    fb.label('fl_done')
+    fb.end_try(guard3)
     fb.op('Ret', ret=res)
     w = fb.build()
     new_ids.add(w)
@@ -1860,8 +1980,10 @@ def build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain, neutral
     fb.op('Mov', dst=req, src=enter)
     fb.op('JNotNull', reg=b.call('ent.Entity.get_owner', se), offset='owned')
     fb.op('Mov', dst=req, src=nreq)
+    fb.op('JTrue', cond=b.call('ent.Structure.isSietch', s), offset='strong')
     fb.op('JFalse', cond=b.call('ent.Structure.isRenegadeBase', s), offset='nrb')
-    fb.op('Mov', dst=req, src=enter)  # a renegade base: ENTER, as at launch (siege-join)
+    fb.label('strong')
+    fb.op('Mov', dst=req, src=enter)  # a renegade base or a sietch: ENTER, as at launch (siege-join)
     fb.op('JAlways', offset='owned')
     fb.label('nrb')
     fb.op('JSGte', a=b.field(b.call('ent.Faction.getVillages', fac), 'length'), b=b.const('i32', EARLY_VILLAGES),
@@ -1932,9 +2054,9 @@ def build_discovery(cx, helpers, threat, pw, terrain, land, supok, new_ids):
     fb.op('JAlways', offset='done')
     fb.label('dfresh')
     # launched on this event less than DISC_RELAUNCH s ago: its trip ended at once (vanilla re-picks it every tick)
-    dl = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'dlaunch'), fb.dyn(tgt))
-    fb.op('JNull', reg=dl, offset='dlok')
-    fb.op('SafeCast', dst=m0, src=dl)
+    dlv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'dlaunch'), fb.dyn(tgt))  # not `dl` (the f64 below)
+    fb.op('JNull', reg=dlv, offset='dlok')
+    fb.op('SafeCast', dst=m0, src=dlv)
     fb.op('Sub', dst=m0, a=b.field(_state(fb, b, cx), 'time'), b=m0)
     fb.op('JSGte', a=m0, b=b.const('f64', DISC_RELAUNCH), offset='dlok')
     fb.op('Bool', dst=blocked, value=True)

@@ -76,7 +76,7 @@ Details and function ids: [docs/REVERSING.md](docs/REVERSING.md).
 **Our layer** (testbed patch `ai-log`: tools/inject.py + aware.py + behave.py + rules/)
 - Logging: wrapper functions appended, existing `Call` ops redirected; events in `game.log` as `AIMOD {…}`, summarized by `mod log` (`wzb`: every fight's retreat balance every 5 s).
 - `aw` scan (every 10 s per AI faction): the world model of at-war armies, base of every army-aware rule.
-- Rules (goal order AI-POLICY §5a; what each decides and its thresholds: AI-POLICY; hooks and ids: REVERSING): `strat` director, `hunt` (chases, contests, neutral raiders), `rally`, `raid`, siege launch gate / sizing / `siege-join` / `siege-engage` / `retry` / `stuck`, Annex value, `discovery-gate`, `safe-heal`, `retreat-terrain`, `strand`, `undeploy`, `ability-gate`, `memory`, `worm-flee`, `desert-step`, `gather`, `siege-pos`, `keep-capture`, `unstick`, `tension`, `peace-gate`, `treaty-scope`, `force-peace`, `wind-fallback`, `patrol-gate`, `turret-steer`, `uhq` (Smugglers Underworld HQ cap / placement / extensions), `busy-siege` (vanilla crash fix). "Our land" = our structures on zones we own. State between calls: added global ObjectMaps.
+- Rules (goal order AI-POLICY §5a; what each decides and its thresholds: AI-POLICY; hooks and ids: REVERSING): `strat` director, `hunt` (chases, contests, neutral raiders), `rally`, `raid`, siege launch gate / sizing / `siege-join` / `siege-engage` / `retry` / `stuck`, Annex value, `discovery-gate`, `safe-heal`, `retreat-terrain`, `strand`, `undeploy`, `ability-gate`, `memory`, `worm-flee`, `desert-step`, `gather`, `siege-pos`, `keep-capture`, `unstick`, `release`, `tension`, `peace-gate`, `treaty-scope`, `force-peace`, `wind-fallback`, `patrol-gate`, `turret-steer`, `uhq` (Smugglers Underworld HQ cap / placement / extensions), `busy-siege` (vanilla crash fix). "Our land" = our structures on zones we own. State between calls: added global ObjectMaps.
 
 ## Documentation rule (mandatory)
 
@@ -87,7 +87,7 @@ Docs are a reference for a fresh agent: they describe the **current** state, not
 
 ## Layout
 
-- `tools/` `mod.py` CLI · `boot.py` bytecode patching · `inject.py` decision logging · `aware.py` enemy army scan · `behave.py` wiring of the AI rules · `rules/` the rules (`common` thresholds + bytecode helpers, `world` shared queries, `heal`, `hunt`, `siege`, `raid`, `strat`, `strand`, `memory`, `deploy`, `peace`, `build`, `uhq`) · `aireport.py` log summary · `pak.py` Heaps archives · `hxser.py` Haxe serializer
+- `tools/` `mod.py` CLI · `bcheck.py` offline lint of appended functions · `boot.py` bytecode patching · `inject.py` decision logging · `aware.py` enemy army scan · `behave.py` wiring of the AI rules · `rules/` the rules (`common` thresholds + bytecode helpers, `world` shared queries, `heal`, `hunt`, `siege`, `raid`, `strat`, `strand`, `memory`, `deploy`, `peace`, `build`, `uhq`, `release` spare armies off occupations, `dmz` border villages taken not burnt / truce break, `sdiag` siege diagnostics) · `aireport.py` log summary · `pak.py` Heaps archives · `hxser.py` Haxe serializer
 - `patches/data.json` data changes (checked old→new) · `patches/bytecode.json` code patch registry
 - `testbed/scenario.json` test scenario · `testbed/ailog.json` extra traced functions · `validation/` test-case records
 - Generated, git-ignored: `.venv/ work/ dist/ backup/`
@@ -97,7 +97,7 @@ Docs are a reference for a fresh agent: they describe the **current** state, not
 1. `testbed on`, reproduce the weakness (L marks), read it with `mod log`.
 2. Check the idea against [docs/AI-POLICY.md](docs/AI-POLICY.md). Locate code with `find` / `dec`.
 3. Data first (`patches/data.json`); code only when data can't express it (a `tools/rules/` rule wired in `tools/behave.py`, or a locator in `tools/boot.py`, registered in `patches/bytecode.json`).
-4. Offline check (both boot files patch, re-parse, new functions decompile correctly), `testbed on`, run, `mod log` (`HEALTH OK` + the target metric).
+4. Offline check (both boot files patch and re-parse; `.venv\Scripts\python.exe tools\bcheck.py`: register-kind mismatches and trap leaks in appended functions, 3 known harmless Null<Bool> hits), `testbed on`, launch **through Steam** (a direct `D4X.exe` run fails on every testbed build), `mod log` (`HEALTH OK` + the target metric).
 5. Release: `testbed off`, then `install`.
 
 ## Code structure

@@ -10,7 +10,8 @@ Every RALLY_T s per faction: the danger structure D = our structure on our land 
 on their own faction's zone there > 0: someone at it or heading there, not a standoff at the border) that our defenders within RALLY_R (non-harvester armies not on a Military mission) plus our
 turret cover there, x terrain, can't beat by ENTER (enough: nothing to do, the contest hunt / vanilla Defense fight
 it with everyone). The rally point R = our structure on our land at least RALLY_MIN from D with no at-war power
-within RALLY_SAFE, the nearest to D (main base RALLY_MB closer: its guns fight with us). Each defender not fighting
+within RALLY_SAFE, the nearest to D (main base RALLY_MB closer: its guns fight with us; one whose walk from the
+defenders' centroid passes within CROSS_R of D, i.e. on the enemy's side, loses to any on their side). Each defender not fighting
 (a fight in contact is the retreat logic's), not on a Defense of a structure farther than RALLY_MIN from D (that fight is its own),
 and farther than RALLY_AT from R: its order (Resupply / Defense / Patrol) is stopped and it walks to R (doAction Move, every RALLY_MOVE_T s at most); map `rallied` army -> time keeps
 it out of vanilla's Resupply / mission picks (aimod_wormheld) while it walks, except a Defense of a structure
@@ -130,12 +131,18 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.op('Bool', dst=t_true, value=True)
     fb.op('Null', dst=no_arr)
 
-    def our_power(at, dst, lbl, rad=rr):
+    def our_power(at, dst, lbl, rad=rr, excl=None):
         """dst = power of our defenders within rad (RALLY_R) of `at` (no harvesters; an army on a Military mission
-        only within RALLY_HERE: it stands in that fight, e.g. our contest of `at`; never moved by the rally)."""
+        only within RALLY_HERE: it stands in that fight, e.g. our contest of `at`; never moved by the rally; excl:
+        an entity register (may be null), armies within RALLY_AT of it don't count)."""
         fb.op('Mov', dst=dst, src=zero)
         a = _army_loop(fb, b, my_armies, mlen, j, lbl, lbl + 'd')
         fb.op('JNotNull', reg=b.field(a, 'harvestComponent'), offset=lbl)
+        if excl is not None:
+            xl = _uid('xl')
+            fb.op('JNull', reg=excl, offset=xl)
+            fb.op('JSLte', a=b.call('ent.Entity.getDistTo', a, excl), b=b.const('f64', RALLY_AT), offset=lbl)
+            fb.label(xl)
         fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', a, at))
         fb.op('JSGt', a=d, b=rad, offset=lbl)
         fb.op('Call2', dst=ok, fun=mission, arg0=fac, arg1=a)
@@ -217,6 +224,8 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.op('JNull', reg=spe, offset='so')
     fb.op('JAlways', offset='so_pe')
     fb.label('so_ow')
+    # our own armies first: areAtWar(us, us) logs a vanilla warning + entity dump per call (12k in one match log)
+    fb.op('JEq', a=sxo, b=fac, offset='so')
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', _state(fb, b, cx), fac, sxo), offset='so')
     sxz = b.call('ent.Entity.get_zone', sx)
     fb.op('JNull', reg=sxz, offset='so')
@@ -277,7 +286,15 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.op('Sub', dst=gq, a=t, b=gq)
     fb.op('JSLt', a=gq, b=b.const('f64', 30), offset='nothere')
     fb.label('hdok')
-    our_power(dz, m, 'hp', b.const('f64', RALLY_HERE))
+    # not the armies standing at the running rally point (the gathered force: Tabr, 236 from Grim-po)
+    hrp = fb.reg(cx.t('ent.Entity'))
+    fb.op('Null', dst=hrp)
+    hpv = b.call('haxe.ds.ObjectMap.get', rlyp, fb.dyn(fac))
+    fb.op('JNull', reg=hpv, offset='hrpn')
+    fb.op('JNull', reg=b.call('haxe.ds.ObjectMap.get', rly, fb.dyn(fac)), offset='hrpn')
+    fb.op('SafeCast', dst=hrp, src=hpv)
+    fb.label('hrpn')
+    our_power(dz, m, 'hp', b.const('f64', RALLY_HERE), hrp)
     # our turrets at D, D's own included: aimod_cover itself silences a village under a faction's siege (as
     # aimod_defend sees it); excluding D dropped the guns of a threatened, not yet besieged village and of a main
     # base (x MB_GUN_W), whose defenders the rally then walked >= RALLY_MIN away from it
@@ -342,6 +359,29 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.label('gkeep')
     b.call('haxe.ds.ObjectMap.set', rly, fb.dyn(fac), fb.dyn(dz))
     b.call('haxe.ds.ObjectMap.set', rlyt, fb.dyn(fac), fb.dyn(t))
+    # 2a. where the defenders stand (centroid of our non-harvester armies within RALLY_R of D): a rally point whose
+    # walk from there passes D is on the enemy's side (Fremen liberating Tsimlat: Harkonnen's point Had-Al'riyah lay
+    # behind them, the defenders stood at Tabiel / Carthag)
+    gx, gy, gc = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    dpx, dpy, rpx, rpy = (fb.reg(cx.t('f64')) for _ in range(4))
+    fb.op('Mov', dst=gx, src=zero)
+    fb.op('Mov', dst=gy, src=zero)
+    fb.op('Mov', dst=gc, src=zero)
+    one = b.const('f64', 1)
+    ga = _army_loop(fb, b, my_armies, mlen, j, 'gc', 'gcd')
+    fb.op('JNotNull', reg=b.field(ga, 'harvestComponent'), offset='gc')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', ga, dz), b=rr, offset='gc')
+    fb.op('Add', dst=gx, a=gx, b=b.field(ga, 'posx'))
+    fb.op('Add', dst=gy, a=gy, b=b.field(ga, 'posy'))
+    fb.op('Add', dst=gc, a=gc, b=one)
+    fb.op('JAlways', offset='gc')
+    fb.label('gcd')
+    fb.op('JSLte', a=gc, b=zero, offset='gcz')
+    fb.op('SDiv', dst=gx, a=gx, b=gc)
+    fb.op('SDiv', dst=gy, a=gy, b=gc)
+    fb.label('gcz')
+    fb.op('Mov', dst=dpx, src=b.field(dz, 'posx'))
+    fb.op('Mov', dst=dpy, src=b.field(dz, 'posy'))
     # 2. the rally point: the last one while it still qualifies (map `rlyp`: armies don't walk between points as
     # the enemy moves: Atreides' went Arrakeen -> Pelsan -> Ultah -> Fondad -> Ursan in 3 min), else the nearest
     fb.op('Null', dst=rp)
@@ -355,6 +395,11 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.op('JSLt', a=b.call('ent.Entity.getDistTo', se, dz), b=b.const('f64', RALLY_MIN), offset='rnew')
     fb.op('Call3', dst=h, fun=threat, arg0=fac, arg1=se, arg2=b.const('f64', RALLY_SAFE))
     fb.op('JSGt', a=h, b=zero, offset='rnew')
+    fb.op('JSLte', a=gc, b=zero, offset='rkeep')
+    fb.op('Mov', dst=rpx, src=b.field(se, 'posx'))
+    fb.op('Mov', dst=rpy, src=b.field(se, 'posy'))
+    _crosses(fb, b, cx, gx, gy, rpx, rpy, dpx, dpy, CROSS_R, 'rnew')
+    fb.label('rkeep')
     fb.op('Mov', dst=rp, src=se)
     fb.op('JAlways', offset='rdone')
     fb.label('rnew')
@@ -376,6 +421,15 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', s2), offset='rmb')
     fb.op('Sub', dst=d, a=d, b=b.const('f64', RALLY_MB))
     fb.label('rmb')
+    # on the enemy's side of D for the defenders: any point on their side wins
+    fb.op('JSLte', a=gc, b=zero, offset='rside')
+    fb.op('Mov', dst=rpx, src=b.field(se, 'posx'))
+    fb.op('Mov', dst=rpy, src=b.field(se, 'posy'))
+    _crosses(fb, b, cx, gx, gy, rpx, rpy, dpx, dpy, CROSS_R, 'rfar')
+    fb.op('JAlways', offset='rside')
+    fb.label('rfar')
+    fb.op('Add', dst=d, a=d, b=b.const('f64', 4 * RALLY_R))
+    fb.label('rside')
     fb.op('JSGte', a=d, b=bd, offset='r')
     fb.op('Mov', dst=bd, src=d)
     fb.op('Mov', dst=rp, src=se)
@@ -401,12 +455,42 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     _defends(fb, b, cx, fac, a, dse, 'ndef')
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', dse, dz), b=b.const('f64', RALLY_MIN), offset='a')
     fb.label('ndef')
-    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', a, rp), b=b.const('f64', RALLY_AT), offset='a')  # arrived
+    # its order (Army.aiOrder is unreliable: the order list): a Defense of D's surroundings is stopped even at the
+    # rally point, any order once it must walk (Fremen's rally at Tabr for Ulmara: a vanilla Defense of Ulmara took
+    # 2 armies from the point, walked them out, the rally walked them back, 45 s of tug-of-war; the 2-army Defense
+    # then blocked vanilla's full one after the commit and went in alone at balance 0.25)
+    rarr = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=rarr, value=False)
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', a, rp), b=b.const('f64', RALLY_AT), offset='rptfar')
+    fb.op('Bool', dst=rarr, value=True)  # arrived
+    fb.label('rptfar')
+    rao = fb.reg(cx.t('logic.ai.AIOrder'))
+    fb.op('Null', dst=rao)
+    fb.op('JNull', reg=dords, offset='rord')
+    rk, rix = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=rk, src=b.field(dords, 'length'))
+    b.loop_head('rol')
+    fb.op('JSLte', a=rk, b=zi, offset='rord')
+    fb.op('Sub', dst=rk, a=rk, b=b.const('i32', 1))
+    ro = b.cast(b.call('hl.types.ArrayObj.getDyn', dords, rk), 'logic.ai.AIOrder')
+    fb.op('JNull', reg=ro, offset='rol')
+    rou = b.field(ro, 'units')
+    fb.op('JNull', reg=rou, offset='rol')
+    fb.op('JFalse', cond=b.call('hl.types.ArrayObj.contains', rou, fb.dyn(a)), offset='rol')
+    fb.op('Mov', dst=rao, src=ro)
+    fb.label('rord')
+    fb.op('JFalse', cond=rarr, offset='rwalk')
+    # at the point: only a Defense is stopped (a Resupply / Patrol there is harmless)
+    fb.op('JNull', reg=rao, offset='a')
+    fb.op('EnumIndex', dst=rix, value=b.field(rao, 'type'))
+    fb.op('JNotEq', a=rix, b=b.const('i32', DEFENSE), offset='a')
+    b.call('logic.ai.AIOrder.stop', rao, cancel)
+    fb.op('JAlways', offset='a')
+    fb.label('rwalk')
     b.call('haxe.ds.ObjectMap.set', rallied, fb.dyn(a), fb.dyn(t))
     _throttle(fb, b, cx, 'rallymv', a, RALLY_MOVE_T, 'a')
-    ao = b.field(a, 'aiOrder')
-    fb.op('JNull', reg=ao, offset='nord')
-    b.call('logic.ai.AIOrder.stop', ao, cancel)
+    fb.op('JNull', reg=rao, offset='nord')
+    b.call('logic.ai.AIOrder.stop', rao, cancel)
     fb.label('nord')
     _move_to(fb, b, cx, a, b.field(rp, 'posx'), b.field(rp, 'posy'), fac)
     fb.op('Incr', dst=n)

@@ -8,11 +8,11 @@ refills OCC_REFILL of max supply and occupying doesn't drain. Its costs: the vil
 (production halved, no siege action possible) and the pillager's Annex authority cost there is doubled (trait
 Pillaged), so the villages vanilla would annex next are never raided.
 
-Abort pass, every CHECK s, over every Military ArmySiege "Pillage" order of ours (raid's and vanilla's), unless it is
-in Action at RAID_DONE progress or more (finish it), and while aimod_defend is set over our "Annex" orders too (only
-the `defend` trigger, and only when its fit armies lift the defense to `enter`; not in Action at ANX_DONE progress or
-more, never on the defended village). First trigger wins,
-stop(Cancel):
+Abort pass, every CHECK s, over every Military ArmySiege "Pillage" order of ours (raid's and vanilla's), and while
+aimod_defend is set over our "Annex" orders too (only the `defend` trigger, and only when its fit armies lift the
+defense to `enter`; never on the defended village). In Action the militia fight (progress 0) is never broken off, and a
+trigger on an occupation under way splits it instead of cancelling (aimod_relunits, rules/release.py: armies needing
+the refill stay, else the weakest; the rest are released; logged act split). First trigger wins, else stop(Cancel):
 - defend: our structure is besieged (aimod_defend) within RECALL_R of the target, our armies already at it (within
   LOCAL, any task) + free ones within GATHER_R (+ our cover) are short of ENTER x (threat + enemy cover) / terrain there, and the raid has armies fit to defend
   (life and supply >= MIN_LIFE / MIN_SUPPLY, what the contest hunt and vanilla defense take);
@@ -49,6 +49,7 @@ refused candidate with our armies within RAID_R when nothing launched or it was 
 turrets, Mi militia vs M, tf terrain) or home (hh hostile vs ms ours near home). ax = the first excluded Annex choice
 (the top RAID_KEEP 3 by vanilla's Annex scores are excluded, affordable or not), nc = vanilla candidates. Fails safe: in a trap, nothing launched or cancelled on error."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
+from rules.strat import _has_action
 
 
 def _behind(fb, b, cx, state, fac, ve, nbh, skip):
@@ -111,7 +112,7 @@ def _behind(fb, b, cx, state, fac, ve, nbh, skip):
 
 
 def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, defend, militia, threat, free, home,
-               homeown, scores, neutral):
+               homeown, scores, neutral, relunits):
     """aimod_raid(mil, dt) (see module doc)."""
     fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
     b = B(fb)
@@ -132,7 +133,7 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     raid_r, local = b.const('f64', RAID_R), b.const('f64', LOCAL)
     home_m, recall_r, gather_r = b.const('f64', HOME_M), b.const('f64', RECALL_R), b.const('f64', GATHER_R)
     enter, abort, own_t = _ratio(fb, b, ENTER), _ratio(fb, b, ABORT), _ratio(fb, b, OWN_T)
-    raid_to, done_r = _ratio(fb, b, RAID_TO), _ratio(fb, b, RAID_DONE)
+    raid_to = _ratio(fb, b, RAID_TO)
     min_life, min_sup = _ratio(fb, b, MIN_LIFE), _ratio(fb, b, MIN_SUPPLY)
     t_false, t_true = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
     fb.op('Bool', dst=t_false, value=False)
@@ -141,6 +142,9 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('Null', dst=no_arr)
     pillage_s = fb.string('Pillage')
     pillage = fb.dyn(pillage_s)
+    lib_s = fb.string('Liberate')
+    vlib, best_lib = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))  # DMZ: this candidate / the chosen one is liberated
+    fb.op('Bool', dst=best_lib, value=False)
     i, j, k, idx, ph = (fb.reg(cx.t('i32')) for _ in range(5))
     h, m, p, q, r, sd, lim, dy, tf, pr, hh, ms, hp, hl = (fb.reg(cx.t('f64')) for _ in range(14))
     ok, anx = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
@@ -191,6 +195,7 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     # while Smugglers took Zadak 177 from Carthag); never the defended village itself
     fb.op('Bool', dst=anx, value=False)
     fb.op('JEq', a=b.call('String.__compare', sa, pillage), b=zi, offset='ispil')
+    fb.op('JEq', a=b.call('String.__compare', sa, fb.dyn(fb.string('Liberate'))), b=zi, offset='ispil')  # DMZ
     fb.op('JNotEq', a=b.call('String.__compare', sa, fb.dyn(fb.string('Annex'))), b=zi, offset='ord')
     fb.op('JNull', reg=dfs, offset='ord')
     fb.op('Bool', dst=anx, value=True)
@@ -208,11 +213,10 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('JNull', reg=osg, offset='noprog')
     fb.op('Mov', dst=pr, src=b.call('ent.comp.SiegeComponent.getOccupationActionProgress', osg))
     fb.label('noprog')
+    # in Action the militia fight (progress 0) is never broken off, and an occupation under way is split, not
+    # cancelled (ab_* below): one army finishes it (removeUnit cancels an order only before Action or when empty)
     fb.op('JNotEq', a=ph, b=b.const('i32', ACTION), offset='running')
-    fb.op('JFalse', cond=anx, offset='pdone')
-    fb.op('JSGte', a=pr, b=_ratio(fb, b, ANX_DONE), offset='ord')  # an Annex well under way: finish it
-    fb.label('pdone')
-    fb.op('JSGte', a=pr, b=done_r, offset='ord')  # nearly done: finish it
+    fb.op('JSLte', a=pr, b=zero, offset='ord')
     fb.label('running')
     units = b.field(o, 'units')
     fb.op('JNull', reg=units, offset='ord')
@@ -298,8 +302,23 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('SDiv', dst=q, a=hl, b=tf)
     fb.op('JSLt', a=r, b=q, offset='ab_weak')
     fb.op('JAlways', offset='ord')
+    rel = fb.reg(cx.t('i32'))
     for why, hr, mr in (('defend', h, r), ('home', hh, ms), ('weak', h, r)):
         fb.label(f'ab_{why}')
+        if why != 'weak':  # weak is tested while walking only
+            # Action, occupation under way: split instead of cancel (aimod_relunits: armies needing the refill stay,
+            # else the weakest; user: "1 unit can always finish things"): a 20k force starting a capture next door no
+            # longer costs a pillage at 30%
+            fb.op('JNotEq', a=ph, b=b.const('i32', ACTION), offset=f'ab_{why}_stop')
+            fb.op('Call2', dst=rel, fun=relunits, arg0=o, arg1=anx)
+            fb.op('JSLte', a=rel, b=zi, offset='ord')
+            relf = fb.reg(cx.t('f64'))
+            fb.op('ToSFloat', dst=relf, src=rel)
+            _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', 'split'), ('why', why),
+                                                 ('tgt', ve), ('H', hr), ('M', mr), ('ph', ph), ('pr%', pr),
+                                                 ('sd', sd), ('n', un), ('sa', sa), ('rel', relf)])
+            fb.op('JAlways', offset='ord')
+            fb.label(f'ab_{why}_stop')
         b.call('logic.ai.AIOrder.stop', o, cancel)
         _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', 'abort'), ('why', why),
                                              ('tgt', ve), ('H', hr), ('M', mr), ('ph', ph), ('pr%', pr),
@@ -529,6 +548,29 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('JEq', a=b.call('logic.ai.AIOrder.getTarget', o2), b=ve, offset='v')
     fb.op('JAlways', offset='o')
     fb.label('odone')
+    # DMZ (rules/dmz.py): a border village of an at-war neighbour holding >= DMZ_WAR of them is liberated, not
+    # pillaged (a pillage devastates it and doubles our Annex cost there); unaffordable: wait; Liberate not
+    # available at all: left alone, unless the director pressed it for pillage
+    fb.op('Bool', dst=vlib, value=False)
+    fb.op('Call2', dst=ok, fun=helpers['dmzv'], arg0=fac, arg1=v)
+    fb.op('JFalse', cond=ok, offset='dmz_ok')
+    _has_action(fb, b, cx, v, fac, 'Liberate', 'dmz_av', 'dmz_no')
+    fb.label('dmz_av')
+    lcf = cx.fn('ent.comp.SiegeComponent.getOccupationActionCost')
+    lcn = fb.reg(cx.code.types[lcf.type.value].definition.args[2].value)
+    fb.op('Null', dst=lcn)
+    lcost = fb.reg(cx.code.types[lcf.type.value].definition.ret.value)
+    fb.op('Call4', dst=lcost, fun=lcf.findex.value, arg0=b.field(v, 'siege'), arg1=lib_s, arg2=lcn, arg3=fac)
+    lhf = cx.fn('logic.ai.AIController.hasResources')
+    lhn = fb.reg(cx.code.types[lhf.type.value].definition.args[2].value)
+    fb.op('Null', dst=lhn)
+    fb.op('Call3', dst=ok, fun=lhf.findex.value, arg0=b.field(0, 'controller'), arg1=lcost, arg2=lhn)
+    fb.op('JFalse', cond=ok, offset='v')  # can liberate, can't pay yet: wait (never pillage it meanwhile)
+    fb.op('Bool', dst=vlib, value=True)
+    fb.op('JAlways', offset='dmz_ok')
+    fb.label('dmz_no')
+    fb.op('JFalse', cond=pref, offset='v')
+    fb.label('dmz_ok')
     # our raid force there (+ our turret cover), with the supply for the raid and the way home; our armies at home
     fb.op('Call2', dst=sd, fun=land, arg0=fac, arg1=ve)
     fb.op('Add', dst=lim, a=sd, b=home_m)
@@ -630,7 +672,7 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.label('noeff')
     fb.op('JSGte', a=eff, b=best_d, offset='v')
     for dst, src in ((best, ve), (best_d, eff), (best_h, h), (best_sd, sd), (best_tf, tf),
-                     (best_hh, hh), (best_ms, ms)):
+                     (best_hh, hh), (best_ms, ms), (best_lib, vlib)):
         fb.op('Mov', dst=dst, src=src)
     fb.op('JAlways', offset='v')
     fb.label('refuse')
@@ -719,8 +761,13 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
         fb.op('Null', dst=rr)
         nulls.append(rr)
     res = fb.reg(cx.t('logic.ai.AIOrder'))
+    sact = fb.reg(cx.t('String'))
+    fb.op('Mov', dst=sact, src=pillage_s)
+    fb.op('JFalse', cond=best_lib, offset='sact')
+    fb.op('Mov', dst=sact, src=lib_s)  # DMZ: Liberate (aiPrio 1, as Pillage)
+    fb.label('sact')
     fb.op('CallN', dst=res, fun=helpers.get('addOrder', add.findex.value),
-          args=[orders_obj, kind, b.const('i32', 1), arr, best, fb.string('ArmySiege'), pillage_s,
+          args=[orders_obj, kind, b.const('i32', 1), arr, best, fb.string('ArmySiege'), sact,
                 mm, om] + nulls)
     fb.op('Bool', dst=ok, value=False)
     fb.op('JNull', reg=res, offset='fail')
@@ -731,7 +778,7 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', 'start'), ('tgt', best), ('H', best_h),
                                          ('M', m), ('n', b.field(arr, 'length')), ('dm', best_d),
                                          ('sd', best_sd), ('hh', best_hh), ('ms', best_ms), ('ax', ax),
-                                         ('nc', vn), ('ok', ok), ('rec', rec), ('bh', nbh)])
+                                         ('nc', vn), ('ok', ok), ('rec', rec), ('bh', nbh), ('lib', best_lib)])
     fb.label('end')
     fb.end_try(guard)
     fb.op('Ret', ret=void)

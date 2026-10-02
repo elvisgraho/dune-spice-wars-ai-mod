@@ -9,10 +9,13 @@ Every START s per faction, after hunt and raid (they claim armies first): each o
 (strand variant of aimod_free: any life / supply, a Patrol order counts as busy, never a harvester), not fighting,
 with `Army.isInHostileZone` gets a vanilla-style Patrol (prio 0, "Move") to the nearest structure on our land, keyed
 like safe-heal: aimod_unsafe level 1 (contested) costs DETOUR, level 2 (overwhelming) is skipped. Not when the army is
-within AT_HOME_R of it (the Patrol would end at once: re-issue loop). Patrol armies stay free
+within AT_HOME_R of it (the Patrol would end at once: re-issue loop); there, an army still losing supply
+(outside the structure's supply radius, in the neighbouring zone) is moved straight into its safe position instead
+(once per STRAND_NEAR_T s; logged near=move). Patrol armies stay free
 for hunts, raids and sieges; once home the army is off hostile land, so it is never re-issued (no loop).
 Logs `strand` (a army, s target, d distance). Fails safe: in a trap, nothing issued on error."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
+from rules.worm import _move_to
 
 
 def build_strand(cx, helpers, idle, unsafe):
@@ -78,8 +81,29 @@ def build_strand(cx, helpers, idle, unsafe):
     fb.label('stdone')
     fb.op('JNull', reg=best, offset='army')
     # already next to it (a zone border runs close to our village): a Patrol there ends at once and was re-issued
-    # every scan; the structure's supply radius covers it anyway
-    fb.op('JSLte', a=bd, b=b.const('f64', AT_HOME_R), offset='army')
+    # every scan. Its supply radius doesn't always cover the spot: Smugglers' 3 pillage armies stood 15-30 from
+    # Allon on Devastated Sandnun losing supply (264 -> 230) for 25+ s; Atreides' A_Elite 19 from Ara-dud. So an army
+    # there still losing supply is moved straight into the structure's safe position (our zone: no longer stranded,
+    # no loop), at most once per STRAND_NEAR_T s
+    fb.op('JSGt', a=bd, b=b.const('f64', AT_HOME_R), offset='patrol')
+    fb.op('JFalse', cond=b.call('ent.Army.isLosingSupply', a), offset='army')
+    _throttle(fb, b, cx, 'strandn', a, STRAND_NEAR_T, 'army')
+    gsp = cx.fn('ent.Entity.getSafePosition')
+    sp_args = [fb.reg(x.value) for x in cx.code.types[gsp.type.value].definition.args[1:]]
+    for r_ in sp_args:
+        fb.op('Null', dst=r_)
+    se = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=se, src=best)
+    pt = b.call('ent.Entity.getSafePosition', se, *sp_args)
+    fb.op('JNull', reg=pt, offset='army')
+    px, py = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=px, src=b.field(pt, 'x'))
+    fb.op('Mov', dst=py, src=b.field(pt, 'y'))
+    mok = _move_to(fb, b, cx, a, px, py, fac)
+    _log_ev(fb, b, cx, helpers, 'strand', [('f', fb.get(fac, 'kind')), ('a', a), ('s', se), ('d', bd), ('ok', mok),
+                                           ('near', 'move')])
+    fb.op('JAlways', offset='army')
+    fb.label('patrol')
     # vanilla checkPatrols order: Patrol(village), prio 0, "Move", no missions
     arr = _new_array(fb, b, cx)
     b.call('hl.types.ArrayObj.push', arr, fb.dyn(a))

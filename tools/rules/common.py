@@ -18,6 +18,7 @@ TEN_GATE = 0.99    # tension at the cap: an at-war owner's partner village is li
                    # desiredStatus 0 (its other villages stay unlisted); strength checks (siege-join, launch) still decide
 TEN_FAIL = 0.5     # a vanilla launch on a tension partner that creates no order (too strong for us) x this on that pair
 HEAL_COMMIT = 15   # s: a fight retreat keeps the heal structure it picked first this long (rules/heal.py)
+RG_T = 30          # s: a fight retreat's committed structure is the faction's fall-back point for that area this long
 RETREAT_CLEAR = 150  # a fight-retreat heal target this close to the fight's centre is in the fight (= RALLY_MIN)
 INFIGHT_T = 30     # s: an army that left its own heal structure while losing a fight there judges it at OWN_T this long
 STICKY = 2.0       # current resupply target is abandoned only when threat > own * STICKY
@@ -56,6 +57,7 @@ RETREAT = 0.65     # = data AI_WarzonePowerEstimation_RetreatRatio (patches/data
 FLEE_ETA = 3       # s: 'imminent' = hostiles in contact range or able to get there within this
 FLEE_R = 80        # contact range around a structure / army (warzone radius is 80)
 AT_HOME_R = 120    # an army this close to a healing structure is 'at home': it stays unless attack is imminent
+STRAND_NEAR_T = 15  # s: strand moves a supply-losing idle army next to our structure into it at most this often
 HUNT_GAP = 30      # s between two hunt starts of one faction (policy commit; also covers vanilla early cancels)
 MIN_LIFE = 0.9     # free army life ratio (= vanilla getUnits minLife)
 MIN_SUPPLY = 0.9   # free army supply ratio (= vanilla getUnits minSupply)
@@ -99,9 +101,10 @@ RAID_TO = KILL     # raid force: nearest raid-ready armies first, until they hav
 HOME_M = 100       # raid home race: hostile armies within (target's distance to our land + this) of our land get
                    # there before the raiders could return (~17 s reaction margin)
 RECALL_R = DEFEND_R  # raid abort `defend`: a pillage this close to our besieged structure yields its armies
-RAID_DONE = 0.5    # a pillage in Action at this progress (0-1, getOccupationActionProgress) is finished, never
-                   # aborted (~30 s left of 2 days; the pillage also refills 50% supply)
-ANX_DONE = 0.25    # raid abort `defend` also releases our Annex orders, unless in Action at this progress or more
+RELEASE_SUP = MIN_SUPPLY  # release (rules/release.py): an army below this supply share stays on an occupation under way
+                   # (the pillage refill / the captured village resupplies it there; user). = vanilla's Resupply
+                   # trigger: at 0.75 an army at 80% was released and at once sent home by vanilla to resupply
+RELEASE_LIFE = MIN_LIFE  # ... on an Annex also one below this health (heals at the village once ours; vanilla Resupply)
 RAID_GAP = 30      # s between two raid launches of one faction (commit, like HUNT_GAP)
 PICK_LIFE = 0.5    # vanilla mission picks (sieges, Defense, Discovery) skip armies below this life unless fighting
 PICK_LOG_T = 30    # s: lowpick log throttle per army
@@ -131,9 +134,13 @@ WORM_NEAR = 150    # an army moved off the sand waits there (out of vanilla's Re
 WORM_STEP = 20     # rock search: ring step ...
 WORM_R = 200       # ... up to this radius (none found: this far straight away from the worm)
 WORM_DIRS = 16     # ... directions per ring
+ZONE_NO_WORM = 1641  # attribute Zone_NoSandworm (trait WormCalling_Neighbors: regions next to a Decoy Thumper; vanilla
+                     # canBeWormTarget: no worm target there)
 HFLEE_T = 20       # s: an attacked team harvester is released to vanilla's re-route at most this often (it packs up)
 RALLY_T = 2        # s: rally pass (rules/rally.py): gather strength when a structure faces more than we can beat
 RALLY_MIN_H = 80000  # ... and that power is at least this (a lone raider is vanilla Defense's business)
+HOME_MIN_H = RALLY_MIN_H  # aimod_home: hostile power free to strike our land below this counts 0 (a raider band the
+                   # village militia hold; the rally ignores it too): 20k FremenRaids vs no army home aborted pillages at 10%
 STAND_R = 200      # turret steering (rules/build.py): at-war power within this of our village (turret range 80 +
                    # an idle stack at the next village, Gun-dah 115 from Annarekh) ...
 STAND_MIN_H = RALLY_MIN_H  # ... at least this ...
@@ -179,6 +186,17 @@ FP_SKIP = ('Fremen',)  # never forced: they break treaties at no Landsraad cost,
 RALLY_R = 600      # our defenders within this of the danger structure count and are gathered
 RALLY_MIN = 150    # the rally point is at least this far from the danger structure; structures this close aren't
                    # healed / fled to while the rally runs (aimod_unsafe overwhelming)
+DMZ_T = 5          # s: DMZ pass (rules/dmz.py): border-village counts per faction pair, truce check
+DMZ_WAR = 2        # at war: E holding this many villages in regions next to ours -> those are capture targets
+DMZ_PEACE = 3      # at peace / truce: E holding this many (or one less while capturing another) -> declare war
+DMZ_B = 1.0        # ... only when our army power >= this x E's
+DMZ_B_FREMEN = 0.8 # ... Fremen (no Standing: breaking a truce costs them least)
+DMZ_COOL = 120     # s: at most one declaration attempt per faction pair
+DMZ_LOG = 60       # s: `dmz` act=on log period per pair
+DMZ_W = 1.5        # vanilla Annex / Liberate score x this for a DMZ village
+DMZ_PREF = 0.5     # press: a DMZ village's distance x this (ranks first)
+CROSS_R = RALLY_MIN  # a heal / strand / rally walk passing this close to our structure under at-war siege (or the
+                     # rally's danger structure) goes through the enemy (Harkonnen walked past Fremen at Tsimlat)
 RALLY_SAFE = 150   # ... and has no at-war power within this
 RALLY_MB = 150     # the main base counts this much closer (its guns fight with us)
 RALLY_AT = 60      # a defender this close to the rally point has arrived (no move, not held)
@@ -188,7 +206,9 @@ RALLY_HYST = 1.15  # a running rally ends only at ENTER x this (no on / off flic
 RALLY_GIVEUP = 60  # s: a rally on the same danger structure still short after this concedes it ...
 RALLY_COOL = 90    # s: ... for this long (not a danger structure; vanilla Defense of it gets no armies, aimod_defend skips it)
 RALLY_HERE = LOCAL # defenders this close to the danger structure are already there: if they (+ turrets, x terrain) are
-                   # at least DEF_HOPE_IN x its threat, commit at once instead of walking them away to gather
+                   # at least DEF_HOPE_IN x its threat, commit at once instead of walking them away to gather. Armies
+                   # within RALLY_AT of the running rally point never count: that is the gathered force, not D's
+                   # (Fremen's point Tabr, 236 from Grim-po, made the rally commit at once; 5 of 6 went in at 0.17)
 SPOS_CHECK = 2     # s: siege-position pass (rules/spos.py)
 SPOS_R = 250       # Action: our siege armies this close to the target are kept off enemy guns (chasers pulled back)
 SPOS_IN = 80       # Engage: only armies already this close (walkers aren't pulled forward)
@@ -198,6 +218,8 @@ SPOS_T = 4         # s: an army is re-sent at most this often (micro re-engages 
 ALONE_HOLD = 60    # s: raid skips a village the Annex value dropped as a plain lone candidate this recently
 DIST_COST_ATB = 952  # Outpost_DistanceCost_MRatio: Annex cost grows with distance (> 0); Smugglers don't have it
 FAR_ZONES = 1      # extra zones of siege-target reach for a faction without that cost (vanilla AI: 1 zone total)
+RAID_ZONES = 1     # ... and this many more for raid's own pillage scan (any faction): raids judge their trip by the
+                   # supply budget, so vanilla's 1-zone list left too few candidates (all Devastated between waves)
 KEEP_R = 60        # keep-capture (rules/spos.py): an army this close to a village we besiege / occupy isn't pulled off
                    # by vanilla micro's 'defend our vulnerable structure' Reposition (occupiers stand at 4-30)
 STUCK_R = 30       # unstick (rules/spos.py): an Action siege army this close to the target's centre ...
@@ -235,6 +257,8 @@ EARLY_REQ = 1.0    # ... at launch and at the target: the 2 armies of a normal s
                    # 1.0 and NEUTRAL_REQ, and the AI waited instead of taking its first villages
 JOIN_R = HUNT_R    # siege launch: idle armies this close to the target may join (vanilla sends the minimum) ...
 JOIN_TO = KILL    # ... nearest first, until we have this x their power there (KILL: a fight over in seconds)
+SIETCH_ARMIES = 8  # sietch / renegade-base strike: at least as many armies as the garrison it always spawns ...
+RENEGADE_ARMIES = 10  # ... (8 sietch defenders, 10 renegade-base defenders)
 RETRY = 30         # s: a vanilla siege target launched again this soon after its last launch ended at once
                    # (e.g. InsufficientSupply at +0 s) is dropped from the target scores until then
 RETRY_MAX = 240    # s: ... doubled per relaunch that came right after the block ran out (failing at once again), up
@@ -559,6 +583,72 @@ def _log_ev(fb, b, cx, helpers, event, fields):
 def field_name_t(cx, obj_type, index):
     return cx.code.types[obj_type].definition.resolve_fields(cx.code)[index].name.resolve(cx.code)
 
+
+
+def _cap_rem(fb, b, cx, v, t, stalled):
+    """Remaining s of the occupation at village v (anyone's: contest hunt, release): (1 - progress) / the progress
+    rate since v was first judged (maps `cpgt` / `cpgp`; restarted when progress drops or the record is older than
+    CAP_STALE), (1 - progress) x CAP_EST before a rate is known (< 5 s). Jumps to `stalled` when v has no siege or
+    its occupation makes no progress. Returns the (remaining, progress) registers (0 on the stalled path)."""
+    u = _uid('cr')
+    sg = b.field(v, 'siege')
+    lp, lq, lrem, lp0 = (fb.reg(cx.t('f64')) for _ in range(4))
+    fb.op('Mov', dst=lrem, src=b.const('f64', 0))
+    fb.op('Mov', dst=lp, src=b.const('f64', 0))
+    fb.op('JNull', reg=sg, offset=stalled)
+    fb.op('Mov', dst=lp, src=b.call('ent.comp.SiegeComponent.getOccupationActionProgress', sg))
+    cpgt, cpgp = _global_map(fb, b, cx, 'cpgt'), _global_map(fb, b, cx, 'cpgp')
+    vt = b.call('haxe.ds.ObjectMap.get', cpgt, fb.dyn(v))
+    fb.op('JNull', reg=vt, offset=u + 'new')
+    fb.op('SafeCast', dst=lp0, src=b.call('haxe.ds.ObjectMap.get', cpgp, fb.dyn(v)))
+    fb.op('JSLt', a=lp, b=lp0, offset=u + 'new')  # a new capture there: restart
+    fb.op('SafeCast', dst=lq, src=vt)
+    fb.op('Sub', dst=lq, a=t, b=lq)
+    fb.op('JSGt', a=lq, b=b.const('f64', CAP_STALE), offset=u + 'new')
+    fb.op('JSLt', a=lq, b=b.const('f64', 5), offset=u + 'est')
+    fb.op('Sub', dst=lp0, a=lp, b=lp0)
+    fb.op('JSLte', a=lp0, b=b.const('f64', 0), offset=stalled)  # no progress: stalled
+    fb.op('SDiv', dst=lp0, a=lp0, b=lq)  # rate per s
+    fb.op('Sub', dst=lrem, a=b.const('f64', 1), b=lp)
+    fb.op('SDiv', dst=lrem, a=lrem, b=lp0)
+    fb.op('JAlways', offset=u + 'done')
+    fb.label(u + 'new')
+    b.call('haxe.ds.ObjectMap.set', cpgt, fb.dyn(v), fb.dyn(t))
+    b.call('haxe.ds.ObjectMap.set', cpgp, fb.dyn(v), fb.dyn(lp))
+    fb.label(u + 'est')
+    fb.op('Sub', dst=lrem, a=b.const('f64', 1), b=lp)
+    fb.op('Mul', dst=lrem, a=lrem, b=b.const('f64', CAP_EST))
+    fb.label(u + 'done')
+    return lrem, lp
+
+
+def _crosses(fb, b, cx, ax, ay, sx, sy, px, py, r, yes):
+    """Jump to `yes` when the straight walk (ax, ay) -> (sx, sy) passes within r of (px, py) on the way: the point
+    projects strictly inside the segment and lies within r of it (f64 registers; a point behind the start or past
+    the end is not on the way)."""
+    no = _uid('cr')
+    vx, vy, wx, wy, dt, ll = (fb.reg(cx.t('f64')) for _ in range(6))
+    fb.op('Sub', dst=vx, a=sx, b=ax)
+    fb.op('Sub', dst=vy, a=sy, b=ay)
+    fb.op('Sub', dst=wx, a=px, b=ax)
+    fb.op('Sub', dst=wy, a=py, b=ay)
+    fb.op('Mul', dst=dt, a=vx, b=wx)
+    fb.op('Mul', dst=ll, a=vy, b=wy)
+    fb.op('Add', dst=dt, a=dt, b=ll)
+    fb.op('JSLte', a=dt, b=b.const('f64', 0), offset=no)
+    fb.op('Mul', dst=ll, a=vx, b=vx)
+    fb.op('Mul', dst=vy, a=vy, b=vy)
+    fb.op('Add', dst=ll, a=ll, b=vy)
+    fb.op('JSGte', a=dt, b=ll, offset=no)
+    # squared distance to the line: |w|^2 - (v.w)^2 / |v|^2
+    fb.op('Mul', dst=dt, a=dt, b=dt)
+    fb.op('SDiv', dst=dt, a=dt, b=ll)
+    fb.op('Mul', dst=wx, a=wx, b=wx)
+    fb.op('Mul', dst=wy, a=wy, b=wy)
+    fb.op('Add', dst=wx, a=wx, b=wy)
+    fb.op('Sub', dst=wx, a=wx, b=dt)
+    fb.op('JSLt', a=wx, b=b.const('f64', r * r), offset=yes)
+    fb.label(no)
 
 
 def build_chain(cx, fns):

@@ -40,6 +40,9 @@ from rules.spos import *  # noqa: F401,F403
 from rules.tension import *  # noqa: F401,F403
 from rules.build import *  # noqa: F401,F403
 from rules.uhq import *  # noqa: F401,F403
+from rules.sdiag import *  # noqa: F401,F403
+from rules.release import *  # noqa: F401,F403
+from rules.dmz import *  # noqa: F401,F403
 
 
 def install(cx, helpers, new_ids):
@@ -89,6 +92,8 @@ def install(cx, helpers, new_ids):
     report.update(build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, new_ids, neutral))
     helpers['tension'] = build_tension(cx)  # contact tension query (rules/tension.py): scoring, hunt, strat
     new_ids.add(helpers['tension'])
+    helpers['dmzv'] = build_dmzv(cx)  # DMZ village test (rules/dmz.py): scoring, raid, strat
+    new_ids.add(helpers['dmzv'])
     report.update(build_scoring(cx, new_ids, helpers))
     hthreat = build_threat(cx, pw, prey=True)
     react = build_threat(cx, pw, reach=REACT_R)
@@ -98,12 +103,15 @@ def install(cx, helpers, new_ids):
                       react)
     raidable = build_free(cx, pw, RAID_LIFE, 0, resupply_ok=True)
     raidsup = build_raidsup(cx)
+    relunits = build_relunits(cx, pw)  # rules/release.py: who leaves an occupation under way (release, raid split)
+    new_ids.add(relunits)
     raid = build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, defend, militia, threat, free,
-                      home, homeown, helpers['scores'], neutral)
+                      home, homeown, helpers['scores'], neutral, relunits)
     fpow = build_fpow(cx, pw)
     strat = build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, defend, militia, home,
                         short, neutral, threat)
     report.update(strat_levers(cx, new_ids))
+    dmz = build_dmz(cx, helpers, fpow, defend)  # rules/dmz.py: border counts, truce break
     report.update(build_peace_gate(cx, helpers, defend, new_ids))
     report.update(build_treaty_scope(cx, helpers, new_ids))
     # Underworld HQs (rules/uhq.py): cap, placement, extension scores (under turret-steer on the same scoring call)
@@ -138,8 +146,10 @@ def install(cx, helpers, new_ids):
     spos = build_spos(cx, helpers, cover)
     report.update(build_keep_capture(cx, helpers, new_ids))
     report.update(gather_busy(cx, new_ids))
-    tick = build_chain(cx, [memory, wormflee, ttick, strat, hunt, raid, rally, fpeace, sengage, gather, spos, dstep, discabort, undeploy, strand])
-    new_ids.update({hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, gather, rally, threat_arrive, fpeace, spos,
+    sact = build_sact(cx, helpers, pw, militia)  # diagnostics only (rules/sdiag.py)
+    release = build_release(cx, helpers, relunits, threat, neutral, cover)  # rules/release.py
+    tick = build_chain(cx, [memory, wormflee, ttick, dmz, strat, hunt, raid, rally, fpeace, sengage, gather, spos, dstep, discabort, undeploy, strand, release, sact])
+    new_ids.update({dmz, sact, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, gather, rally, threat_arrive, fpeace, spos,
                     memory, tick})
     report['strand'] = 1
     report['worm-flee'] = 1

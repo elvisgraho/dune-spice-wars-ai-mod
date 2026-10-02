@@ -365,6 +365,11 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('Sub', dst=prx, a=press, b=tq)
     fb.op('Mul', dst=r, a=h, b=prx)
     fb.op('JSLt', a=q, b=r, offset='v')  # not soft: not worth the time
+    # DMZ (rules/dmz.py): a border village of an at-war neighbour holding >= DMZ_WAR of them ranks first
+    fb.op('Call2', dst=ok, fun=helpers['dmzv'], arg0=fac, arg1=v)
+    fb.op('JFalse', cond=ok, offset='nodmz')
+    fb.op('Mul', dst=dm, a=dm, b=_ratio(fb, b, DMZ_PREF))
+    fb.label('nodmz')
     fb.op('JSGte', a=dm, b=best_d, offset='v')
     for dst, src in ((best, v), (best_f, vo), (best_d, dm), (best_h, h), (best_m, m)):
         fb.op('Mov', dst=dst, src=src)
@@ -399,6 +404,11 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('Call2', dst=prc, fun=helpers['ddclean'], arg0=fac, arg1=pz)
     fb.op('JTrue', cond=prc, offset='nomode')
     fb.label('pring')
+    # a DMZ village: `raid` liberates it (rules/dmz.py), so Liberate available is enough
+    fb.op('Call2', dst=ok, fun=helpers['dmzv'], arg0=fac, arg1=best)
+    fb.op('JFalse', cond=ok, offset='pmpil')
+    _has_action(fb, b, cx, best, fac, 'Liberate', 'setpress', 'pmpil')
+    fb.label('pmpil')
     _has_action(fb, b, cx, best, fac, 'Pillage', 'setpress', 'nomode')
     fb.label('nomode')
     b.call('haxe.ds.ObjectMap.set', sfail, fb.dyn(ve), fb.dyn(t))  # can't act on it: look elsewhere next scan
@@ -526,7 +536,8 @@ def strat_levers(cx, new_ids):
     - `Diplomacy.getTargetStatus` in getSiegeableVillages -> >= 1 for the pressed village's owner (vanilla lists an
       enemy's villages only for its daily diplomatic target); also for an at-war owner one of whose villages is our
       contact partner at tension >= TEN_GATE (the target scores keep only such partner villages of it);
-    - `isInSupplyRange` in getSiegeableVillages -> + FAR_ZONES zones for a faction without Annex distance cost;
+    - `isInSupplyRange` in getSiegeableVillages -> + FAR_ZONES zones for a faction without Annex distance cost, + RAID_ZONES
+      during raid's own pillage scan (`rscan`); for an at-war owner with the DMZ on (rules/dmz.py cache `dmz`);
     - `get_aggressiveness` in tryAnnexation -> GAUGE_FIRE-scale max (100) while pressing in annex mode (enemy
       villages need aggressiveness >= 50).
     The target scores (siege.build_scoring) then keep only the pressed village among that faction's."""
@@ -544,6 +555,7 @@ def strat_levers(cx, new_ids):
     fb.op('JNull', reg=1, offset='end')
     owner = b.call('logic.ai.AIModule.get_aiOwner', 0)
     fb.op('JNull', reg=owner, offset='end')
+    fb.op('JEq', a=owner, b=1, offset='end')  # our own villages: vanilla's answer (areAtWar(us, us) logs a warning)
     # raid's own pillage scan (rules/raid.py, map `rscan` = the game time it started): every at-war owner
     rs = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rscan'), fb.dyn(owner))
     fb.op('JNull', reg=rs, offset='press')
@@ -555,8 +567,18 @@ def strat_levers(cx, new_ids):
     fb.op('JAlways', offset='lift')
     fb.label('press')
     pf = b.cast(b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'spf'), fb.dyn(owner)), 'ent.Faction')
-    fb.op('JNull', reg=pf, offset='tens')
+    fb.op('JNull', reg=pf, offset='dmzg')
     fb.op('JEq', a=pf, b=1, offset='lift')
+    # DMZ on against this at-war owner (rules/dmz.py: it holds >= DMZ_WAR regions next to ours): listed, so vanilla
+    # can annex / liberate its border villages (the target scores keep only those and drop them from Pillage)
+    fb.label('dmzg')
+    from rules.dmz import _pair_map
+    dcv = b.call('haxe.ds.ObjectMap.get', _pair_map(fb, b, cx, 'dmz', owner), fb.dyn(1))
+    fb.op('JNull', reg=dcv, offset='tens')
+    dcn = fb.reg(cx.t('i32'))
+    fb.op('SafeCast', dst=dcn, src=dcv)
+    fb.op('JSLt', a=dcn, b=b.const('i32', DMZ_WAR), offset='tens')
+    fb.op('JTrue', cond=b.call('logic.state.State.areAtWar', _state(fb, b, cx), owner, 1), offset='lift')
     # contact tension at the cap (rules/tension.py, AI-POLICY §5c): one of our villages rubs a village of this at-war
     # owner at T >= TEN_GATE: its villages are listed; the target scores keep only the partner ones (siege.py)
     fb.label('tens')
@@ -616,7 +638,19 @@ def strat_levers(cx, new_ids):
     fb.op('Null', dst=gfac)
     dcr = fb.reg(cx.t('f64'))
     fb.op('Call4', dst=dcr, fun=gav.findex.value, arg0=gobj, arg1=b.const('i32', DIST_COST_ATB), arg2=gref, arg3=gfac)
-    fb.op('JSGt', a=dcr, b=b.const('f64', 0), offset='end')
+    # extra zones: FAR_ZONES without Annex distance cost; + RAID_ZONES during raid's own pillage scan (map `rscan`,
+    # set around that one call): Smugglers raided the same 5 neutral villages in reach and sat 8-11 min between
+    # waves while they were Devastated (no candidate, no row); the raid's supply budget, relief and home tests still
+    # judge the farther ones
+    ext = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=ext, src=b.const('i32', 0))
+    fb.op('JSGt', a=dcr, b=b.const('f64', 0), offset='nofar')
+    fb.op('Mov', dst=ext, src=b.const('i32', FAR_ZONES))
+    fb.label('nofar')
+    fb.op('JNull', reg=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rscan'), fb.dyn(owner)), offset='noraid')
+    fb.op('Add', dst=ext, a=ext, b=b.const('i32', RAID_ZONES))
+    fb.label('noraid')
+    fb.op('JSLte', a=ext, b=b.const('i32', 0), offset='end')
     z = b.call('ent.Entity.get_zone', 1)
     fb.op('JNull', reg=z, offset='end')
     gd = cx.fn('ent.Zone.getDistanceToPlayerTerritory')
@@ -628,7 +662,7 @@ def strat_levers(cx, new_ids):
     fb.op('Call3', dst=zd, fun=gd.findex.value, arg0=z, arg1=pf, arg2=tr)
     mx = fb.reg(cx.t('i32'))
     fb.op('Mov', dst=mx, src=b.field(0, 'maxSupplyDistZones'))
-    fb.op('Add', dst=mx, a=mx, b=b.const('i32', FAR_ZONES))
+    fb.op('Add', dst=mx, a=mx, b=ext)
     fb.op('JSGt', a=zd, b=mx, offset='end')
     fb.op('Bool', dst=res, value=True)
     fb.label('end')

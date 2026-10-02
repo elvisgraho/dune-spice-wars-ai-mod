@@ -430,13 +430,15 @@ def summarize(events, faction=None, all_orders=False):
             heals.append(e)
         elif k == 'space':
             spaced[(f, e.get('why') or 'space', e.get('k'), ent(e.get('tgt')), ent(e.get('near')))] += 1
+        elif k == 'sfloor':  # sietch / renegade-base strike short of its garrison's army count
+            spaced[(f, 'floor', 'n%s<%s' % (e.get('n'), e.get('min')), ent(e.get('tgt')), '-')] += 1
         elif k == 'bunker':
             bunkers.append(e)
         elif k == 'disc':
             discs.append(e)
         elif k == 'strat':
             strats.append(e)
-        elif k == 'raid':
+        elif k in ('raid', 'release'):
             raids.append(e)
         elif k == 'peace':
             peaces.append(e)
@@ -444,7 +446,7 @@ def summarize(events, faction=None, all_orders=False):
             rallies.append(e)
         elif k == 'gather':
             gathers.append(e)
-        elif k in ('treaty', 'patrol', 'turret', 'fpeace', 'pannex', 'uhqcap', 'uhqp', 'uhqx'):
+        elif k in ('treaty', 'patrol', 'turret', 'fpeace', 'pannex', 'uhqcap', 'uhqp', 'uhqx', 'dmz'):
             standoff.append(e)
         elif k in ('wflee', 'weaten', 'dstep', 'whold', 'hrun', 'spos', 'unstick', 'keepcap', 'tension', 'hride', 'rride'):
             worms.append(e)
@@ -558,7 +560,8 @@ def summarize(events, faction=None, all_orders=False):
     if spaced:
         out.append('\n## Refused siege launches (tools/rules; logged once per faction per 10 s): faction why kind '
                    'target <- reason structure (defend = ours under siege, space = one we already run nearby, '
-                   'retry = its last launch ended at once), count')
+                   'retry = its last launch ended at once, floor = sietch / renegade-base pick with fewer armies than '
+                   'its garrison), count')
         out += [f'{f} {w} {kk} {tg} <- {nr} x{n}' for (f, w, kk, tg, nr), n in spaced.most_common(12)]
 
     if bunkers:
@@ -601,6 +604,8 @@ def summarize(events, faction=None, all_orders=False):
                    'turret = MissileBattery lifted at a village with at-war power h standing near (sc vanilla score); '
                    'fpeace = forced Non-aggression Pact on the attacker of a conceded village (r 1 = sent); '
                    'pannex = an Annex done by the Atreides PeacefullyAnnex ability instead of armies (inf = Influence before); '
+                   'dmz on = at war, the neighbour holds n villages in regions next to ours (taken, not pillaged), dmz war = '
+                   'truce broken by declareWar (cap = border villages it was capturing, r 1 = Success); '
                    'uhqcap = no new Underworld HQ (n ours >= cap); uhqp = HQ placement (cand candidates, kept, newf in factions '
                    'hosting none of ours); uhqx = HQ extension score (k, sc ours (NaN = skip), van vanilla)')
         c = Counter((e.get('f'), e['e'], e.get('act') or '') for e in standoff)
@@ -616,6 +621,9 @@ def summarize(events, faction=None, all_orders=False):
                 out.append(f"  {clock(e['_t'])} {e.get('f'):<10} uhqp cand{e.get('cand')} kept{e.get('kept')} newf{e.get('newf')}")
             elif e['e'] == 'uhqx':
                 out.append(f"  {clock(e['_t'])} {e.get('f'):<10} uhqx {ent(e.get('s'))[:22]:<22} {e.get('k')} sc{e.get('sc')} van{e.get('van')}")
+            elif e['e'] == 'dmz':
+                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} dmz {e.get('act')} vs {e.get('vs')} n{e.get('n')}"
+                           + (f" cap{e.get('cap')} r{e.get('r')} M{kpw(e.get('M'))} E{kpw(e.get('E'))}" if e.get('act') == 'war' else ''))
             elif e['e'] == 'pannex':
                 out.append(f"  {clock(e['_t'])} {e.get('f'):<10} pannex {ent(e.get('tgt'))[:22]} inf{num(e.get('inf'), 0)} r{e.get('r')}")
             elif e['e'] == 'patrol':
@@ -684,6 +692,8 @@ def summarize(events, faction=None, all_orders=False):
         starts = [e for e in raids if e.get('act') == 'start']
         refused = [e for e in raids if e.get('act') == 'refuse']
         aborts = [e for e in raids if e.get('act') == 'abort']
+        splits = [e for e in raids if e.get('act') == 'split' or e['e'] == 'release']
+        raids = [e for e in raids if e['e'] == 'raid']
         owned = lambda e: isinstance(e.get('tgt'), dict) and e['tgt'].get('o') not in (None, 'null')
         out.append('Enemy villages (at-war owner) / all: ' + ', '.join(
             f"{a} {sum(owned(e) for e in raids if e.get('act') == a)}/{sum(1 for e in raids if e.get('act') == a)}"
@@ -702,6 +712,15 @@ def summarize(events, faction=None, all_orders=False):
                 out.append(f"  {clock(e['_t'])} {e.get('f')} {e.get('why'):<6} {ent(e.get('tgt'))[:20]:<20} "
                            f"ph{e.get('ph')} pr{e.get('pr')}% n{e.get('n')} sd{num(e.get('sd'), 0)} "
                            f"h{kpw(e.get('H'))} m{kpw(e.get('M'))}")
+        if splits:
+            c = Counter((e.get('f'), e.get('why') or 'safe') for e in splits)
+            out.append('Released armies (occupation under way, one army finishes it; release = no danger at the target, '
+                       'split defend / home = our structure needs them; n released of the order armies): '
+                       + ', '.join(f'{f} {w} x{n}' for (f, w), n in c.most_common(10)))
+            for e in splits[-10:]:
+                out.append(f"  {clock(e['_t'])} {e.get('f')} {(e.get('why') or 'safe'):<6} {ent(e.get('tgt'))[:20]:<20} "
+                           f"{e.get('sa')} pr{e.get('pr')}% released {e.get('rel') or e.get('n')} of "
+                           f"{e.get('of') or e.get('n')}")
         if refused:
             c = Counter((e.get('f'), e.get('why'), ent(e.get('tgt'))) for e in refused)
             out.append('Refused (nearest candidate, once per faction per 30 s; ready = no army passes life/supply, '
