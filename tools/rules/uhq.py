@@ -152,7 +152,40 @@ def build_uhq_cap(cx, helpers, new_ids):
     fb.op('JSGte', a=cap, b=b.const('i32', UHQ_MIN), offset='capok')
     fb.op('Mov', dst=cap, src=b.const('i32', UHQ_MIN))
     fb.label('capok')
-    fb.op('JSLt', a=n, b=cap, offset='end')
+    fb.op('JSGte', a=n, b=cap, offset='capped')
+    # Annex reserve: the next HQ costs UHQ_AUTH x (HQs + 1) Authority; no install that leaves less than our cheapest
+    # Annex candidate (siege.py `acmin`, scored within UHQ_RES_T). Smugglers held 11 HQs (cap 18 at 6 villages) and
+    # sat at 35-94 Authority for 13 min with a 123-cost Annex queued. No candidate scored lately: no reserve
+    # Smugglers only: regularUpdate calls checkUWHeadquarters for every AI faction (vanilla returns at once without
+    # the Smugglers-only ability); the reserve skipped that call and logged `uhqres` n 0 for Atreides / Fremen /
+    # Harkonnen 22 times in one match
+    ukd = b.field(fac, 'kind')
+    fb.op('JNull', reg=ukd, offset='end')
+    fb.op('JNotEq', a=b.call('String.__compare', ukd, fb.dyn(fb.string('Smugglers'))), b=b.const('i32', 0),
+          offset='end')
+    cmv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'acmin'), fb.dyn(fac))
+    fb.op('JNull', reg=cmv, offset='end')
+    cmt = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'acmt'), fb.dyn(fac))
+    fb.op('JNull', reg=cmt, offset='end')
+    cmf, age, au, nxt = (fb.reg(cx.t('f64')) for _ in range(4))
+    fb.op('SafeCast', dst=age, src=cmt)
+    fb.op('Sub', dst=age, a=b.field(_state(fb, b, cx), 'time'), b=age)
+    fb.op('JSGt', a=age, b=b.const('f64', UHQ_RES_T), offset='end')
+    fb.op('SafeCast', dst=cmf, src=cmv)
+    fb.op('Call2', dst=au, fun=cx.fn('ent.Faction.getResource').findex.value, arg0=fac, arg1=b.const('i32', 6))
+    fb.op('ToSFloat', dst=nxt, src=n)
+    fb.op('Add', dst=nxt, a=nxt, b=b.const('f64', 1))
+    fb.op('Mul', dst=nxt, a=nxt, b=b.const('f64', UHQ_AUTH))
+    fb.op('Sub', dst=nxt, a=au, b=nxt)  # Authority left after the install
+    fb.op('JSGte', a=nxt, b=cmf, offset='end')
+    fb.op('Bool', dst=stop, value=True)
+    _throttle(fb, b, cx, 'uhqres', fac, 120, 'end')
+    nf2 = fb.reg(cx.t('f64'))
+    fb.op('ToSFloat', dst=nf2, src=n)
+    _log_ev(fb, b, cx, helpers, 'uhqres', [('f', fb.get(fac, 'kind')), ('n', nf2), ('au', au), ('left', nxt),
+                                           ('cmin', cmf)])
+    fb.op('JAlways', offset='end')
+    fb.label('capped')
     fb.op('Bool', dst=stop, value=True)
     _throttle(fb, b, cx, 'uhqcap', fac, 120, 'end')
     nf, cf = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))

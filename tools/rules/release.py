@@ -5,16 +5,19 @@ Why: once our capture / pillage is in Action and the militia is beaten (occupati
 order standing there until it ends. User: "1 unit can always finish things"; free the rest whenever the place holds no
 danger, and when a structure of ours needs them (raid.py `defend` / `home` split).
 
-aimod_relunits(order, annex) -> armies released. Who stays: an army below RELEASE_SUP supply (the pillage refill /
+aimod_relunits(order, annex, keep) -> armies released. Who stays: an army below RELEASE_SUP supply (the pillage refill /
 the captured village resupplies it there), on an Annex also one below RELEASE_LIFE health (it heals at the new
 village), and always the keeper: the weakest permanent army (aimod_pw, hasSafeRegen: a temporary one disbands and
 the emptied order is cancelled; the weakest of any if none is permanent). Everyone else is removed from the order
 (idle: vanilla's Defense / our hunts / raid pick them up). Nothing is released from an order of one army or when all
-need the refill. The caller checks phase Action and progress > 0. Capture speed doesn't depend on the army count
-(user).
+need the refill. keep: power (aimod_pw) the staying armies must still hold; an army leaves only while the rest keep at
+least that much (release: 0; raid split: ENTER x the enemy side at the target / terrain: Fremen's Liberate of Arknit,
+95 from Arrakeen and winning 12:1, was split `home` at 22:24, 8 of 14 armies (96% of its power) left and the 6
+weakest were wiped by Atreides' relief). The caller checks phase Action and progress > 0. Capture speed doesn't depend
+on the army count (user).
 
-aimod_release(mil, dt), tick chain every RELEASE_CHECK s: our Military Annex / Pillage / Liberate / PillageSietch /
-Dismantle orders on a structure in Action with progress > 0 and 2+ armies, when no danger reaches the target before
+aimod_release(mil, dt), tick chain every RELEASE_CHECK s: our Military Annex / Pillage / Liberate
+orders on a structure in Action with progress > 0 and 2+ armies, when no danger reaches the target before
 the occupation ends: aimod_threat within max(REACT_R, remaining time (_cap_rem) x CONTEST_SPD) (user: captures take
 long, worth keeping the armies while an enemy army could come; busy armies count at their discounted weight, so any
 enemy army in reach locks the order), neutral raiders there (aimod_neutral) and enemy turret cover (aimod_cover) all
@@ -23,14 +26,15 @@ vanilla picks (heal.py pick-life: the last army of an order in Action). Fails sa
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
 
 RELEASE_CHECK = 5   # s: scan period
-RELEASE_KINDS = ('Annex', 'Pillage', 'Liberate', 'PillageSietch', 'Dismantle')  # sietch / renegade base: their
-# defenders don't respawn during the strike (user)
+RELEASE_KINDS = ('Annex', 'Pillage', 'Liberate')  # not sietch / renegade-base strikes: the sietch deploys its
+# harass units mid-strike (SITE_REQ), a thinned force loses to them
 
 
 def build_relunits(cx, pw):
-    fb = FB(cx, [cx.t('logic.ai.AIOrder'), cx.t('bool')], cx.t('i32'))
+    fb = FB(cx, [cx.t('logic.ai.AIOrder'), cx.t('bool'), cx.t('f64')], cx.t('i32'))
     b = B(fb)
     n = b.const('i32', 0)
+    tp = fb.reg(cx.t('f64'))  # power of the armies still in the order
     zero, one = b.const('f64', 0), b.const('i32', 1)
     guard = fb.try_()
     fb.op('JNull', reg=0, offset='end')
@@ -49,6 +53,7 @@ def build_relunits(cx, pw):
     fb.op('Bool', dst=needy, value=False)
     fb.op('Mov', dst=best, src=b.const('f64', 1 << 30))
     rsup, rlife = _ratio(fb, b, RELEASE_SUP), _ratio(fb, b, RELEASE_LIFE)
+    fb.op('Mov', dst=tp, src=zero)
 
     def needs(a, yes, no):
         """jump to `yes` when army a needs the occupation's refill, else to `no`."""
@@ -69,6 +74,7 @@ def build_relunits(cx, pw):
     fb.op('Bool', dst=needy, value=True)
     fb.label('p1w')
     fb.op('Call1', dst=p, fun=pw, arg0=a)
+    fb.op('Add', dst=tp, a=tp, b=p)
     fb.op('JSGte', a=p, b=best, offset='p1r')
     fb.op('Mov', dst=best, src=p)
     fb.op('Mov', dst=weak, src=a)
@@ -96,6 +102,11 @@ def build_relunits(cx, pw):
     needs(x, 'p2', 'p2go')
     fb.label('p2go')
     fb.op('JSLte', a=b.field(units, 'length'), b=one, offset='end')  # never the last one
+    px = fb.reg(cx.t('f64'))
+    fb.op('Call1', dst=px, fun=pw, arg0=x)
+    fb.op('Sub', dst=q, a=tp, b=px)
+    fb.op('JSLt', a=q, b=2, offset='p2')  # the rest would fall below `keep`: it stays
+    fb.op('Mov', dst=tp, src=q)
     b.call('logic.ai.AIOrder.removeUnit', 0, x)
     fb.op('Incr', dst=n)
     fb.op('JAlways', offset='p2')
@@ -180,7 +191,7 @@ def build_release(cx, helpers, relunits, threat, neutral, cover):
     fb.op('CallN', dst=q, fun=cover, args=[fac, ve, no_ent, t_false, no_arr])
     fb.op('Add', dst=d, a=d, b=q)
     fb.op('JSGt', a=d, b=zero, offset='o')
-    fb.op('Call2', dst=rn, fun=relunits, arg0=o, arg1=anx)
+    fb.op('Call3', dst=rn, fun=relunits, arg0=o, arg1=anx, arg2=zero)  # nothing in reach: no floor
     fb.op('JSLte', a=rn, b=b.const('i32', 0), offset='o')
     rnf, unf = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     fb.op('ToSFloat', dst=rnf, src=rn)

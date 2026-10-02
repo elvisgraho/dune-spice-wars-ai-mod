@@ -95,6 +95,7 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     b = B(fb)
     void = fb.reg(cx.t('void'))
     guard = fb.try_()
+    _crumb_begin(fb, b, cx, helpers, 'hunt')  # step probe: `rfail` names a run that died silently
     ctrl = b.field(0, 'controller')
     fac = b.field(ctrl, 'owner')
     fb.op('JNull', reg=fac, offset='end')
@@ -165,6 +166,7 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     prog, close = _ratio(fb, b, 1 - PROGRESS), b.const('f64', CLOSE)
     rtf, rpf, rdf = (fb.reg(cx.t('f64')) for _ in range(3))
     givemap = _global_map(fb, b, cx, 'hgive')  # army -> time a chase on it was given up
+    conmap = _global_map(fb, b, cx, 'hcon')  # contest order -> the village it defends (abort `won`)
     gvf = fb.reg(cx.t('f64'))
 
     tripd, tripl = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
@@ -325,6 +327,19 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     # triggers, in priority order (sd = the member nearest to our land, same measure as the start pass)
     fb.op('JSLte', a=cnt, b=zi, offset='ab_gone')
     fb.op('JSLte', a=war, b=zi, offset='ab_truce')
+    # won: a contest (map `hcon` order -> its village) whose village is no longer besieged has done its job. Following
+    # the beaten group is a chase into its land where a dying rear member in contact counts as progress every check
+    # (Smugglers' 11 armies broke Harkonnen's Annex of Lam-nih, followed the group ~300 north, then drifted under
+    # Carthag's guns). Ends once the core is WON_R from the village; the fight at the village itself is finished
+    cv = b.call('haxe.ds.ObjectMap.get', conmap, fb.dyn(o))
+    fb.op('JNull', reg=cv, offset='nowon')
+    wv = b.cast(cv, 'ent.Structure')
+    fb.op('JNull', reg=wv, offset='nowon')
+    fb.op('Call2', dst=ok, fun=sieged, arg0=fac, arg1=wv)
+    fb.op('JTrue', cond=ok, offset='nowon')
+    fb.op('Mov', dst=ve, src=wv)
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', core, ve), b=b.const('f64', WON_R), offset='ab_won')
+    fb.label('nowon')
     fb.op('JSGt', a=sd, b=leash, offset='ab_leash')
     fb.op('JNotEq', a=home, b=cnt, offset='nothome')
     fb.op('JSGt', a=sd, b=home_exit, offset='ab_home')
@@ -400,7 +415,10 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Call2', dst=ok, fun=sieged, arg0=fac, arg1=v)
     fb.op('JFalse', cond=ok, offset='obj')
     fb.op('Mov', dst=ve, src=v)
-    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', g, ve), b=local, offset='ord')  # already contesting one
+    # already contesting one: no chase checks (pursuit, home run, defend, turret, desert), but the Regroup push (`go`)
+    # still applies (jumping to the next order left every contest waiting in vanilla Regroup for its last straggler:
+    # Smugglers' 11 armies at Lam-nih 27:02-27:34 while Harkonnen's capture ran)
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', g, ve), b=local, offset='go')
     fb.op('JNotNull', reg=found, offset='obj')
     fb.op('Call2', dst=sdx, fun=land, arg0=fac, arg1=ve)
     fb.op('JSGt', a=sdx, b=defend_r, offset='obj')
@@ -578,6 +596,21 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.label('givedone')
     b.call('haxe.ds.ObjectMap.set', objmap, fb.dyn(fac), fb.dyn(t))  # only contests for HUNT_GAP s: no re-chase
     _log_hunt(fb, b, cx, helpers, fac, 'abort', 'chase', first, pp, m, {'sd': sd, 'dn': need, 'T': tc})
+    fb.op('JAlways', offset='ord')
+    fb.label('ab_won')
+    b.call('logic.ai.AIOrder.stop', o, cancel)
+    # the beaten group walks home: no chase on it for GIVEUP_T s (the start pass would follow it again)
+    wn = b.field(mem, 'length')
+    fb.op('Mov', dst=j, src=zi)
+    b.loop_head('wgive')
+    fb.op('JSGte', a=j, b=wn, offset='wgivedone')
+    we = b.call('hl.types.ArrayObj.getDyn', mem, j)
+    fb.op('Incr', dst=j)
+    fb.op('JNull', reg=we, offset='wgive')
+    b.call('haxe.ds.ObjectMap.set', givemap, we, fb.dyn(t))
+    fb.op('JAlways', offset='wgive')
+    fb.label('wgivedone')
+    _log_hunt(fb, b, cx, helpers, fac, 'abort', 'won', first, pp, m, {'sd': sd, 'dn': need, 'obj': ve})
     fb.op('JAlways', offset='ord')
     for why in ('gone', 'truce', 'leash', 'home', 'supply', 'drift', 'lost', 'weak', 'turret', 'desert'):
         fb.label(f'ab_{why}')
@@ -1040,11 +1073,14 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('JNull', reg=res, offset='fail')
     fb.op('Bool', dst=ok, value=True)
     b.call('haxe.ds.ObjectMap.set', lastmap, fb.dyn(fac), fb.dyn(t))
+    fb.op('JNotEq', a=best_mode, b=one, offset='fail')
+    b.call('haxe.ds.ObjectMap.set', conmap, fb.dyn(res), fb.dyn(best_anc))  # a contest: abort `won` once it's lifted
     fb.label('fail')
     _log_hunt(fb, b, cx, helpers, fac, 'start', None, best, best_h, best_m,
               {'n': b.field(arr, 'length'), 'ng': b.field(garr, 'length'), 'ok': ok, 'sd': sd, 'dm': best_d,
                'anc': best_anc, 'T': best_t, 'goal': goal, 'gate': gate, 'Ms': mt})
     fb.label('end')
+    _crumb_end(fb, b, cx, 'hunt')
     fb.end_try(guard)
     fb.op('Ret', ret=void)
     return fb.build()

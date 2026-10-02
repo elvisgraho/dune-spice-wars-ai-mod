@@ -209,6 +209,7 @@ def patch_boots(state, patch_ids):
     import boot  # needs crashlink (.venv)
     BACKUP.mkdir(exist_ok=True)
     recs = state.setdefault('boot', {})
+    todo = []
     for name in BOOTS:
         path = GAME / name
         current = sha256(path)
@@ -223,7 +224,19 @@ def patch_boots(state, patch_ids):
             shutil.copyfile(path, BACKUP / name)
         else:
             raise SystemExit(f'ERROR: {name} is not the baseline original; restore it (Steam > Verify files) first')
-        out, report = boot.apply(BACKUP / name, patch_ids)
+        todo.append(name)
+    # both files at once (independent, ~1 min each); every check above ran first, nothing is written on an error
+    results = {}
+    if len(todo) > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=len(todo)) as ex:
+            futs = {name: ex.submit(boot.apply, BACKUP / name, patch_ids) for name in todo}
+            results = {name: f.result() for name, f in futs.items()}
+    elif todo:
+        results[todo[0]] = boot.apply(BACKUP / todo[0], patch_ids)
+    for name in todo:
+        out, report = results[name]
+        path = GAME / name
         path.write_bytes(out)
         recs[name] = {'patches': patch_ids, 'patched': sha256(path), 'tool': tool_hash()}
         print(f'{name}: patched {report}')

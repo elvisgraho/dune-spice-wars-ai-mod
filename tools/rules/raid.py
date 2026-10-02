@@ -309,8 +309,22 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
             # else the weakest; user: "1 unit can always finish things"): a 20k force starting a capture next door no
             # longer costs a pillage at 30%
             fb.op('JNotEq', a=ph, b=b.const('i32', ACTION), offset=f'ab_{why}_stop')
-            fb.op('Call2', dst=rel, fun=relunits, arg0=o, arg1=anx)
-            fb.op('JSLte', a=rel, b=zi, offset='ord')
+            # what stays must still hold the capture: ENTER x (at-war armies in reach + enemy cover + militia +
+            # raiders at it) / terrain (aimod_relunits keep)
+            kp = fb.reg(cx.t('f64'))
+            their_side(kp, ov)
+            fb.op('Mul', dst=kp, a=kp, b=enter)
+            fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', ve))
+            fb.op('SDiv', dst=kp, a=kp, b=tf)
+            fb.op('Call3', dst=rel, fun=relunits, arg0=o, arg1=anx, arg2=kp)
+            fb.op('JSGt', a=rel, b=zi, offset=f'ab_{why}_rel')
+            # nobody may leave without losing the capture: it is held, the need stays unanswered (visible in the log)
+            _throttle(fb, b, cx, 'rkeep', o, 30, 'ord')
+            _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', 'keep'), ('why', why),
+                                                 ('tgt', ve), ('H', hr), ('M', mr), ('pr%', pr), ('n', un), ('sa', sa),
+                                                 ('kp', kp)])
+            fb.op('JAlways', offset='ord')
+            fb.label(f'ab_{why}_rel')
             relf = fb.reg(cx.t('f64'))
             fb.op('ToSFloat', dst=relf, src=rel)
             _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', 'split'), ('why', why),

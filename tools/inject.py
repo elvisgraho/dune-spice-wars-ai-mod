@@ -99,7 +99,17 @@ class FB:
         self.regs.append(t)
         return len(self.regs) - 1
 
+    # rules.common._crumb_begin: hook(fb) emitted before every Call op (step marker for `rfail`); None = off
+    crumb = None
+    _crumbing = False
+
     def op(self, name, **kw):
+        if self.crumb is not None and name.startswith('Call') and not self._crumbing:
+            self._crumbing = True
+            try:
+                self.crumb(self)
+            finally:
+                self._crumbing = False
         o = Opcode(name, {})
         for field, typ in opcodes[name].items():
             v = Opcode.TYPE_MAP[typ]()
@@ -178,7 +188,7 @@ class FB:
         for idx, field, name in self.fix:
             self.ops[idx].df[field].value = self.labels[name] - (idx + 1)
         f = Function()
-        f.findex = fIndex(self.code.next_free_findex().value)
+        f.findex = fIndex(_next_findex(self.code))
         f.regs = [tIndex(t) for t in self.regs]
         f.ops = self.ops
         f.type = tIndex(self.fun_type if self.fun_type is not None else _fun_type(self.code, self.regs[:self._nargs], self.ret))
@@ -486,10 +496,16 @@ def _snap_before(fb, d, c):
     fb.op('SafeCast', dst=fr, src=fb.get(a, 'owner'))
     skip = f'_snapres{len(fb.ops)}'
     fb.op('JNull', reg=fr, offset=skip)
-    for key, k in (('au', 6), ('inf', 10), ('sol', 1)):
+    for key, k in (('au', 6), ('inf', 10), ('sol', 1), ('mp', 3)):
         ki, v = fb.reg(cx.t('i32')), fb.reg(cx.t('f64'))
         fb.op('Int', dst=ki, ptr=cx.code.add_i32(k).value)
         fb.op('Call2', dst=v, fun=cx.fn('ent.Faction.getResource').findex.value, arg0=fr, arg1=ki)
+        put(fb, d, key, fb.dyn(v))
+    # army size (13 CommandPoint, no stock): cap = production, free = net (cap - unit upkeep)
+    for key, fn in (('cp', 'ent.Faction.getCachedResProd'), ('cpf', 'ent.Faction.getCachedResNetProd')):
+        ki, v = fb.reg(cx.t('i32')), fb.reg(cx.t('f64'))
+        fb.op('Int', dst=ki, ptr=cx.code.add_i32(13).value)
+        fb.op('Call2', dst=v, fun=cx.fn(fn).findex.value, arg0=fr, arg1=ki)
         put(fb, d, key, fb.dyn(v))
     gp = cx.fn('ent.Faction.getResourceProduction')
     gpa = [t.value for t in cx.code.types[gp.type.value].definition.args]
@@ -619,19 +635,58 @@ EVENTS = [
 ]
 
 
+def _site_refs(f):
+    """(fun ref) of every direct call / closure-creation op in f."""
+    refs = []
+    for op in f.ops:
+        fn = op.df.get('fun')
+        if fn is None:
+            continue
+        if (op.op.startswith('Call') and op.op not in ('CallClosure', 'CallMethod', 'CallThis')) or \
+                op.op in ('InstanceClosure', 'StaticClosure'):
+            refs.append(fn)
+    return refs
+
+
+_SITE_INDEX = {}  # id(code) -> [n functions indexed, [(function, name, refs)], code]
+_FINDEX = {}  # id(code) -> [code, used findex set, n functions seen, n natives seen, lowest index not yet ruled out]
+
+
+def _next_findex(code):
+    """= code.next_free_findex() (lowest unused function / native index), without re-scanning every function per new
+    function (151 scans, ~3 s per boot file). The used set only grows (functions are appended), so the answer only
+    moves forward; natives changing or functions removed: full rebuild."""
+    st = _FINDEX.get(id(code))
+    if st is None or st[0] is not code or st[3] != len(code.natives) or st[2] > len(code.functions):
+        st = _FINDEX[id(code)] = [code, {n.findex.value for n in code.natives}, 0, len(code.natives), 0]
+    for f in code.functions[st[2]:]:
+        st[1].add(f.findex.value)
+    st[2] = len(code.functions)
+    i = st[4]
+    while i in st[1]:
+        i += 1
+    st[4] = i
+    return i
+
+
 def _sites(code, target_id, skip, caller=None):
-    """Direct call / closure-creation ops referencing target_id, grouped by caller name."""
+    """Direct call / closure-creation ops referencing target_id, grouped by caller name. The ops of each function
+    are indexed once per code object (25 full scans took ~20 s per boot file); refs are compared by their current
+    value, so earlier redirects and functions appended since are seen exactly as a fresh scan would."""
+    idx = _SITE_INDEX.get(id(code))
+    if idx is None or idx[0] > len(code.functions) or idx[2] is not code:
+        idx = _SITE_INDEX[id(code)] = [0, [], code]
+    for f in code.functions[idx[0]:]:  # functions appended since the last call (ours, normally in skip)
+        idx[1].append((f, code.full_func_name(f), _site_refs(f)))
+    idx[0] = len(code.functions)
     out = {}
-    for f in code.functions:
+    for f, name, refs in idx[1]:
         if f.findex.value in skip:
             continue
-        name = code.full_func_name(f)
         if caller and name != caller:
             continue
-        for op in f.ops:
-            fn = op.df.get('fun')
-            direct = op.op.startswith('Call') and op.op not in ('CallClosure', 'CallMethod', 'CallThis')
-            if (direct or op.op in ('InstanceClosure', 'StaticClosure')) and fn is not None and fn.value == target_id:
+        for fn in refs:
+            if fn.value == target_id:
                 out.setdefault(name, []).append(fn)
     return out
 
@@ -678,7 +733,12 @@ def apply(code, trace=(), trace_per_caller=()):
             helpers['nextPhase'] = w  # logging wrapper of AIOrder.nextPhase, reused by behave.hunt (engage)
     import aware  # enemy army awareness scan (event `aw`)
     import behave  # behaviour on top of it: safe-heal + hunt (event `hunt`)
-    rep, hunt = behave.install(cx, helpers, new_ids)
-    report.update(rep)
-    report.update(aware.install(cx, helpers, new_ids, hunt))
+    try:
+        rep, hunt = behave.install(cx, helpers, new_ids)
+        report.update(rep)
+        report.update(aware.install(cx, helpers, new_ids, hunt))
+    finally:
+        # the caches hold the whole parsed code: drop them (a process building both boot files kept both alive)
+        _SITE_INDEX.pop(id(code), None)
+        _FINDEX.pop(id(code), None)
     return report

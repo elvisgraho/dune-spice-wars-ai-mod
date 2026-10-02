@@ -13,7 +13,7 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
   snap  : aggr, gauges, armies, structs (daily per AI faction)
   aw    : n, en, mine, a=[{o,k,x,y,pw,hp,sup,ms,ls,hz,zo,sand,worm,vis,mv,d,near,sa,ty,tgt,oc,ct}] (tools/aware.py:
           every 10 s per AI faction: hostile armies within 600 of its structures or armies, or visible; da/na/nsa/nty/ntgt = our nearest army and its task)
-  hunt  : act (start|abort|engage), why (abort: gone truce leash home supply drift lost weak turret objective defend chase desert), T
+  hunt  : act (start|abort|engage), why (abort: gone truce won leash home supply drift lost weak turret objective defend chase desert), T
           (enemy turret cover at the anchor / group, power units; included in H), tgt (prey / first
           member; the village for a contest), H, M, n, ng (group size), ok, sd (dist to our land), dn (our nearest order
           army), dm (start: our nearest free army), anc (start: the besieged village for a contest, else the prey),
@@ -21,7 +21,7 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
           army or contest of a siege; H = threat around it, M = our free power in reach (abort: order power), n armies
           sent; the order itself is a Military ArmyFight order). engage: the order left Regroup early because the
           armies within LOCAL of the core (member nearest our land) already pass the entry test (M = their power)
-  retreat: act (retreat|hold|recall|pursuit|disengage: Resupply armies left shooting a powerless target), raw, tf, sf, adj (fight balance x100: vanilla, terrain factor, supply factor,
+  retreat: act (retreat|hold|recall|pursuit|disengage: Resupply armies left shooting a powerless target|trespass: no-order armies shooting at-war structures on their zone), raw, tf, sf, adj (fight balance x100: vanilla, terrain factor, supply factor,
           adjusted; recall = every army of ours there short of supply and none in a Military order: balance 0; pursuit =
           none of ours there in a Military order and the enemy there (en, power within CONTACT) lost < 10% for 15 s:
           balance 0 (chasing a fleeing army); stranded = held
@@ -44,6 +44,15 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
   alone: f, tgt, s, c (sole Annex candidate past the opening with no ring / special / spice value: dropped)
   ascore: f, tgt, s, c, cmin, vb, v0, vs, n, dd (x100: Fremen deep-desert surround sum of the best), hold (off-ring candidates dropped by the Fremen ring hold), rt / rs / rdd (best ring village, its score, dd x100), ddh (zone hops of the focus deep desert, 999 none) (Annex value: our best target vs vanilla's best; tools/rules/siege.py)
   noregen: f, a, hp (army without safe regen and full supply removed from the checkUnits Resupply query)
+  aring : f, v, v0 (uncontested deep-desert ring village scored for Annex although vanilla's score v0 <= 0; rules/siege.py)
+  pkeep : f, v (ring village dropped from vanilla's Pillage targets)
+  tveto : f, s, sc, n, hops (vanilla MissileBattery score sc > 0 at a village no turret rule of ours calls for: dropped; rules/build.py)
+  odead : f, a, hp, ph, n (unit checkOrderTerminations removes from an order as dead; rules/orders.py)
+  okeep : f, n, ph (our Military order kept before Action after that removal, n armies left)
+  rfail : r, f, at (step probe: the last run of rule r for faction f died at step id `at` = work/crumbs.json source line)
+  dfull : f (checkStructures' all-in fallback on full CP blocked; rules/army.py cp-defense)
+  cpdis : f, a, cp, free (CP overflow: temporary army a disbanded, cp = its CP upkeep, free = net CP before; rules/army.py)
+  mpgate: f, mp (unit pick that vanilla's Manpower goals would have blocked, let through; once per faction per 60 s)
   lowpick: f, a, hp, src (siege|defense|discovery: army under PICK_LIFE removed from vanilla's getUnits result; extra: worn
           temporary unit appended to a Defense the healthy armies already carry)
   rally : f, act (rally|off|commit|giveup|here: already at D), s (danger structure), r (rally point), H, M, n (defenders sent), Mall (here: all within RALLY_R; rules/rally.py)
@@ -72,6 +81,7 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
   call  : fn, a<i>, r, src  (generic traces from testbed/ailog.json)
   mark  : player pressed L
 """
+import json
 import math
 import re
 from collections import Counter, defaultdict
@@ -173,12 +183,13 @@ def parse_lines(lines):
 
 def _salvage(s):
     """Flat `key : number|word` fields of a line the parser couldn't read (the log truncates long values, e.g. the
-    snap gauge list cut inside an entry): enough for snap aggr / armies / structs and the g / t clocks."""
+    snap gauge list cut inside an entry): snap aggr / armies / structs, stocks (au / aup / inf / sol / mp), army size
+    (cp / cpf) and the g / t clocks."""
     m = re.match(r'AIMOD \{e : (\w+), f : (\w+)', s)
     if not m:
         return None
     e = {'e': m.group(1), 'f': m.group(2)}
-    for key, val in re.findall(r'(?:^|[{,] )(aggr|armies|structs|g|t) : (-?[\d.]+)', s):
+    for key, val in re.findall(r'(?:^|[{,] )(aggr|armies|structs|au|aup|inf|sol|mp|cp|cpf|g|t) : (-?[\d.]+(?:e[+-]?\d+)?)', s):
         e[key] = float(val)
     return e if 'g' in e else None
 
@@ -358,6 +369,9 @@ def summarize(events, faction=None, all_orders=False):
     rejected = defaultdict(lambda: {'n': 0, 'req': []})
     intents = defaultdict(Counter)          # faction -> Counter((gaugeKind, outcome))
     fights, micro, snaps, aws = [], defaultdict(Counter), {}, []
+    armysz = []  # rules/army.py: cpdis / mpgate
+    rfails = []  # rules/common.py step probe: a tick rule run that died silently
+    cvbads, rfirsts, rnots = [], [], []  # world.py aimod_cover1 trap (a structure that threw) / build.py spice-first
     calls = defaultdict(lambda: {'n': 0, 'f': Counter(), 'r': Counter()})
     stops = Counter()
     hunts = Counter()                       # (faction, act, why)
@@ -455,7 +469,7 @@ def summarize(events, faction=None, all_orders=False):
             rallies.append(e)
         elif k in ('gather', 'stage'):
             gathers.append(e)
-        elif k in ('treaty', 'patrol', 'turret', 'fpeace', 'pannex', 'uhqcap', 'uhqp', 'uhqx', 'dmz'):
+        elif k in ('treaty', 'patrol', 'turret', 'tveto', 'aring', 'pkeep', 'odead', 'okeep', 'fpeace', 'pannex', 'uhqcap', 'uhqres', 'uhqp', 'uhqx', 'dmz'):
             standoff.append(e)
         elif k in ('wflee', 'weaten', 'dstep', 'whold', 'hrun', 'spos', 'unstick', 'keepcap', 'tension', 'hride', 'rride'):
             worms.append(e)
@@ -465,6 +479,16 @@ def summarize(events, faction=None, all_orders=False):
             acands.append(e)
         elif k in ('lowpick', 'noregen', 'selfsup'):
             lowpicks.append(e)
+        elif k in ('cpdis', 'mpgate', 'dfull'):
+            armysz.append(e)
+        elif k == 'rfail':
+            rfails.append(e)
+        elif k == 'cvbad':
+            cvbads.append(e)
+        elif k == 'rfirst':
+            rfirsts.append(e)
+        elif k == 'rnot':
+            rnots.append(e)
         elif k == 'wzb':
             wzbs.append(e)
         elif k == 'hunt':
@@ -539,7 +563,7 @@ def summarize(events, faction=None, all_orders=False):
 
     if hunts:
         out.append('\n## Hunts (tools/rules): faction start / engage (left Regroup early) / abort reasons '
-                   '(gone truce leash home supply drift lost weak turret objective defend chase)')
+                   '(gone truce won leash home supply drift lost weak turret objective defend chase)')
         for f in sorted({k[0] for k in hunts}, key=str):
             out.append(f'{f}: ' + ', '.join(f"{a}{('-' + w) if w else ''} x{n}" for (ff, a, w), n in sorted(hunts.items(), key=str) if ff == f))
 
@@ -593,13 +617,13 @@ def summarize(events, faction=None, all_orders=False):
                    'instead of fed one at a time: faction danger structure -> rally point, H their power, M ours (x terrain, + turrets), n sent')
         for e in rallies[-16:]:
             if e.get('act') == 'off':
-                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} rally off")
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} rally off")
             elif e.get('act') in ('commit', 'giveup', 'here'):
                 extra = f" (Mall{kpw(e.get('Mall'))})" if e.get('act') == 'here' else ''
-                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('s'))[:20]:<20} {e.get('act').upper():<22} "
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {ent(e.get('s'))[:20]:<20} {e.get('act').upper():<22} "
                            f"H{kpw(e.get('H'))} M{kpw(e.get('M'))}{extra}")
             else:
-                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('s'))[:20]:<20} -> {ent(e.get('r'))[:20]:<20} "
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {ent(e.get('s'))[:20]:<20} -> {ent(e.get('r'))[:20]:<20} "
                            f"H{kpw(e.get('H'))} M{kpw(e.get('M'))} n{e.get('n')}")
 
     if gathers:
@@ -609,10 +633,10 @@ def summarize(events, faction=None, all_orders=False):
                    'distance, arr = had arrived there')
         for e in gathers[-16:]:
             if e.get('e') == 'stage':
-                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('a'))[:20]:<20} -> "
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {ent(e.get('a'))[:20]:<20} -> "
                            f"{ent(e.get('tgt'))[:20]:<20} stage d{e.get('d')} arr{e.get('arr')}")
                 continue
-            out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('a'))[:20]:<20} -> {ent(e.get('tgt'))[:20]:<20} "
+            out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {ent(e.get('a'))[:20]:<20} -> {ent(e.get('tgt'))[:20]:<20} "
                        f"d{e.get('d')} dmax{e.get('dmax')} n{e.get('n')}")
 
     if standoff:
@@ -620,35 +644,48 @@ def summarize(events, faction=None, all_orders=False):
                    'treaty skip = a third-party treaty no longer cancels our orders, narrow = only orders on the other '
                    'party; patrol = vanilla Patrol dropped: hostiles h at the village > 1.3 x m (ours there + the group); '
                    'turret = MissileBattery lifted at a village with at-war power h standing near (sc vanilla score); '
+                   'tveto = vanilla wanted a MissileBattery (sc) where no turret rule of ours calls for one: dropped; '
+                   'aring = ring village scored although vanilla put it <= 0 (v0); pkeep = ring village kept from the Pillage gauge; '
                    'fpeace = forced Non-aggression Pact on the attacker of a conceded village (r 1 = sent); '
                    'pannex = an Annex done by the Atreides PeacefullyAnnex ability instead of armies (inf = Influence before); '
                    'dmz on = at war, the neighbour holds n villages in regions next to ours (taken, not pillaged), dmz war = '
                    'truce broken by declareWar (cap = border villages it was capturing, r 1 = Success); '
-                   'uhqcap = no new Underworld HQ (n ours >= cap); uhqp = HQ placement (cand candidates, kept, newf in factions '
+                   'uhqcap = no new Underworld HQ (n ours >= cap); uhqres = no new HQ: Authority left after it < cheapest Annex (au, left, cmin); uhqp = HQ placement (cand candidates, kept, newf in factions '
                    'hosting none of ours); uhqx = HQ extension score (k, sc ours (NaN = skip), van vanilla)')
         c = Counter((e.get('f'), e['e'], e.get('act') or '') for e in standoff)
-        out.append('  ' + ', '.join(f'{f}:{k}{":" + a if a else ""} x{n}' for (f, k, a), n in sorted(c.items())))
+        out.append('  ' + ', '.join(f'{f}:{k}{":" + a if a else ""} x{n}' for (f, k, a), n in sorted(c.items(), key=str)))
         for e in standoff[-16:]:
             if e['e'] == 'treaty':
-                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} treaty {e.get('act')} {e.get('a')} {e.get('b') or ''}")
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} treaty {e.get('act')} {e.get('a')} {e.get('b') or ''}")
             elif e['e'] == 'fpeace':
-                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} fpeace -> {e.get('to')} at {ent(e.get('s'))[:22]} r{e.get('r')}")
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} fpeace -> {e.get('to')} at {ent(e.get('s'))[:22]} r{e.get('r')}")
             elif e['e'] == 'uhqcap':
-                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} uhqcap n{e.get('n')} cap{e.get('cap')}")
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} uhqcap n{e.get('n')} cap{e.get('cap')}")
+            elif e['e'] == 'uhqres':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} uhqres n{e.get('n')} au{num(e.get('au'), 0)} left{num(e.get('left'), 0)} cmin{num(e.get('cmin'), 0)}")
             elif e['e'] == 'uhqp':
-                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} uhqp cand{e.get('cand')} kept{e.get('kept')} newf{e.get('newf')}")
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} uhqp cand{e.get('cand')} kept{e.get('kept')} newf{e.get('newf')}")
             elif e['e'] == 'uhqx':
-                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} uhqx {ent(e.get('s'))[:22]:<22} {e.get('k')} sc{e.get('sc')} van{e.get('van')}")
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} uhqx {ent(e.get('s'))[:22]:<22} {e.get('k')} sc{e.get('sc')} van{e.get('van')}")
             elif e['e'] == 'dmz':
-                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} dmz {e.get('act')} vs {e.get('vs')} n{e.get('n')}"
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} dmz {e.get('act')} vs {e.get('vs')} n{e.get('n')}"
                            + (f" cap{e.get('cap')} r{e.get('r')} M{kpw(e.get('M'))} E{kpw(e.get('E'))}" if e.get('act') == 'war' else ''))
             elif e['e'] == 'pannex':
-                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} pannex {ent(e.get('tgt'))[:22]} inf{num(e.get('inf'), 0)} r{e.get('r')}")
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} pannex {ent(e.get('tgt'))[:22]} inf{num(e.get('inf'), 0)} r{e.get('r')}")
             elif e['e'] == 'patrol':
-                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} patrol {ent(e.get('s'))[:22]:<22} "
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} patrol {ent(e.get('s'))[:22]:<22} "
                            f"{ent(e.get('a'))[:20]} n{e.get('n')} h{kpw(e.get('h'))} m{kpw(e.get('m'))}")
+            elif e['e'] == 'odead':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} odead  {ent(e.get('a'))[:22]:<22} hp{e.get('hp')} ph{e.get('ph')} n{e.get('n')}")
+            elif e['e'] == 'okeep':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} okeep  order kept with {e.get('n')} armies (ph{e.get('ph')})")
+            elif e['e'] in ('aring', 'pkeep'):
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {e['e']:<6} {ent(e.get('v'))[:22]:<22} v0{e.get('v0', '')}")
+            elif e['e'] == 'tveto':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} tveto  {ent(e.get('s'))[:22]:<22} "
+                           f"sc{e.get('sc')} n{e.get('n')} hops{e.get('hops')}")
             else:
-                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} turret {ent(e.get('s'))[:22]:<22} "
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} turret {ent(e.get('s'))[:22]:<22} "
                            f"h{kpw(e.get('h'))} sc{e.get('sc')}")
 
     if ascores:
@@ -657,10 +694,10 @@ def summarize(events, faction=None, all_orders=False):
                    'c / cmin = its Authority cost / cheapest candidate (once per faction per 30 s)')
         for e in ascores[-16:]:
             if e['e'] == 'alone':
-                out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('tgt'))[:22]:<22} s{e.get('s')} c{e.get('c')} LONE candidate, nothing special: dropped")
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {ent(e.get('tgt'))[:22]:<22} s{e.get('s')} c{e.get('c')} LONE candidate, nothing special: dropped")
                 continue
             same = ent(e.get('tgt')) == ent(e.get('vb'))
-            out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('tgt'))[:22]:<22} s{e.get('s')} c{e.get('c')}/{e.get('cmin')} "
+            out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {ent(e.get('tgt'))[:22]:<22} s{e.get('s')} c{e.get('c')}/{e.get('cmin')} "
                        + ('= vanilla' if same else f"<- vanilla {ent(e.get('vb'))[:22]} v0 {e.get('v0')} now {e.get('vs')}") + f" n{e.get('n')}" + (f" dd{e.get('dd')}" if e.get('dd') else '') + (f" HOLD{e.get('hold')}" if e.get('hold') else '')
                        + (f" ring {ent(e.get('rt'))[:18]} s{e.get('rs')} dd{e.get('rdd')} h{e.get('ddh')}" if e.get('rt') and ent(e.get('rt')) != ent(e.get('tgt')) else ''))
 
@@ -669,7 +706,7 @@ def summarize(events, faction=None, all_orders=False):
                    'v0 vanilla score, hops = zones from our main base (vanilla -10 each, capped at 3), sp special bonus, '
                    'cf compactness x100, cen centre factor x100, dd Fremen ring x100, c / cmin cost, s final; n candidates')
         for e in acands[-40:]:
-            out.append(f"  {clock(e['_t'])} {e.get('f'):<10} {ent(e.get('tgt'))[:22]:<22} v0 {e.get('v0')} h{e.get('hops')} "
+            out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {ent(e.get('tgt'))[:22]:<22} v0 {e.get('v0')} h{e.get('hops')} "
                        f"sp{e.get('sp')} cf{e.get('cf')} cen{e.get('cen')} dd{e.get('dd')} c{e.get('c')}/{e.get('cmin')} "
                        f"s{e.get('s')} n{e.get('n')}")
 
@@ -678,6 +715,53 @@ def summarize(events, faction=None, all_orders=False):
                    '(once per army per 30 s), noregen = no-regen army kept out of the Resupply query: faction army src')
         c = Counter((e.get('f'), ent(e.get('a'))[:22], e.get('src') or ('selfsup' if e.get('e') == 'selfsup' else 'noregen')) for e in lowpicks)
         out += [f'  {f} {a} {s} x{n}' for (f, a, s), n in c.most_common(12)]
+
+    if rfails:
+        try:
+            from pathlib import Path as _P
+            crumbs = json.loads((_P(__file__).resolve().parents[1] / 'work' / 'crumbs.json').read_text(encoding='utf-8'))
+        except Exception:
+            crumbs = []
+        out.append('\n## RULE FAILURES (step probe): a strat / hunt run died silently (exception swallowed by its trap) '
+                   'at the call on this source line; rows at most 1 / 30 s per rule and faction')
+        c = Counter((e.get('r'), e.get('f'), e.get('at')) for e in rfails)
+        for (r, f, at), n in c.most_common(10):
+            ai = int(at) if isinstance(at, (int, float)) else -1  # parsed as a float (283.0)
+            src = crumbs[ai] if 0 <= ai < len(crumbs) else f'step {at}'
+            first = min(e['_t'] for e in rfails if (e.get('r'), e.get('f'), e.get('at')) == (r, f, at))
+            out.append(f'  {r} {f} at {src} x{n} (first {clock(first)})')
+
+    if cvbads:
+        out.append('\n## Turret cover read failures (world.py aimod_cover1 trap): structure that threw, skipped '
+                   '(asking faction, own)')
+        c = Counter((e.get('f'), ent(e.get('s'))[:30], e.get('own')) for e in cvbads)
+        for (f, s, own), n in c.most_common(10):
+            out.append(f'  {f} {s} own={own} x{n}')
+    if rfirsts:
+        out.append('\n## Spice first (build.py): Refinery lifted on a spice village without one, other buildings '
+                   'there dropped (sc = vanilla score)')
+        for e in rfirsts[-12:]:
+            out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {ent(e.get('s'))[:24]:<24} sc{num(e.get('sc'))}")
+    if rnots:
+        try:
+            from pathlib import Path as _P
+            rn = json.loads((_P(__file__).resolve().parents[1] / 'work' / 'eresult.json').read_text(encoding='utf-8'))
+        except Exception:
+            rn = []
+        out.append('\n## Spice villages where no Refinery can go up (build.py `rnot`: checkAddUpgrade result; '
+                   'VillageUpgradesLimitReached = full: needs a demolition path)')
+        c = Counter((e.get('f'), ent(e.get('s'))[:24], e.get('r')) for e in rnots)
+        for (f, s, rr), n in c.most_common(12):
+            ri = int(rr) if isinstance(rr, (int, float)) else -1
+            out.append(f"  {f} {s} {rn[ri] if 0 <= ri < len(rn) else rr} x{n}")
+
+    if armysz:
+        out.append('\n## Army size (tools/rules/army.py): cpdis = temporary army disbanded on a CP overflow '
+                   '(cp its upkeep, free = net CP before); mpgate = unit pick that vanilla Manpower goals would have blocked; '
+                   'dfull = vanilla wanted to send every idle army to a defense it judged too strong because CP was full: blocked')
+        out.append('  ' + ', '.join(f'{f} {k} x{n}' for (f, k), n in Counter((e.get('f'), e['e']) for e in armysz).most_common()))
+        for e in [x for x in armysz if x['e'] == 'cpdis'][-10:]:
+            out.append(f"  {clock(e['_t'])} {e.get('f')} cpdis {ent(e.get('a'))[:22]} cp{e.get('cp')} free{e.get('free')}")
 
     if worms:
         out.append('\n## Worms / deep desert (tools/rules/worm.py, desert.py): dstep = siege army moved off the deep desert to the village; wflee = worm-targeted army sent to rock (rock 0: away from the '
@@ -719,7 +803,7 @@ def summarize(events, faction=None, all_orders=False):
         starts = [e for e in raids if e.get('act') == 'start']
         refused = [e for e in raids if e.get('act') == 'refuse']
         aborts = [e for e in raids if e.get('act') == 'abort']
-        splits = [e for e in raids if e.get('act') == 'split' or e['e'] == 'release']
+        splits = [e for e in raids if e.get('act') in ('split', 'keep') or e['e'] == 'release']
         raids = [e for e in raids if e['e'] == 'raid']
         owned = lambda e: isinstance(e.get('tgt'), dict) and e['tgt'].get('o') not in (None, 'null')
         out.append('Enemy villages (at-war owner) / all: ' + ', '.join(
@@ -797,6 +881,16 @@ def summarize(events, faction=None, all_orders=False):
                 for e in h:
                     if e.get('au') is not None and e['_t'] - last >= 290:
                         pts.append(f"{clock(e['_t'])} {num(e.get('au'), 0)}/{num(e.get('aup'), 1)} i{num(e.get('inf'), 0)}")
+                        last = e['_t']
+                out.append(f'{f}: ' + ', '.join(pts))
+        if any(e.get('cp') is not None for h in snap_hist.values() for e in h):
+            out.append('Army size every ~5 min (CP used/cap, Manpower stock; rules/army.py): used < cap = army not maxed')
+            for f, h in sorted(snap_hist.items(), key=lambda kv: str(kv[0])):
+                pts, last = [], -1e9
+                for e in h:
+                    if e.get('cp') is not None and e['_t'] - last >= 290:
+                        cp, cpf = e.get('cp') or 0, e.get('cpf') or 0
+                        pts.append(f"{clock(e['_t'])} {num(cp - cpf, 0)}/{num(cp, 0)} mp{num(e.get('mp'), 0)}")
                         last = e['_t']
                 out.append(f'{f}: ' + ', '.join(pts))
 

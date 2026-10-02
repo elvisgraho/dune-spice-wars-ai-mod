@@ -77,6 +77,7 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     b = B(fb)
     void = fb.reg(cx.t('void'))
     guard = fb.try_()
+    _crumb_begin(fb, b, cx, helpers, 'strat')  # step probe: `rfail` names a run that died silently
     ctrl = b.field(0, 'controller')
     fac = b.field(ctrl, 'owner')
     fb.op('JNull', reg=fac, offset='end')
@@ -586,6 +587,7 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
                                           ('T', T), ('tgt', tgt), ('mode', mode), ('hold', hold),
                                           ('reach', reach), ('war', war)])
     fb.label('end')
+    _crumb_end(fb, b, cx, 'strat')
     fb.end_try(guard)
     fb.op('Ret', ret=void)
     return fb.build()

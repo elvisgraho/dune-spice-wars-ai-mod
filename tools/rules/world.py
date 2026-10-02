@@ -593,27 +593,131 @@ def build_short(cx, land, supok):
     return fb.build()
 
 
-def build_cover(cx):
+def _build_cover1(cx):
+    """aimod_cover1(e, s, res) -> turret cover of structure s at entity e (aimod_cover's per-structure body), -1 when
+    reading s threw (own trap: one bad structure no longer kills the caller's whole run; hunt / strat died here every
+    10-30 s for Smugglers, Harkonnen and Fremen, `rfail` at hunt.py:133 / strat.py:127 / strat.py:206)."""
+    fb = FB(cx, [cx.t('ent.Entity'), cx.t('ent.Structure'), cx.t('hl.types.ArrayObj')], cx.t('f64'))
+    b = B(fb)
+    res = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=res, src=b.const('f64', -1))  # stays -1 if the trap fires
+    n0 = fb.reg(cx.t('i32'))  # report length before this structure (rolled back to it on a throw)
+    fb.op('Mov', dst=n0, src=b.const('i32', 0))
+    fb.op('JNull', reg=2, offset='n0d')
+    fb.op('Mov', dst=n0, src=b.field(2, 'length'))
+    fb.label('n0d')
+    guard = fb.try_()
+    tot = b.const('f64', 0)
+    zero = b.const('f64', 0)
+    th = b.const('f64', TURRET_H)
+    cover = b.const('f64', COVER_R)
+    op_ = fb.reg(cx.t('f64'))
+    k = fb.reg(cx.t('i32'))
+    s = 1
+    sde = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=sde, src=s)
+    sd = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=sd, src=b.call('ent.Entity.getDistTo', 0, sde))
+    # every turret building (main base districts too) from where it stands: past this nothing reaches e
+    fb.op('JSGt', a=sd, b=b.const('f64', COVER_R + TURRET_SPREAD), offset='done')
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isMainBase', s), offset='village')
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', s), offset='done')
+    # main base guns: from its centre, COVER_R (Sadnin, 113 from Arrakeen, lost 6 of 10 armies to them)
+    fb.op('JSGt', a=sd, b=cover, offset='stats')
+    mst = b.call('$HCombatStats.mainBaseCombatStats', s)
+    fb.op('JNull', reg=mst, offset='stats')
+    fb.op('Mov', dst=op_, src=b.call('$HPowerScore.offensivePotential', fb.dyn(mst), zero))
+    fb.op('Mul', dst=op_, a=op_, b=th)
+    fb.op('Mul', dst=op_, a=op_, b=b.const('f64', MB_GUN_W))  # main-base guns hit far above their power score
+    fb.op('Add', dst=tot, a=tot, b=op_)
+    fb.op('JNull', reg=2, offset='stats')
+    for _ in range(MB_GUN_W):  # ... in vanilla's report too: the same stats again
+        b.call('hl.types.ArrayObj.push', 2, fb.dyn(mst))
+    fb.op('JAlways', offset='stats')  # a main base is never silenced by a siege
+    fb.label('village')
+    sg = b.field(s, 'siege')
+    fb.op('JNull', reg=sg, offset='stats')
+    fb.op('JNotNull', reg=b.field(sg, 'besiegingFaction'), offset='done')  # being annexed / pillaged: silent
+    # turrets: each powered, built building from where it stands, by its own attack range (+ TURRET_SPREAD fade); a
+    # powered building without an attack (range 0) or still in construction never covers
+    fb.label('stats')
+    bp = b.field(s, 'buildings')
+    fb.op('JNull', reg=bp, offset='done')
+    arr = b.cast(b.field(bp, 'array'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=arr, offset='done')
+    an = b.field(arr, 'length')
+    spread = b.const('f64', TURRET_SPREAD)
+    one = b.const('f64', 1)
+    w = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=k, src=b.const('i32', 0))
+    b.loop_head('kl')
+    fb.op('JSGte', a=k, b=an, offset='done')
+    bd = b.cast(b.call('hl.types.ArrayObj.getDyn', arr, k), 'ent.BaseBuilding')  # main-base districts / HQ parts are plain BaseBuildings ($BaseBuilding.create): a cast to Building threw
+    fb.op('Incr', dst=k)
+    fb.op('JNull', reg=bd, offset='kl')
+    fb.op('JSLte', a=b.call('ent.Entity.get_power', bd), b=zero, offset='kl')
+    fb.op('JTrue', cond=b.call('ent.BaseBuilding.get_inConstruction', bd), offset='kl')  # status 3: not built yet
+    # w = (range + SPREAD - d) / SPREAD, capped at 1: full within range, 0 at range + SPREAD
+    fb.op('Mov', dst=w, src=b.call('ent.Entity.get_attackRange', bd))
+    fb.op('JSLte', a=w, b=zero, offset='kl')
+    fb.op('Add', dst=w, a=w, b=spread)
+    fb.op('Sub', dst=w, a=w, b=b.call('ent.Entity.getDistTo', 0, bd))
+    fb.op('JSLte', a=w, b=zero, offset='kl')
+    fb.op('SDiv', dst=w, a=w, b=spread)
+    fb.op('JSLte', a=w, b=one, offset='wok')
+    fb.op('Mov', dst=w, src=one)
+    fb.label('wok')
+    st = b.call('$HCombatStats.buildingCombatStats', bd)
+    fb.op('JNull', reg=st, offset='kl')
+    fb.op('Mov', dst=op_, src=b.call('$HPowerScore.offensivePotential', fb.dyn(st), zero))
+    fb.op('Mul', dst=op_, a=op_, b=th)
+    fb.op('Mul', dst=op_, a=op_, b=w)
+    fb.op('Add', dst=tot, a=tot, b=op_)
+    fb.op('JNull', reg=2, offset='kl')
+    fb.op('JSLt', a=w, b=_ratio(fb, b, 0.5), offset='kl')  # vanilla report: only turrets mostly in reach
+    b.call('hl.types.ArrayObj.push', 2, fb.dyn(st))
+    fb.op('JAlways', offset='kl')
+    fb.label('done')
+    fb.op('Mov', dst=res, src=tot)
+    fb.end_try(guard)
+    # threw part-way: its stats already pushed would stay in vanilla's report (a Smugglers HQ's building stats with
+    # health read 43M enemy power at Atreides' Uliel Annex, order balance 0.007): drop them
+    fb.op('JSGte', a=res, b=b.const('f64', 0), offset='ret')
+    fb.op('JNull', reg=2, offset='ret')
+    nx = fb.reg(cx.t('i32'))
+    fb.op('Sub', dst=nx, a=b.field(2, 'length'), b=n0)
+    fb.op('JSLte', a=nx, b=b.const('i32', 0), offset='ret')
+    g2 = fb.try_()
+    b.call('hl.types.ArrayObj.splice', 2, n0, nx)
+    fb.end_try(g2)
+    fb.label('ret')
+    fb.op('Ret', ret=res)
+    return fb.build()
+
+
+def build_cover(cx, helpers):
     """aimod_cover(fac, e, exclude, own, res) -> turret cover at e: for every structure within COVER_R of e (not
     `exclude`) owned by fac (own) or by a faction at war with fac (not own), each of its combat stats without health
     (turrets = buildings with power, main base guns; militia have health and are skipped) adds offensivePotential x
     TURRET_H to the result (an active main base's guns x MB_GUN_W), and is pushed into `res` when res is not null
-    (for vanilla power reports; a main base's MB_GUN_W times). Silent: a
-    besieged village (its turrets stop while it is annexed / pillaged) and dead main bases."""
+    (for vanilla power reports; a main base's MB_GUN_W times). Silent: a besieged village (its turrets stop while it
+    is annexed / pillaged) and dead main bases. Guest structures (zone owner != their owner: Smugglers' Underworld
+    HQs) are skipped. Each structure is read by aimod_cover1 in its own trap: one that throws adds nothing (its
+    pushes into res are rolled back) and is logged `cvbad` (f = asking faction, s = the structure, own; once per structure per 60 s)."""
+    one_s = _build_cover1(cx)
+    helpers['cover1'] = one_s  # behave adds it to new_ids (no call-site redirects inside)
     fb = FB(cx, [cx.t('ent.Faction'), cx.t('ent.Entity'), cx.t('ent.Entity'), cx.t('bool'),
                  cx.t('hl.types.ArrayObj')], cx.t('f64'))
     b = B(fb)
     tot = b.const('f64', 0)
     zero = b.const('f64', 0)
-    th = b.const('f64', TURRET_H)
-    cover = b.const('f64', COVER_R)
     fb.op('JNull', reg=0, offset='end')
     fb.op('JNull', reg=1, offset='end')
     state = _state(fb, b, cx)
     facs = b.cast(fb.get(state, 'factions', 'array'), 'hl.types.ArrayObj')
     fb.op('JNull', reg=facs, offset='end')
     n = b.field(facs, 'length')
-    i, j, k = (fb.reg(cx.t('i32')) for _ in range(3))
+    i, j = (fb.reg(cx.t('i32')) for _ in range(2))
     fb.op('Mov', dst=i, src=b.const('i32', 0))
     op_ = fb.reg(cx.t('f64'))
     se = fb.reg(cx.t('ent.Entity'))
@@ -640,67 +744,20 @@ def build_cover(cx):
     fb.op('JNull', reg=s, offset='sl')
     fb.op('Mov', dst=se, src=s)
     fb.op('JEq', a=se, b=2, offset='sl')
-    sd = fb.reg(cx.t('f64'))
-    fb.op('Mov', dst=sd, src=b.call('ent.Entity.getDistTo', 1, se))
-    # every turret building (main base districts too) from where it stands: past this nothing reaches e
-    fb.op('JSGt', a=sd, b=b.const('f64', COVER_R + TURRET_SPREAD), offset='sl')
-    fb.op('JFalse', cond=b.call('ent.Structure.get_isMainBase', s), offset='village')
-    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', s), offset='sl')
-    # main base guns: from its centre, COVER_R (Sadnin, 113 from Arrakeen, lost 6 of 10 armies to them)
-    fb.op('JSGt', a=sd, b=cover, offset='stats')
-    mst = b.call('$HCombatStats.mainBaseCombatStats', s)
-    fb.op('JNull', reg=mst, offset='stats')
-    fb.op('Mov', dst=op_, src=b.call('$HPowerScore.offensivePotential', fb.dyn(mst), zero))
-    fb.op('Mul', dst=op_, a=op_, b=th)
-    fb.op('Mul', dst=op_, a=op_, b=b.const('f64', MB_GUN_W))  # main-base guns hit far above their power score
+    # far structures first (most of the map): no call / trap per structure past turret reach
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', 1, se), b=b.const('f64', COVER_R + TURRET_SPREAD), offset='sl')
+    gz = b.call('ent.Entity.get_zone', se)
+    fb.op('JNull', reg=gz, offset='gok')
+    fb.op('JNotEq', a=b.field(gz, 'owner'), b=f, offset='sl')  # a guest (Underworld HQ): no turrets, not counted
+    fb.label('gok')
+    fb.op('Call3', dst=op_, fun=one_s, arg0=1, arg1=s, arg2=4)
+    fb.op('JSLt', a=op_, b=zero, offset='bad')
     fb.op('Add', dst=tot, a=tot, b=op_)
-    fb.op('JNull', reg=4, offset='stats')
-    for _ in range(MB_GUN_W):  # ... in vanilla's report too: the same stats again
-        b.call('hl.types.ArrayObj.push', 4, fb.dyn(mst))
-    fb.op('JAlways', offset='stats')  # a main base is never silenced by a siege
-    fb.label('village')
-    sg = b.field(s, 'siege')
-    fb.op('JNull', reg=sg, offset='stats')
-    fb.op('JNotNull', reg=b.field(sg, 'besiegingFaction'), offset='sl')  # being annexed / pillaged: silent
-    # turrets: each powered, built building from where it stands, by its own attack range (+ TURRET_SPREAD fade); a
-    # powered building without an attack (range 0) or still in construction never covers
-    fb.label('stats')
-    bp = b.field(s, 'buildings')
-    fb.op('JNull', reg=bp, offset='sl')
-    arr = b.cast(b.field(bp, 'array'), 'hl.types.ArrayObj')
-    fb.op('JNull', reg=arr, offset='sl')
-    an = b.field(arr, 'length')
-    spread = b.const('f64', TURRET_SPREAD)
-    one = b.const('f64', 1)
-    w = fb.reg(cx.t('f64'))
-    fb.op('Mov', dst=k, src=b.const('i32', 0))
-    b.loop_head('kl')
-    fb.op('JSGte', a=k, b=an, offset='sl')
-    bd = b.cast(b.call('hl.types.ArrayObj.getDyn', arr, k), 'ent.Building')
-    fb.op('Incr', dst=k)
-    fb.op('JNull', reg=bd, offset='kl')
-    fb.op('JSLte', a=b.call('ent.Entity.get_power', bd), b=zero, offset='kl')
-    fb.op('JTrue', cond=b.call('ent.BaseBuilding.get_inConstruction', bd), offset='kl')  # status 3: not built yet
-    # w = (range + SPREAD - d) / SPREAD, capped at 1: full within range, 0 at range + SPREAD
-    fb.op('Mov', dst=w, src=b.call('ent.Entity.get_attackRange', bd))
-    fb.op('JSLte', a=w, b=zero, offset='kl')
-    fb.op('Add', dst=w, a=w, b=spread)
-    fb.op('Sub', dst=w, a=w, b=b.call('ent.Entity.getDistTo', 1, bd))
-    fb.op('JSLte', a=w, b=zero, offset='kl')
-    fb.op('SDiv', dst=w, a=w, b=spread)
-    fb.op('JSLte', a=w, b=one, offset='wok')
-    fb.op('Mov', dst=w, src=one)
-    fb.label('wok')
-    st = b.call('$HCombatStats.buildingCombatStats', bd)
-    fb.op('JNull', reg=st, offset='kl')
-    fb.op('Mov', dst=op_, src=b.call('$HPowerScore.offensivePotential', fb.dyn(st), zero))
-    fb.op('Mul', dst=op_, a=op_, b=th)
-    fb.op('Mul', dst=op_, a=op_, b=w)
-    fb.op('Add', dst=tot, a=tot, b=op_)
-    fb.op('JNull', reg=4, offset='kl')
-    fb.op('JSLt', a=w, b=_ratio(fb, b, 0.5), offset='kl')  # vanilla report: only turrets mostly in reach
-    b.call('hl.types.ArrayObj.push', 4, fb.dyn(st))
-    fb.op('JAlways', offset='kl')
+    fb.op('JAlways', offset='sl')
+    fb.label('bad')
+    _throttle(fb, b, cx, 'cvbad', se, 60, 'sl')
+    _log_ev(fb, b, cx, helpers, 'cvbad', [('f', fb.get(0, 'kind')), ('s', se), ('own', 3)])
+    fb.op('JAlways', offset='sl')
     fb.label('end')
     fb.op('Ret', ret=tot)
     return fb.build()

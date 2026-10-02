@@ -31,7 +31,9 @@ turret cover at s (aimod_cover own; a battery of the pair partner counts) is bel
 max(vanilla, 0) + STAND_BONUS (vanilla scores are ~10-40 and Insane picks among the best 2 pairs on different
 villages). Each battery adds to the cover `strat` subtracts from the home need, so built turrets free armies.
 Only when Upgrades.checkAddUpgrade says Success or MissingResources (not full, in combat, occupied). Vanilla's 0
-(below its defense minimum) is lifted; NaN (invalid pair) is kept. A standing record not refreshed for 2 x STAND_T
+(below its defense minimum) is lifted; NaN (invalid pair) is kept. Every other MissileBattery pair scores NaN (dropped):
+a battery only where a rule above calls for one (user: vanilla's map-exposure score put one on Harkonnen's Yedah, a
+Manpower village no rule saw as a front); logs `tveto` (s, sc vanilla score > 0, n, hops) once per village per 60 s. A standing record not refreshed for 2 x STAND_T
 restarts (map `stnl` last seen). Unaffordable: vanilla's
 reserve logic saves for it. Logs `turret` (s, h, sc vanilla score) once per village per 30 s. Fails safe: in a
 trap, the vanilla score on error."""
@@ -267,7 +269,7 @@ def build_turret_steer(cx, helpers, threat, cover, new_ids, inner=None):
     stnd = _global_map(fb, b, cx, 'stnd')
     fb.op('JSGte', a=h, b=b.const('f64', STAND_MIN_H), offset='standing')
     b.call('haxe.ds.ObjectMap.remove', stnd, fb.dyn(s))
-    fb.op('JAlways', offset='end')
+    fb.op('JAlways', offset='nobat')
     fb.label('standing')
     # scoring runs only now and then: a record not refreshed for 2 x STAND_T is an earlier, ended standoff (a stack
     # that passed, left unseen and came back much later must stand STAND_T again)
@@ -283,11 +285,11 @@ def build_turret_steer(cx, helpers, threat, cover, new_ids, inner=None):
     fb.op('JNotNull', reg=first, offset='seen')
     fb.label('fresh')
     b.call('haxe.ds.ObjectMap.set', stnd, fb.dyn(s), fb.dyn(now))
-    fb.op('JAlways', offset='end')
+    fb.op('JAlways', offset='nobat')
     fb.label('seen')
     fb.op('SafeCast', dst=el, src=first)
     fb.op('Sub', dst=el, a=now, b=el)
-    fb.op('JSLt', a=el, b=b.const('f64', STAND_T), offset='end')
+    fb.op('JSLt', a=el, b=b.const('f64', STAND_T), offset='nobat')
     ne = fb.reg(cx.t('ent.Entity'))
     fb.op('Null', dst=ne)
     na = fb.reg(cx.t('hl.types.ArrayObj'))
@@ -299,12 +301,12 @@ def build_turret_steer(cx, helpers, threat, cover, new_ids, inner=None):
     # enough turrets of ours (the partner's count) already hold it: cover >= ENTER x the standing power
     hx = fb.reg(cx.t('f64'))
     fb.op('Mul', dst=hx, a=h, b=_ratio(fb, b, ENTER))
-    fb.op('JSGte', a=c, b=hx, offset='end')
+    fb.op('JSGte', a=c, b=hx, offset='nobat')
     # only a battery that can be built now or once paid for: a full village (VillageUpgradesLimitReached) would be
     # picked over and over, and in combat / occupied vanilla only queues it (the same check checkBuildings runs
     # before doAddBuilding); demolishing for a slot is the exposed case's only
     fb.op('JEq', a=ri, b=b.const('i32', rnames.index('Success')), offset='boost')
-    fb.op('JNotEq', a=ri, b=b.const('i32', rnames.index('MissingResources')), offset='end')
+    fb.op('JNotEq', a=ri, b=b.const('i32', rnames.index('MissingResources')), offset='nobat')
     fb.label('boost')
     v0 = fb.reg(cx.t('f64'))
     fb.op('Mov', dst=v0, src=res)
@@ -316,6 +318,18 @@ def build_turret_steer(cx, helpers, threat, cover, new_ids, inner=None):
     _throttle(fb, b, cx, 'turret', s, 30, 'end')
     _log_ev(fb, b, cx, helpers, 'turret', [('f', fb.get(1, 'kind')), ('s', s), ('h', h), ('sc', v0), ('n', fb.dyn(ne_n)),
                                           ('hops', fb.dyn(hops)), ('cen', cen)])
+    fb.op('JAlways', offset='end')
+    # no rule of ours calls for a battery here: dropped (NaN), whatever vanilla's map-exposure score says (user:
+    # Harkonnen built one at Yedah, a Manpower village no rule of ours saw as a front)
+    fb.label('nobat')
+    vs = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=vs, src=res)
+    fz = b.const('f64', 0)
+    fb.op('SDiv', dst=res, a=fz, b=fz)
+    fb.op('JSLte', a=vs, b=fz, offset='end')
+    _throttle(fb, b, cx, 'tveto', s, 60, 'end')
+    _log_ev(fb, b, cx, helpers, 'tveto', [('f', fb.get(1, 'kind')), ('s', s), ('sc', vs), ('n', fb.dyn(ne_n)),
+                                          ('hops', fb.dyn(hops))])
     fb.label('end')
     fb.end_try(guard)
     fb.op('Ret', ret=res)
@@ -324,10 +338,137 @@ def build_turret_steer(cx, helpers, threat, cover, new_ids, inner=None):
     # only the pick's scoring closure (scoring_logic_ai_AIStructureBuilding): checkBuildings re-scores the pick and
     # the village's existing buildings for VillageUpgradesLimitReached and demolishes any scoring below the pick, so
     # a bonus there would tear down a standoff village's economy for a turret
-    skip = {w, inner, cx.fn('logic.ai.BuildingManager.checkBuildings').findex.value}
+    skip = set(new_ids) | {w, inner, cx.fn('logic.ai.BuildingManager.checkBuildings').findex.value}  # our wrappers (chained)
     sites = [op for g in cx.code.functions if g.findex.value not in skip for op in g.ops
              if op.op.startswith('Call') and op.df.get('fun') is not None and op.df['fun'].value == oid]
     if len(sites) != 1:
         raise ValueError(f'turret-steer: expected 1 scoring-closure call of getBuildingStructureScore, found {len(sites)}')
     sites[0].df['fun'].value = w
     return {'turret-steer': 1}
+
+
+def build_spice_first(cx, helpers, new_ids, inner):
+    """Spice first (user: the first building on a spice village is its harvester): score wrapper for
+    getBuildingStructureScore (pair {s, k}, f, context, noStocks) called by turret-steer instead of `inner`. For a
+    village s of ours on our land whose zone has spice (Zone.hasSpice) and holds no Refinery yet (Upgrades.getKind),
+    while a Refinery can go up there now or once paid (checkAddUpgrade Success / MissingResources): the Refinery pair
+    scores max(score, 0) + SPICE_FIRST_W, every other pair on that village NaN (dropped), so vanilla's weighted pick
+    (Insane: best 2) can't put a Marketplace or a battery first and the village saves for its harvester. Vanilla gave
+    the Refinery base + aiWeight 10, below village-bonus buildings (upgrade factor x 10) and under-produced resources.
+    Refinery not buildable (notForFactions Fremen / Vernius, full, occupied): untouched. Log `rfirst` (s, sc vanilla)
+    once per village per 60 s. Fails safe: inner's score on error."""
+    orig = cx.fn('logic.ai.$HScoring.getBuildingStructureScore')
+    ft = cx.code.types[orig.type.value].definition
+    fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=orig.type.value)
+    b = B(fb)
+    res = fb.reg(cx.t('f64'))
+    fb.op('Call4', dst=res, fun=inner, arg0=0, arg1=1, arg2=2, arg3=3)  # outside the trap
+    guard = fb.try_()
+    fb.op('JSGte', a=res, b=b.const('f64', -(1 << 30)), offset='real')  # NaN = not buildable: keep it
+    fb.op('JAlways', offset='end')
+    fb.label('real')
+    fb.op('JNull', reg=1, offset='end')
+    so = fb.get(0, 's')
+    fb.op('JNull', reg=so, offset='end')
+    s = b.cast(so, 'ent.Structure')
+    fb.op('JNull', reg=s, offset='end')
+    fb.op('JTrue', cond=b.call('ent.Structure.get_isMainBase', s), offset='end')
+    z = b.call('ent.Entity.get_zone', s)
+    fb.op('JNull', reg=z, offset='end')
+    fb.op('JNotEq', a=b.field(z, 'owner'), b=1, offset='end')  # our land (not an Underworld HQ in theirs)
+    fb.op('JFalse', cond=b.call('ent.Zone.hasSpice', z), offset='end')
+    # SPICE_ANY (Fremen, Vernius: Refinery notForFactions) never get one: no per-pair checks, no `rnot` noise
+    fkd = b.field(1, 'kind')
+    fb.op('JNull', reg=fkd, offset='end')
+    for nm in SPICE_ANY:
+        fb.op('JEq', a=b.call('String.__compare', fkd, fb.dyn(fb.string(nm))), b=b.const('i32', 0), offset='end')
+    up = b.field(s, 'upgrades')
+    fb.op('JNull', reg=up, offset='end')
+    refinery = fb.string('Refinery')
+    gk = cx.fn('logic.Upgrades.getKind')
+    gkt = [a.value for a in cx.code.types[gk.type.value].definition.args]
+    gkn = []
+    for t_ in gkt[2:]:
+        r_ = fb.reg(t_)
+        fb.op('Null', dst=r_)
+        gkn.append(r_)
+    ku = fb.reg(cx.code.types[gk.type.value].definition.ret.value)
+    fb.op('CallN', dst=ku, fun=gk.findex.value, args=[up, refinery] + gkn)
+    fb.op('JNotNull', reg=ku, offset='end')  # has its harvester building (built or going up)
+    ca = cx.fn('logic.Upgrades.checkAddUpgrade')
+    cat = [a.value for a in cx.code.types[ca.type.value].definition.args]
+    cret = cx.code.types[ca.type.value].definition.ret.value
+    rnames = [c_.name.resolve(cx.code) for c_ in cx.code.types[cret].definition.constructs]
+    dref = fb.reg(cat[2])
+    fb.op('Ref', dst=dref, src=b.const('i32', 0))
+    cnul = []
+    for t_ in cat[3:]:
+        r_ = fb.reg(t_)
+        fb.op('Null', dst=r_)
+        cnul.append(r_)
+    rr = fb.reg(cret)
+    fb.op('CallN', dst=rr, fun=ca.findex.value, args=[up, refinery, dref] + cnul)
+    ri = fb.reg(cx.t('i32'))
+    fb.op('EnumIndex', dst=ri, value=rr)
+    _write_names(rnames)
+    fb.op('JEq', a=ri, b=b.const('i32', rnames.index('Success')), offset='can')
+    fb.op('JEq', a=ri, b=b.const('i32', rnames.index('MissingResources')), offset='can')
+    # a spice village of ours where no Refinery can go up (full of an earlier owner's buildings after a capture,
+    # occupied, ...): untouched, logged `rnot` (r = checkAddUpgrade result, named in mod log via work/eresult.json)
+    # once per village per 300 s: the evidence for a demolition path (as turret-steer's) if full villages show up
+    # transient (a building going up, a fight at the village): the next scoring after it lifts it; not logged
+    for nm in ('ConstructionInProgress', 'IsInCombat', 'UpgradeInProgress'):
+        fb.op('JEq', a=ri, b=b.const('i32', rnames.index(nm)), offset='end')
+    rse = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=rse, src=s)
+    _throttle(fb, b, cx, 'rnot', rse, 300, 'end')
+    rif = fb.reg(cx.t('f64'))
+    fb.op('ToSFloat', dst=rif, src=ri)
+    _log_ev(fb, b, cx, helpers, 'rnot', [('f', fb.get(1, 'kind')), ('s', rse), ('r', rif)])
+    fb.op('JAlways', offset='end')
+    fb.label('can')
+    k = fb.get(0, 'k')
+    fb.op('JNull', reg=k, offset='end')
+    ks = b.cast(k, 'String')
+    fb.op('JEq', a=b.call('String.__compare', ks, fb.dyn(refinery)), b=b.const('i32', 0), offset='isref')
+    fb.op('Mov', dst=res, src=_nan_f(fb, b, cx))  # anything else waits for the harvester building
+    fb.op('JAlways', offset='end')
+    fb.label('isref')
+    v0 = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=v0, src=res)
+    fb.op('JSGte', a=res, b=b.const('f64', 0), offset='pos')
+    fb.op('Mov', dst=res, src=b.const('f64', 0))
+    fb.label('pos')
+    fb.op('Add', dst=res, a=res, b=b.const('f64', SPICE_FIRST_W))
+    se = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=se, src=s)
+    _throttle(fb, b, cx, 'rfirst', se, 60, 'end')
+    _log_ev(fb, b, cx, helpers, 'rfirst', [('f', fb.get(1, 'kind')), ('s', se), ('sc', v0)])
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    new_ids.add(w)
+    return w
+
+
+def _write_names(names):
+    """work/eresult.json: checkAddUpgrade result index -> name, for mod log. Both boot files build it in parallel
+    processes (same content): private temp file, then swapped in; a swap blocked by the other writer is fine."""
+    import json
+    import os
+    from pathlib import Path as _P
+    out = _P(__file__).resolve().parents[2] / 'work' / 'eresult.json'
+    tmp = out.with_name(f'eresult.{os.getpid()}.tmp')
+    tmp.write_text(json.dumps(names), encoding='utf-8')
+    try:
+        os.replace(tmp, out)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+
+
+def _nan_f(fb, b, cx):
+    r = fb.reg(cx.t('f64'))
+    z = b.const('f64', 0)
+    fb.op('SDiv', dst=r, a=z, b=z)
+    return r

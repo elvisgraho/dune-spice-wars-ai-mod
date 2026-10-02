@@ -1,5 +1,5 @@
 """AI rules built on the enemy army awareness scan (testbed patch `aware-ai`, installed with `ai-log`): wiring only.
-The code lives in tools/rules/: common (thresholds, bytecode helpers), world (shared queries), heal, hunt, siege, raid, strat, strand (+ patrol gate), memory, deploy, peace (+ treaty scope, force peace), build (turret steering), uhq (Underworld HQ cap, placement, extensions).
+The code lives in tools/rules/: common (thresholds, bytecode helpers), world (shared queries), heal, hunt, siege, raid, strat, strand (+ patrol gate), memory, deploy, peace (+ treaty scope, force peace), build (turret steering), uhq (Underworld HQ cap, placement, extensions), army (army size: CP overflow, Manpower pick gate).
 Thresholds and rationale: docs/AI-POLICY.md §4; mechanics and hook points: docs/REVERSING.md "AI rules".
 
 Shared queries (appended functions): aimod_pw, aimod_threat(fac, p, r) (at-war power + neutral raiders targeting fac
@@ -47,16 +47,31 @@ from rules.dmz import *  # noqa: F401,F403
 from rules.claim import *  # noqa: F401,F403
 from rules.strike import *  # noqa: F401,F403
 from rules.sweep import *  # noqa: F401,F403
+from rules.army import *  # noqa: F401,F403
+from rules.orders import *  # noqa: F401,F403
 
 
 def install(cx, helpers, new_ids):
     """Rule builds with logging trap handlers (rules.common.make_trap_hook); the hook is cleared after, so the next
     boot file (other function ids) and inject's own wrappers never get it."""
-    FB.trap_hook = make_trap_hook(helpers)
+    FB.trap_hook = make_trap_hook(helpers) if TRAP_LOG else None
+    CRUMBS.clear()
     try:
         return _install(cx, helpers, new_ids)
     finally:
         FB.trap_hook = None
+        import json
+        from pathlib import Path
+        import os
+        out = Path(__file__).resolve().parents[1] / 'work' / 'crumbs.json'
+        # `rfail` at -> source line (tools/aireport.py). Both boot files build the same table, in parallel processes
+        # (mod.patch_boots): write a private temp file and swap it in; a swap blocked by the other writer is fine
+        tmp = out.with_name(f'crumbs.{os.getpid()}.tmp')
+        tmp.write_text(json.dumps(CRUMBS), encoding='utf-8')
+        try:
+            os.replace(tmp, out)
+        except OSError:
+            tmp.unlink(missing_ok=True)
 
 
 def _install(cx, helpers, new_ids):
@@ -79,7 +94,8 @@ def _install(cx, helpers, new_ids):
     short = build_short(cx, land, supok)
     helpers['short'] = short  # vanilla Defense picks: absolute supply test (rules/heal.py pick-life)
     sieged = build_sieged(cx)
-    cover = build_cover(cx)
+    cover = build_cover(cx, helpers)
+    new_ids.add(helpers['cover1'])
     silence = build_silence(cx)
     defend = build_defend(cx, sieged, helpers, threat, neutral, own, cover, terrain)
     new_ids.update({pw, threat, hsafe, neutral, own, free, unsafe, land, terrain, threat_now, supok, short, sieged, cover, silence,
@@ -140,13 +156,22 @@ def _install(cx, helpers, new_ids):
     report.update(build_uhq_place(cx, helpers, uhqgain, new_ids))
     uhqx = build_uhq_ext(cx, helpers, uhqval, new_ids)
     report['uhq-ext'] = 1
-    report.update(build_turret_steer(cx, helpers, threat, cover, new_ids, inner=uhqx))
+    spf = build_spice_first(cx, helpers, new_ids, uhqx)  # Refinery first on a spice village (rules/build.py)
+    report['spice-first'] = 1
+    report.update(build_turret_steer(cx, helpers, threat, cover, new_ids, inner=spf))
     sengage = build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain, neutral)
     idle = build_free(cx, pw, 0, 0, patrol_ok=False)
     helpers['wormheld'] = build_wormheld(cx)  # worm-flee hold: out of vanilla's Resupply / mission picks
-    new_ids.add(helpers['wormheld'])
+    helpers['wormonly'] = build_wormheld(cx, rally=False)  # ... worm part only: march skips (strike.py, _skip_striking)
+    new_ids.update({helpers['wormheld'], helpers['wormonly']})
     report.update(pick_life(cx, helpers, idle, new_ids))
     report.update(no_regen_heal(cx, helpers, new_ids))
+    report.update(build_cp_overflow(cx, helpers, new_ids))  # rules/army.py: CP overflow disbands temporaries first
+    report.update(build_mp_gate(cx, helpers, new_ids))  # ... unit picks ignore the Manpower goals
+    report.update(build_cp_need(cx, helpers, new_ids))  # ... CP building scored when the army is capped
+    report.update(build_cp_defense(cx, helpers, new_ids))  # ... no all-in defense because CP is full
+    report.update(build_term_probe(cx, helpers, new_ids))  # rules/orders.py (before order-keep, which redirects the closure's removeUnits): logs why an order dies at once (refused Shuttle step)
+    report.update(build_order_keep(cx, helpers, new_ids))  # rules/orders.py: one dead unit doesn't scrap a siege before Action
     strand = build_strand(cx, helpers, idle, unsafe)
     report.update(build_patrol_gate(cx, helpers, hsafe, own, pw, new_ids))
     undeploy = build_undeploy(cx, helpers)
@@ -158,7 +183,7 @@ def _install(cx, helpers, new_ids):
     wormflee = build_worm_flee(cx, helpers)
     striking = build_striking(cx)  # en-route strike state (rules/strike.py): read by dstep / stage / gather / spos
     helpers['striking'] = striking
-    report.update(strike_skip(cx, new_ids, striking))
+    report.update(strike_skip(cx, new_ids, striking, helpers['wormonly']))
     strike = build_strike(cx, helpers, pw, threat, cover, striking)
     new_ids.update({striking, strike})
     dstep = build_desert_step(cx, helpers)

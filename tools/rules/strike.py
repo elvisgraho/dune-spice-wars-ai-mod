@@ -47,33 +47,45 @@ def build_striking(cx):
     return fb.build()
 
 
-def strike_skip(cx, new_ids, striking):
+def strike_skip(cx, new_ids, striking, wormheld):
     """The doAction call of checkRegroupOrder and of checkEngageOrder (one each) -> wrapper: null (nothing done) for
-    a striking army, the original call otherwise."""
+    a striking army or one waiting on rock after a worm flee (aimod_wormonly: a siege army keeps its order before
+    Action, and vanilla's march would walk it straight back onto the sand while the worm is near); the original call
+    otherwise. Safe in Regroup: its stall cancel (no path progress for AI_Army_StuckTime 5 s, more than
+    AI_Army_StuckCancelDistance 20 left) only applies while `u.movementMode != null` (a unit trying to move); a held
+    army stands idle. The `worm` flag per site stays for tuning."""
     da = cx.fn('ent.Entity.doAction')
     ft = cx.code.types[da.type.value].definition
-    fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=da.type.value)
-    b = B(fb)
-    res = fb.reg(ft.ret.value)
-    st = fb.reg(cx.t('bool'))
-    e = fb.reg(cx.t('ent.Entity'))
-    fb.op('Mov', dst=e, src=0)
-    fb.op('Call1', dst=st, fun=striking, arg0=e)
-    fb.op('JFalse', cond=st, offset='go')
-    fb.op('Null', dst=res)  # Null<Bool>: nothing done (both callers ignore the result)
-    fb.op('Ret', ret=res)
-    fb.label('go')
-    fb.op('Call4', dst=res, fun=da.findex.value, arg0=0, arg1=1, arg2=2, arg3=3)
-    fb.op('Ret', ret=res)
-    w = fb.build()
-    new_ids.add(w)
-    for name in ('logic.ai.AIOrders.checkRegroupOrder', 'logic.ai.AIOrders.checkEngageOrder'):
+
+    def wrapper(worm):
+        fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=da.type.value)
+        b = B(fb)
+        res = fb.reg(ft.ret.value)
+        st = fb.reg(cx.t('bool'))
+        e = fb.reg(cx.t('ent.Entity'))
+        fb.op('Mov', dst=e, src=0)
+        fb.op('Call1', dst=st, fun=striking, arg0=e)
+        if worm:
+            fb.op('JTrue', cond=st, offset='skip')
+            fb.op('Call1', dst=st, fun=wormheld, arg0=e)
+        fb.op('JFalse', cond=st, offset='go')
+        fb.label('skip')
+        fb.op('Null', dst=res)  # Null<Bool>: nothing done (both callers ignore the result)
+        fb.op('Ret', ret=res)
+        fb.label('go')
+        fb.op('Call4', dst=res, fun=da.findex.value, arg0=0, arg1=1, arg2=2, arg3=3)
+        fb.op('Ret', ret=res)
+        w = fb.build()
+        new_ids.add(w)
+        return w
+
+    for name, worm in (('logic.ai.AIOrders.checkRegroupOrder', True), ('logic.ai.AIOrders.checkEngageOrder', True)):
         fn = cx.fn(name)
         sites = [op for op in fn.ops if op.op.startswith('Call') and op.df.get('fun') is not None
                  and op.df['fun'].value == da.findex.value]
         if len(sites) != 1:
             raise ValueError(f'strike: expected 1 doAction call in {name}, found {len(sites)}')
-        sites[0].df['fun'].value = w
+        sites[0].df['fun'].value = wrapper(worm)
     return {'strike-skip': 1}
 
 
@@ -253,6 +265,8 @@ def build_strike(cx, helpers, pw, threat, cover, striking):
     ye = fb.reg(cx.t('ent.Entity'))
     fb.op('Mov', dst=ye, src=y)
     fb.op('Call1', dst=st, fun=striking, arg0=ye)
+    fb.op('JTrue', cond=st, offset='g')
+    fb.op('Call1', dst=st, fun=helpers['wormonly'], arg0=ye)  # waiting on rock from a worm: not sent onto the sand
     fb.op('JTrue', cond=st, offset='g')
     _do_on(fb, b, cx, ye, 'ArmyFight', ee, fac)
     b.call('haxe.ds.ObjectMap.set', strk, fb.dyn(y), fb.dyn(t))

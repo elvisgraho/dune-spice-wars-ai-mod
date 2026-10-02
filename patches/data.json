@@ -72,6 +72,162 @@
       "expected": 2.5,
       "value": 1.15,
       "why": "see previous entry"
+    },
+    {
+      "sheet": "resource",
+      "id": "CommandPoint",
+      "path": [
+        "prodGoals"
+      ],
+      "expected": [
+        {
+          "time": 1,
+          "low": [
+            {
+              "economyGoal": 40,
+              "militaryGoal": 40,
+              "expansionGoal": 40,
+              "statecraftGoal": 40
+            }
+          ],
+          "high": [
+            {
+              "economyGoal": 25,
+              "militaryGoal": 25,
+              "expansionGoal": 25,
+              "statecraftGoal": 25
+            }
+          ]
+        },
+        {
+          "time": 100,
+          "low": [
+            {
+              "economyGoal": 20,
+              "militaryGoal": 10,
+              "expansionGoal": 20,
+              "statecraftGoal": 20
+            }
+          ],
+          "high": [
+            {
+              "economyGoal": 10,
+              "militaryGoal": 5,
+              "expansionGoal": 10,
+              "statecraftGoal": 10
+            }
+          ]
+        },
+        {
+          "time": 200,
+          "low": [
+            {
+              "economyGoal": 10,
+              "militaryGoal": 5,
+              "expansionGoal": 10,
+              "statecraftGoal": 10
+            }
+          ],
+          "high": [
+            {
+              "economyGoal": 5,
+              "militaryGoal": 0,
+              "expansionGoal": 5,
+              "statecraftGoal": 5
+            }
+          ]
+        }
+      ],
+      "value": [
+        {
+          "time": 1,
+          "low": [
+            {
+              "economyGoal": 1,
+              "militaryGoal": 1,
+              "expansionGoal": 1,
+              "statecraftGoal": 1
+            }
+          ],
+          "high": [
+            {
+              "economyGoal": 0,
+              "militaryGoal": 0,
+              "expansionGoal": 0,
+              "statecraftGoal": 0
+            }
+          ]
+        },
+        {
+          "time": 100,
+          "low": [
+            {
+              "economyGoal": 1,
+              "militaryGoal": 1,
+              "expansionGoal": 1,
+              "statecraftGoal": 1
+            }
+          ],
+          "high": [
+            {
+              "economyGoal": 0,
+              "militaryGoal": 0,
+              "expansionGoal": 0,
+              "statecraftGoal": 0
+            }
+          ]
+        },
+        {
+          "time": 100000,
+          "low": [
+            {
+              "economyGoal": 1,
+              "militaryGoal": 1,
+              "expansionGoal": 1,
+              "statecraftGoal": 1
+            }
+          ],
+          "high": [
+            {
+              "economyGoal": 0,
+              "militaryGoal": 0,
+              "expansionGoal": 0,
+              "statecraftGoal": 0
+            }
+          ]
+        }
+      ],
+      "why": "User rule: always max out the army. Vanilla keeps a free-CP reserve by these goals (free CP = prod of the no-stock CommandPoint; low > high is inverted: >= low buys, <= high never, between only when Solari + Manpower are above goal): 25 of the base 40 CP held back at day 1, 5-10 at day 100, and past the last row (day 200) the reserve grows again with time. low 1 / high 0 for every AI type: recruit whenever a unit could fit (the recruit cost check includes the CP upkeep, so it never overshoots the cap); last row at day 100000 so the past-the-end scaling never applies. CP overflow from temporary units: tools/rules/army.py."
+    },
+    {
+      "sheet": "constant",
+      "id": "AI_BuildingScore_UpgradeFactor_Multiplier",
+      "path": [
+        "value"
+      ],
+      "expected": 3,
+      "value": 10,
+      "why": "Vanilla adds upgradeFactor x this (only for factor > 1: a village bonus to the building's output, Upgrades.getUpgradeFactor) to a building's score: x3 gave a 1.5x Manpower village ~+4.5 for its Recruitment Office, less than a MissileBattery's map-exposure +5 / +9 (Harkonnen built one on Yedah). x10: villages build into their own bonus first (expert play), every faction and bonus kind."
+    },
+    {
+      "sheet": "constant",
+      "id": "AI_BuildingScore_UnderProducingResource_Weight",
+      "path": [
+        "value"
+      ],
+      "expected": 6,
+      "value": 12,
+      "why": "Score added to a building related to a resource vanilla lists as under-producing (resource.aiRelatedBuildings, Manpower -> RecruitmentOffice). With the army always at full CP (CommandPoint prodGoals patch) Manpower is the recruitment bottleneck; 6 -> 12 pushes its building harder, likewise for any other short resource."
+    },
+    {
+      "sheet": "constant",
+      "id": "AI_Sandstorms_Siege_ZoneDistance",
+      "path": [
+        "value"
+      ],
+      "expected": 1,
+      "value": -1,
+      "why": "Vanilla's siege scan (getSiegeableVillages, closure f40784) drops every village within this many zones of a sandstorm (const >= zone distance). Storms barely touch ground armies (Storm_Army: speed x0.7, armor -3, regen -0.05, cloaked, no worm vibration; Fremen's Reduced variant only cloaks), so Annex / Pillage / Liberate targets vanished for no reason. -1: never excluded."
     }
   ]
 }

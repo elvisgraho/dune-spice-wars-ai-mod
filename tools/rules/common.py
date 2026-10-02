@@ -32,6 +32,7 @@ DEFEND_R = 500     # enter: prey must be within this of one of our structures (d
 LIB_KEEP = 0.5     # spacing: a Liberate / Raze leaves about half our army home; the hostile armies that reach our land
                    # before we are back (x ENTER) must be held by that (x OWN_T)
 LEASH = 650        # abort: nearest group member farther than this from all our structures
+WON_R = 150        # abort `won`: contest whose village is no longer besieged, group core this far from it (= CONTACT)
 CONTACT = 150      # "in contact" distance (supply trigger only fires when out of contact)
 CHECK = 3          # s between abort passes
 START = 10         # s between start passes
@@ -167,6 +168,7 @@ STAND_R = 200      # turret steering (rules/build.py): at-war power within this 
                    # an idle stack at the next village, Gun-dah 115 from Annarekh) ...
 STAND_MIN_H = RALLY_MIN_H  # ... at least this ...
 STAND_T = 30       # s: ... standing there this long (a passing army is no standoff) ...
+SPICE_FIRST_W = 100  # spice-first: a spice village's Refinery scores vanilla + this until it has one (rules/build.py)
 STAND_BONUS = 100  # ... lifts MissileBattery there to vanilla score + this (vanilla building scores ~10-40)
 TURRET_EXPOSED = 2  # turret-steer: our village whose zone borders this many zones held by at-war factions is a front
                     # village: it gets a MissileBattery (+STAND_BONUS) without waiting for a standing stack (user:
@@ -187,6 +189,9 @@ CONTEST_SPD = 6    # units/s: army speed for a contest's arrival time (aw spd 6-
 CONTEST_SLACK = 10 # s: a contest still starts when it arrives this late (the capture may stall in the fight)
 ASWAP_WAIT = 120   # s: Annex value: nothing affordable in the top 3 this long -> the best affordable candidate anywhere
 RES_INFLUENCE = 10  # resource sheet index of Influence (ent.Faction.getResource)
+RES_AUTHORITY = 6   # resource sheet index of Authority
+ANNEX_RISE = 20     # Annex reserve: price rise per village we gain before the next capture starts (per owned outpost
+                    # 10 x n^1.2: +18 at 8 villages, +21 at 16)
 PANNEX_INF = 100   # peaceful annex (siege.py launch gate): Atreides use PeacefullyAnnex (50 Influence) only with at least
                    # this much Influence, so force peace / diplomacy keep a reserve
 PANNEX_MIN_VILLAGES = 4  # ... and only once we own this many villages: the opening's idle armies annex for free
@@ -195,6 +200,8 @@ PANNEX_MIN_VILLAGES = 4  # ... and only once we own this many villages: the open
 # Authority went into HQs) and scores regular extensions only by cdb aiWeights (Whisperers Lair on no-Intel villages).
 UHQ_MIN = 3        # HQ cap = max(UHQ_MIN, UHQ_PER_VILLAGE x our villages); built ones are never removed
 UHQ_PER_VILLAGE = 3
+UHQ_AUTH = 5       # Annex reserve: next HQ's Authority = this x (HQs + 1) (data: InstallUWHeadquarter 5 + 5 per existing)
+UHQ_RES_T = 120    # ... the cheapest Annex cost (siege.py `acmin`) counts this long after its last scoring
 UHQ_MB_R = 500     # placement: a host village within this of its owner's main base scores up to ...
 UHQ_MB_W = 1.0     # ... x (1 + this) at the base (falls linearly to x 1 at UHQ_MB_R): hardly ever recaptured there
 UHQ_PLACE_W = 1.0  # placement: + this x the best production-extension gain at the village (vanilla score ~20-60)
@@ -293,6 +300,11 @@ JOIN_R = HUNT_R    # siege launch: idle armies this close to the target may join
 JOIN_TO = KILL    # ... nearest first, until we have this x their power there (KILL: a fight over in seconds)
 SIETCH_ARMIES = 8  # sietch / renegade-base strike: at least as many armies as the garrison it always spawns ...
 RENEGADE_ARMIES = 10  # ... (8 sietch defenders, 10 renegade-base defenders)
+SITE_REQ = HUNT_TO  # sietch / renegade-base strike: our armies vs its garrison at launch, after joining and to engage
+                   # (2.5). The garrison (< 8 sietch / < 10 renegade units) doesn't respawn, but the sietch's random harass
+                   # tick (3 units, unrelated to the fight) can fire during a strike, on top of what the estimate counts (Harkonnen Ey-Al'wan
+                   # 31:28: order balance 2.6 -> 0.52 in one tick, no army near, 9 armies at 1.53x, cancelled -4;
+                   # Smugglers there 9:06, 11 at 1.58x, 3.05 -> 0.14, cancelled -4); ENTER 1.5 lost every logged strike
 RETRY = 30         # s: a vanilla siege target launched again this soon after its last launch ended at once
                    # (e.g. InsufficientSupply at +0 s) is dropped from the target scores until then
 RETRY_MAX = 240    # s: ... doubled per relaunch that came right after the block ran out (failing at once again), up
@@ -301,6 +313,7 @@ FAIL_N = 3         # stuck: this many vanilla launches on one target ending with
 FAIL_WIN = 120     # NotEnoughArmies, ...) within this many s drop it from the target scores for FAIL_BLOCK s, doubled
 FAIL_BLOCK = 120   # up to FAIL_MAX while it keeps coming back (a thinking loop: the armies idle at a patrol meanwhile)
 FAIL_MAX = 480
+STUCK_IDLE = 0.5   # stuck counts only when vanilla's idle list held >= this x our free armies (else they were busy)
 PURSUIT_T = 15    # s without progress that end a chase (hunt abort `chase`) or a mission-less fight (fight retreat
                    # `pursuit`): a fleeing army at our speed keeps its distance forever (~90 units per 15 s)
 CATCH_T = 30      # s: closing in counts as chase progress only at a rate that reaches the prey within this (a raider
@@ -786,17 +799,77 @@ def build_chain(cx, fns):
 
 
 def _skip_striking(fb, b, cx, helpers, army, skip):
-    """Jump to `skip` while army is in an en-route strike (aimod_striking, rules/strike.py): rules that move order
-    armies (gather, stage, desert-step) leave it to its fight."""
+    """Jump to `skip` while army is in an en-route strike (aimod_striking, rules/strike.py) or waits on rock after a
+    worm flee (aimod_wormonly, rules/worm.py: a siege army keeps its order there): rules that move order armies
+    (gather, stage, desert-step, spos) leave it alone (desert-step ran right after worm-flee in the same tick and
+    walked it back across the sand to the village)."""
     e = fb.reg(cx.t('ent.Entity'))
     fb.op('Mov', dst=e, src=army)
     r = fb.reg(cx.t('bool'))
     fb.op('Call1', dst=r, fun=helpers['striking'], arg0=e)
     fb.op('JTrue', cond=r, offset=skip)
+    fb.op('Call1', dst=r, fun=helpers['wormonly'], arg0=e)
+    fb.op('JTrue', cond=r, offset=skip)
 
 
 
 
+CRUMBS = []        # step id -> 'module.py:line' (_crumb_begin), reset per build, written to work/crumbs.json
+CRUMB_LOG_T = 30   # s: `rfail` at most this often per rule and faction
+
+
+def _crumb_src():
+    import sys
+    from pathlib import Path
+    f = sys._getframe(2)
+    while f is not None:
+        stem = Path(f.f_code.co_filename).stem
+        if stem not in ('inject', 'aware', 'common'):
+            return f'{stem}.py:{f.f_lineno}'
+        f = f.f_back
+    return 'unknown'
+
+
+def _crumb_begin(fb, b, cx, helpers, rule):
+    """Step probe for a tick rule (reg 0 = AIMilitary), no exception handler involved (logging trap handlers
+    crashed the game): map `crumb_<rule>` faction module -> step. A run sets 0, then before every Call op the step
+    id of that call (CRUMBS: its source line), and _crumb_end sets -1. A run that finds a step >= 0 knows the last run
+    died there (an exception its trap swallowed) and logs `rfail` {r, f, at = step id; mod log maps it to the line}."""
+    name = 'crumb_' + rule
+    m = _global_map(fb, b, cx, name)
+    prev = b.call('haxe.ds.ObjectMap.get', m, fb.dyn(0))
+    go = _uid('cbg')
+    fb.op('JNull', reg=prev, offset=go)
+    pi = fb.reg(cx.t('i32'))
+    fb.op('SafeCast', dst=pi, src=prev)
+    fb.op('JSLt', a=pi, b=b.const('i32', 0), offset=go)
+    _throttle(fb, b, cx, 'rfail_' + rule, 0, CRUMB_LOG_T, go)
+    _log_ev(fb, b, cx, helpers, 'rfail', [('r', rule), ('f', fb.get(0, 'controller', 'owner', 'kind')),
+                                          ('at', fb.dyn(pi))])
+    fb.label(go)
+    b.call('haxe.ds.ObjectMap.set', m, fb.dyn(0), fb.dyn(b.const('i32', 0)))
+    gidx = GLOBALS[name][1]
+    om_t = cx.t('haxe.ds.ObjectMap')
+
+    def hook(fb_):
+        cid = len(CRUMBS)
+        CRUMBS.append(_crumb_src())
+        bb = B(fb_)
+        r = fb_.reg(om_t)
+        fb_.op('GetGlobal', dst=r, **{'global': gidx})
+        bb.call('haxe.ds.ObjectMap.set', r, fb_.dyn(0), fb_.dyn(bb.const('i32', cid)))
+    fb.crumb = hook
+
+
+def _crumb_end(fb, b, cx, rule):
+    """Normal end of the probed run (after the rule's 'end' label, inside its trap): step -1."""
+    fb.crumb = None
+    r = fb.reg(cx.t('haxe.ds.ObjectMap'))
+    fb.op('GetGlobal', dst=r, **{'global': GLOBALS['crumb_' + rule][1]})
+    b.call('haxe.ds.ObjectMap.set', r, fb.dyn(0), fb.dyn(b.const('i32', -1)))
+
+
+TRAP_LOG = False   # crash bisect: logging trap handlers off (the game quit at match start since they came in)
 TRAP_LOG_T = 30    # s: a rule's caught exception is logged (`trap` src, err) at most this often per rule
 
 
