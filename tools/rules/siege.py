@@ -1123,7 +1123,7 @@ def build_scoring(cx, new_ids, helpers):
       full, re-picked the same village every ~2.5 s (Fremen Pelmah x39). Logs `space` why retry (10 s throttle);
     - stuck: FAIL_N launches on it within FAIL_WIN that created no order while an army of ours was free to go (map
       `afu` blocked-until, set by the launch wrapper) -> dropped for FAIL_BLOCK..FAIL_MAX s, logs `space` why stuck;
-    - next Annex choices (maps `akv` / `akf` from raid's scan, top RAID_KEEP within AKEEP_T): no Pillage target;
+    - next Annex choices (map `akeep`, rules/raid.py annex-keep: top RAID_KEEP within AKEEP_T): no Pillage target;
     - DMZ (rules/dmz.py, aimod_dmzv): Pillage drops a DMZ village, its Annex / Liberate score x DMZ_W;
     - bunker preference: a positive score x BUNKER_W when the structure is within COVER_R of one of our structures
       on our land (their turrets cover each other) or within BUNKER_R of our main base.
@@ -1212,12 +1212,12 @@ def build_scoring(cx, new_ids, helpers):
     b.call('haxe.ds.ObjectMap.remove', res, fb.dyn(gse))
     fb.op('JAlways', offset='tg')
     fb.label('tgdone')
-    # our next Annex choices (maps `akv` / `akf`, set by raid's scan: top RAID_KEEP within AKEEP_T) are no Pillage
-    # targets: vanilla's gauge pillaged Smugglers' top choice (Arslulah x3, Ya-lab), Devastating it and doubling
+    # our next Annex choices (map `akeep` faction -> village -> time, rules/raid.py annex-keep: top RAID_KEEP within
+    # AKEEP_T) are no Pillage targets: vanilla's gauge pillaged Smugglers' top choice (Arslulah x3, Ya-lab), Devastating it and doubling
     # our Annex cost there
     fb.op('JNotEq', a=b.call('String.__compare', 2, fb.dyn(fb.string('Pillage'))), b=b.const('i32', 0),
           offset='akdone')
-    akv, akf = _global_map(fb, b, cx, 'akv'), _global_map(fb, b, cx, 'akf')
+    akv = _fac_map(fb, b, cx, 'akeep', 1)
     ai_, aq, ase = fb.reg(cx.t('i32')), fb.reg(cx.t('f64')), fb.reg(cx.t('ent.Entity'))
     anow = b.field(_state(fb, b, cx), 'time')
     fb.op('Mov', dst=ai_, src=b.const('i32', 0))
@@ -1229,7 +1229,6 @@ def build_scoring(cx, new_ids, helpers):
     fb.op('Mov', dst=ase, src=ast_)
     akt = b.call('haxe.ds.ObjectMap.get', akv, fb.dyn(ase))
     fb.op('JNull', reg=akt, offset='akl')
-    fb.op('JNotEq', a=b.call('haxe.ds.ObjectMap.get', akf, fb.dyn(ase)), b=fb.dyn(1), offset='akl')
     fb.op('SafeCast', dst=aq, src=akt)
     fb.op('Sub', dst=aq, a=anow, b=aq)
     fb.op('JSGte', a=aq, b=b.const('f64', AKEEP_T), offset='akl')
@@ -1667,12 +1666,25 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     fb.op('JNull', reg=pbv, offset='blk0')
     fb.op('SafeCast', dst=pb, src=pbv)
     fb.label('blk0')
+    # the last order on this target (map `aord`): ended before Regroup (cancelled in Waiting: InsufficientSupply)
+    # -> double, however long ago; reached Regroup or later -> it lasted: RETRY. The gap alone reset the block
+    # while every launch still died at once (Fremen Liberate of Hal-nit 31:38-37:37 x6, 550-850 away, block back to
+    # RETRY after a 101 s gap; each launch also cancelled its armies' Resupply / Patrol)
+    omap = _global_map(fb, b, cx, 'aord')
+    pov = b.call('haxe.ds.ObjectMap.get', omap, fb.dyn(s_e3))
+    fb.op('JNull', reg=pov, offset='blkgap')
+    po = b.cast(pov, 'logic.ai.AIOrder')
+    fb.op('JNull', reg=po, offset='blkgap')
+    fb.op('JSLt', a=b.field(po, 'phase'), b=b.const('i32', REGROUP), offset='blkdbl')
+    fb.op('JAlways', offset='blkr')
+    fb.label('blkgap')
     plv = b.call('haxe.ds.ObjectMap.get', amap, fb.dyn(s_e3))
     fb.op('JNull', reg=plv, offset='blkr')
     fb.op('SafeCast', dst=pl, src=plv)
     fb.op('Sub', dst=pl, a=now3, b=pl)
     fb.op('Sub', dst=pl, a=pl, b=pb)
     fb.op('JSGte', a=pl, b=b.const('f64', RETRY), offset='blkr')
+    fb.label('blkdbl')
     fb.op('Add', dst=pb, a=pb, b=pb)
     fb.op('JSLte', a=pb, b=b.const('f64', RETRY_MAX), offset='blks')
     fb.op('Mov', dst=pb, src=b.const('f64', RETRY_MAX))
@@ -1682,6 +1694,7 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     fb.label('blks')
     b.call('haxe.ds.ObjectMap.set', bmap, fb.dyn(s_e3), fb.dyn(pb))
     b.call('haxe.ds.ObjectMap.set', amap, fb.dyn(s_e3), fb.dyn(now3))
+    b.call('haxe.ds.ObjectMap.set', omap, fb.dyn(s_e3), fb.dyn(o3))
     # an Annex on an uncontested ring village: count it (the ring hold ends after DD_TRIES: resistance)
     fb.op('JNotEq', a=b.call('String.__compare', 1, fb.dyn(fb.string('Annex'))), b=b.const('i32', 0), offset='rec_done')
     rz = b.call('ent.Entity.get_zone', s_e3)
@@ -1869,7 +1882,7 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
     2. after the pick, the nearest other considered armies (vanilla getUnits idle list: life/supply >= 90%, not in
        an order of the action's priority or higher, so Discovery/Patrol armies are taken as vanilla does) within
        JOIN_R of the target with supok(a, land(target), SUP_ENTER) are appended one by one until our power there
-       (+ our turret cover) reaches JOIN_TO x (at-war threat within LOCAL + enemy turret cover + militia) / terrain
+       (+ our turret cover x OWN_COVER_ATK; a sietch / renegade base: armies only, terrain 1) reaches JOIN_TO x (at-war threat within LOCAL + enemy turret cover + militia) / terrain
        (a sietch / renegade base: and the army floor of 3.):
        a short militia fight, while the rest stays free for parallel captures (joining everyone sent 8 armies to a
        33k militia at match start and made captures sequential).
@@ -2027,10 +2040,12 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
     fb.op('Call3', dst=q, fun=neutral, arg0=fac, arg1=s, arg2=b.const('f64', LOCAL))
     fb.op('Add', dst=h, a=h, b=q)
     fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', s))
+    _strong_tf(fb, b, tf, st)
     fb.op('Mul', dst=q, a=h, b=_ratio(fb, b, JOIN_TO))
     fb.op('SDiv', dst=q, a=q, b=tf)
-    # ours: vanilla's pick (+ our turret cover there)
+    # ours: vanilla's pick (+ our turret cover there, x OWN_COVER_ATK; none at a sietch / renegade base)
     fb.op('CallN', dst=m, fun=cover, args=[fac, s, s, t_true, no_arr])
+    _atk_cover(fb, b, m, st)
     sa = _army_loop(fb, b, res, n0, i, 'sl', 'sdone')
     fb.op('Call1', dst=p, fun=pw, arg0=sa)
     fb.op('Add', dst=m, a=m, b=p)
@@ -2083,7 +2098,7 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
     e = fb.reg(cx.t('f64'))
     fb.op('Mul', dst=e, a=h, b=_ratio(fb, b, ENTER))
     fb.op('SDiv', dst=e, a=e, b=tf)
-    fb.op('JSGte', a=m, b=e, offset='jlog')
+    fb.op('JSGte', a=m, b=e, offset='sgo')
     wn = fb.reg(cx.t('i32'))
     fb.op('Mov', dst=wn, src=b.field(res, 'length'))
     b.loop_head('jw_pop')
@@ -2095,6 +2110,11 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
     _log_ev(fb, b, cx, helpers, 'sweak', [('f', fb.get(fac, 'kind')), ('tgt', s), ('n', wn), ('H', h), ('M', m),
                                           ('tf%', tf)])
     fb.op('JAlways', offset='done')
+    # passed: `sgo` (armies only, tf 1 at a sietch / renegade base) to check against the strike's `sact` / outcome
+    fb.label('sgo')
+    _throttle(fb, b, cx, 'sgo', st, PICK_LOG_T, 'jlog')
+    _log_ev(fb, b, cx, helpers, 'sgo', [('f', fb.get(fac, 'kind')), ('tgt', s), ('n', b.field(res, 'length')), ('H', h),
+                                        ('M', m), ('tf%', tf)])
     fb.label('jlog')
     fb.op('JSLte', a=added, b=b.const('i32', 0), offset='done')
     _log_ev(fb, b, cx, helpers, 'join', [('f', fb.get(fac, 'kind')), ('tgt', s), ('sel', n0), ('add', added),
@@ -2163,7 +2183,8 @@ def build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain, neutral
     Annex/Pillage/Raze/..., `raid`). Vanilla Regroup waits until every order army reached the regroup point, so a
     stack standing next to the target walked away from it towards a far member first (Fremen raid on Tuoron: 5 armies
     36-55 from it went to 85-106 while a 6th came from home); siege-join makes far members common. An order in
-    Regroup moves on to Engage (nextPhase) once its armies within ENGAGE_R of the target (+ our turret cover) have
+    Regroup moves on to Engage (nextPhase) once its armies within ENGAGE_R of the target (+ our turret cover x
+    OWN_COVER_ATK; none and terrain 1 at a sietch / renegade base) have
     ENTER (NEUTRAL_REQ for a neutral target, EARLY_REQ in the opening, as at launch) x (at-war threat within LOCAL + enemy turret cover +
     militia) / terrain, and at least one army is there; the others walk straight in (policy §4 Gathering). Only
     armies at the target count: armies strung out within LOCAL walked in one by one, the weakest first (Harkonnen
@@ -2211,8 +2232,9 @@ def build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain, neutral
     units = b.field(o, 'units')
     fb.op('JNull', reg=units, offset='o')
     un = b.field(units, 'length')
-    # ours near the target (+ our cover there)
+    # ours near the target (+ our cover there, x OWN_COVER_ATK; none at a sietch / renegade base)
     fb.op('CallN', dst=m, fun=cover, args=[fac, se, se, t_true, no_arr])
+    _atk_cover(fb, b, m, s)
     fb.op('Mov', dst=near, src=zi)
     u = _army_loop(fb, b, units, un, j, 'u', 'udone')
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', u, se), b=at, offset='u')
@@ -2231,6 +2253,7 @@ def build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain, neutral
     fb.op('Call3', dst=q, fun=neutral, arg0=fac, arg1=se, arg2=local)  # other raiders at it fight us too
     fb.op('Add', dst=h, a=h, b=q)
     fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', se))
+    _strong_tf(fb, b, tf, s)
     fb.op('Mov', dst=req, src=enter)
     fb.op('JNotNull', reg=b.call('ent.Entity.get_owner', se), offset='owned')
     fb.op('Mov', dst=req, src=nreq)

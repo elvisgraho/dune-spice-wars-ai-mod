@@ -81,13 +81,16 @@ def main():
                 msg = (rc(d['ret']), fret)
             elif o == 'Trap':
                 h = i + 1 + d['offset']
-                if f.ops[h - 1].op != 'EndTrap':
+                e = h - 1  # EndTrap, or EndTrap + JAlways over a logging handler (inject.FB.trap_hook)
+                if f.ops[e].op == 'JAlways' and f.ops[e - 1].op == 'EndTrap':
+                    e -= 1
+                if f.ops[e].op != 'EndTrap':
                     msg = 'no EndTrap before handler'
                 else:
-                    for j in range(i + 1, h - 1):
+                    for j in range(i + 1, e):
                         q = f.ops[j]
                         t = j + 1 + q.df['offset'].value if q.op in JUMPS else None
-                        if q.op == 'Ret' or (t is not None and not i + 1 <= t <= h - 1):
+                        if q.op == 'Ret' or (t is not None and not i + 1 <= t <= e):
                             issues.append(f'f@{f.findex.value} op{j} {q.op} leaves trap@{i}')
             if msg:
                 issues.append(f'f@{f.findex.value} op{i} {o} {msg}')

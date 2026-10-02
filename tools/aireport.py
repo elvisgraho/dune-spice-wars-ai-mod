@@ -427,6 +427,8 @@ def summarize(events, faction=None, all_orders=False):
                 o['src'] = last_stop.pop((f, ent_key(e.get('tgt'))), None)
         elif k == 'retreat':
             retreats.append(e)
+        elif k == 'sbal':  # sietch / renegade strike fight: balance lowered to the live order balance (ob)
+            retreats.append(dict(e, act='sbal', adj=e.get('ob')))
         elif k == 'heal':
             heals.append(e)
         elif k == 'space':
@@ -436,6 +438,9 @@ def summarize(events, faction=None, all_orders=False):
         elif k == 'sweak':  # sietch / renegade-base pick below ENTER x militia + threat by our measure
             spaced[(f, 'weak', 'n%s M%dk H%dk' % (e.get('n'), (e.get('M') or 0) // 1000, (e.get('H') or 0) // 1000),
                     ent(e.get('tgt')), '-')] += 1
+        elif k == 'sgo':  # sietch / renegade-base pick that passed (armies only, tf 1): not a refusal, compare to `sact`
+            spaced[(f, 'sgo', 'n%s M%dk H%dk tf%s' % (e.get('n'), (e.get('M') or 0) // 1000, (e.get('H') or 0) // 1000,
+                                                     e.get('tf')), ent(e.get('tgt')), '-')] += 1
         elif k == 'bunker':
             bunkers.append(e)
         elif k == 'disc':
@@ -540,7 +545,8 @@ def summarize(events, faction=None, all_orders=False):
 
     if retreats:
         out.append('\n## Fight retreat checks (tools/rules): balance x100 raw*terrain*supply=adj vs 65; '
-                   'flip = terrain or supply (our armies short of supply for the way home) changed the outcome')
+                   'flip = terrain or supply (our armies short of supply for the way home) changed the outcome; '
+                   'sbal = sietch / renegade strike: balance lowered to the live order balance (adj = ob)')
         c = Counter()
         for e in retreats:
             raw, adj = e.get('raw') or 0, e.get('adj') or 0
@@ -567,7 +573,7 @@ def summarize(events, faction=None, all_orders=False):
         out.append('\n## Refused siege launches (tools/rules; logged once per faction per 10 s): faction why kind '
                    'target <- reason structure (defend = ours under siege, space = one we already run nearby, '
                    'retry = its last launch ended at once, weak = sietch / renegade-base pick below 1.5 x its side (our measure), floor = sietch / renegade-base pick with fewer armies than '
-                   'its garrison), count')
+                   'its garrison; sgo = such a pick that passed, armies only, tf 1: not refused), count')
         out += [f'{f} {w} {kk} {tg} <- {nr} x{n}' for (f, w, kk, tg, nr), n in spaced.most_common(12)]
 
     if bunkers:

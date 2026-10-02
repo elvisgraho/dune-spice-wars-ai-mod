@@ -341,11 +341,21 @@ def health(path):
             block = [line] if line.strip() else []
         elif block:
             block.append(line)
+    # exceptions our rules caught themselves (rules.common.make_trap_hook: `trap` rows, 1 per rule per 30 s)
+    traps = {}
+    for m in re.finditer(r'AIMOD \{e : trap, src : ([\w.]+), err : (.{0,80})', path.read_text(encoding='utf-8',
+                                                                                         errors='replace')):
+        k = f'{m.group(1)} ({m.group(2).split(", t : ")[0]})'
+        traps[k] = traps.get(k, 0) + 1
+    trap_s = ''
+    if traps:
+        trap_s = ' | RULE TRAPS (rule failing silently, x = rows at most 1 / 30 s): ' + '; '.join(
+            f'{k} x{v}' for k, v in sorted(traps.items(), key=lambda kv: -kv[1])[:5])
     if not errors:
-        return 'HEALTH OK: no game exceptions in game.log'
+        return 'HEALTH OK: no game exceptions in game.log' + trap_s
     top = ', '.join(f'{k} x{v}' for k, v in sorted(kinds.items(), key=lambda kv: -kv[1])[:3])
     verdict = 'INJECTED CODE IS FAILING - run `testbed off` and report' if ours else 'not from injected code'
-    return f'HEALTH: {errors} game exceptions ({ours} through injected code: {verdict}). {top}'
+    return f'HEALTH: {errors} game exceptions ({ours} through injected code: {verdict}). {top}' + trap_s
 
 
 def cmd_log(args):

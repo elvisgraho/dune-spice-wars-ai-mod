@@ -121,8 +121,11 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
         fb.op('Mov', dst=_r, src=zero)
     fb.op('Mov', dst=krem, src=b.const('f64', -1))
 
-    def cover_at(dst, at, own):
+    def cover_at(dst, at, own, atk=False):
+        """atk: our cover at a press target counts x OWN_COVER_ATK."""
         fb.op('CallN', dst=dst, fun=cover, args=[fac, at, at, t_true if own else t_false, no_arr])
+        if atk:
+            _atk_cover(fb, b, dst)
 
     def their_side(dst, s):
         """dst = at-war armies in reach + enemy turret cover + militia at structure s (entity in ve)."""
@@ -267,7 +270,7 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('JSGt', a=age, b=b.const('f64', PRESS_MAX), offset='drop')
     fb.label('kslow')
     # keep: our power there (any task: the siege armies are busy) + our cover vs their side
-    cover_at(reach, ve, True)
+    cover_at(reach, ve, True, atk=True)
     y = _army_loop(fb, b, my_armies, mlen, j, 'kp', 'kpdone')
     fb.op('JNotNull', reg=b.field(y, 'harvestComponent'), offset='kp')
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', y, ve), b=press_r, offset='kp')
@@ -382,7 +385,7 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('Call1', dst=et, fun=fpow, arg0=vo)
     fb.op('JSLt', a=T, b=et, offset='v')  # never poke the stronger side
     # our spare armies in reach (+ our cover) vs their side
-    cover_at(m, ve, True)
+    cover_at(m, ve, True, atk=True)
     fb.op('Mov', dst=dm, src=big)
     y = _army_loop(fb, b, my_armies, mlen, j, 'rc', 'rcdone')
     fb.op('JNotNull', reg=b.field(y, 'harvestComponent'), offset='rc')
@@ -447,6 +450,15 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('Call2', dst=prc, fun=helpers['ddclean'], arg0=fac, arg1=pz)
     fb.op('JTrue', cond=prc, offset='nomode')
     fb.label('pring')
+    # ... nor one of our next Annex choices (map `akeep`, rules/raid.py annex-keep) we just can't pay yet: a pillage
+    # doubles our cost there, a liberation makes it untargetable for 20 days; vanilla annexes it once affordable
+    akt = b.call('haxe.ds.ObjectMap.get', _fac_map(fb, b, cx, 'akeep', fac), fb.dyn(ve))
+    fb.op('JNull', reg=akt, offset='pnokeep')
+    akq = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=akq, src=akt)
+    fb.op('Sub', dst=akq, a=t, b=akq)
+    fb.op('JSLt', a=akq, b=b.const('f64', AKEEP_T), offset='nomode')
+    fb.label('pnokeep')
     # a DMZ village: `raid` liberates it (rules/dmz.py), so Liberate available is enough
     fb.op('Call2', dst=ok, fun=helpers['dmzv'], arg0=fac, arg1=best)
     fb.op('JFalse', cond=ok, offset='pmpil')

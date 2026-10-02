@@ -86,6 +86,11 @@ MB_GUN_W = 3       # main-base guns count this many times (our cover and vanilla
                    # Arrakeen, at 1.7:1 and read 2-13 while the guns took 6 of 10 armies (provisional, one fight)
 TURRET_H = 1500    # turret -> army power: offensivePotential x this HP (~one 3-unit army's health): a MissileBattery
                    # ~ one army, a main base ~ two ("feared more, not overwhelmingly"); calibrate from hunt `T`
+SITE_WZ_R = 130    # fight retreat: a warzone whose centroid is this close to the sietch / renegade base of our running
+                   # strike is that strike's fight (its garrison fights around the structure; = COVER_R)
+OWN_COVER_ATK = 0.5  # our turret cover on an attack target (siege, raid, press) counts this share: a battery hits only
+                     # units within ~80 of where it stands and doesn't follow the fight; in full when we defend.
+                     # A sietch / renegade-base strike counts none (user rule; Harkonnen Tabmah: 1.39x passed, -98%)
 KILL = 3.0         # "kill it on the way": a chase under enemy turret cover, or while we defend, only if the prey is
                    # in CONTACT of our free armies and we have KILL x (its threat + turret cover)
 BUNKER_W = 1.3     # vanilla target score x this for a village that forms a bunker with ours (Annex / Liberate)
@@ -318,8 +323,8 @@ DISC_HORIZON = 40  # s: a running Discovery trip counts hostile movers that can 
 DISC_RETRY = 60    # s: a world event whose Discovery trip we gave up isn't sent to again this soon (no launch/abort loop)
 RAID_KEEP = 3      # raid never hits the top this many Annex choices (vanilla's scores), affordable or not: the next
                    # annexes; the rest of the map is fair game (vanilla's 2-5 + Devastated own pillages left Smugglers idle)
-AKEEP_T = 240      # s: a top-RAID_KEEP Annex choice stays protected this long after raid's last scan listed it, from
-                   # raid and from vanilla's Pillage gauge (Smugglers' gauge pillaged its top Annex choices Arslulah x3,
+AKEEP_T = 240      # s: a top-RAID_KEEP Annex choice stays protected this long after the last `annex-keep` scan listed
+                   # it (every START s per faction, rules/raid.py), from raid and from vanilla's Pillage gauge (Smugglers' gauge pillaged its top Annex choices Arslulah x3,
                    # Ya-lab; raid hit Haywaz just after it left the top 3: Devastated + our Annex cost doubled)
 BEHIND_E = 0.25    # raid: a village is behind another faction's main base M (seen from our nearest main base B) when
                    # M is nearer B than it and d(B,M) + d(M,v) <= d(B,v) x (1 + this): never raided
@@ -572,6 +577,40 @@ GLOBALS = {}       # name -> (code, global index): added globals, one set per bo
 _UID = [0]
 
 
+def _strong_site(fb, b, st, yes):
+    """Jump to `yes` if structure st (ent.Structure reg, may be null) is a sietch or a renegade base."""
+    no = _uid('_ss')
+    fb.op('JNull', reg=st, offset=no)
+    fb.op('JTrue', cond=b.call('ent.Structure.isSietch', st), offset=yes)
+    fb.op('JTrue', cond=b.call('ent.Structure.isRenegadeBase', st), offset=yes)
+    fb.label(no)
+
+
+def _atk_cover(fb, b, m, st=None):
+    """m = our turret cover at an attack target -> x OWN_COVER_ATK; 0 when st (the target structure, ent.Structure
+    reg) is a sietch / renegade base: its garrison is fought at the target, not under our guns."""
+    z, d = _uid('_acz'), _uid('_acd')
+    if st is not None:
+        _strong_site(fb, b, st, z)
+    fb.op('Mul', dst=m, a=m, b=_ratio(fb, b, OWN_COVER_ATK))
+    fb.op('JAlways', offset=d)
+    fb.label(z)
+    fb.op('Mov', dst=m, src=b.const('f64', 0))
+    fb.label(d)
+
+
+def _strong_tf(fb, b, tf, st):
+    """tf = 1 when st is a sietch / renegade base: the terrain factor's reasons (we heal and resupply on our zone,
+    they drain) don't hold for a garrison that needs neither (Tabmah lay in Harkonnen's zone: bar / 1.3)."""
+    d = _uid('_stf')
+    one = _uid('_st1')
+    _strong_site(fb, b, st, one)
+    fb.op('JAlways', offset=d)
+    fb.label(one)
+    fb.op('Mov', dst=tf, src=b.const('f64', 1))
+    fb.label(d)
+
+
 def _uid(prefix):
     _UID[0] += 1
     return f'{prefix}{_UID[0]}'
@@ -597,6 +636,26 @@ def _global_map(fb, b, cx, name):
     ctor = cx.fn('haxe.ds.$ObjectMap.__constructor__')
     fb.op('Call1', dst=v, fun=ctor.findex.value, arg0=r)
     fb.op('SetGlobal', src=r, **{'global': g})
+    fb.label(have)
+    return r
+
+
+def _fac_map(fb, b, cx, name, fac):
+    """Per-faction ObjectMap: global map `name` faction -> its own ObjectMap (created on first use). For state two
+    factions must not overwrite (one-value-per-key maps flip when both write the same key)."""
+    top = _global_map(fb, b, cx, name)
+    om_t = cx.t('haxe.ds.ObjectMap')
+    r = fb.reg(om_t)
+    have, new = _uid('fmh'), _uid('fmn')
+    cur = b.call('haxe.ds.ObjectMap.get', top, fb.dyn(fac))
+    fb.op('JNull', reg=cur, offset=new)
+    fb.op('Mov', dst=r, src=b.cast(cur, 'haxe.ds.ObjectMap'))
+    fb.op('JAlways', offset=have)
+    fb.label(new)
+    fb.op('New', dst=r)
+    v = fb.reg(cx.t('void'))
+    fb.op('Call1', dst=v, fun=cx.fn('haxe.ds.$ObjectMap.__constructor__').findex.value, arg0=r)
+    b.call('haxe.ds.ObjectMap.set', top, fb.dyn(fac), fb.dyn(r))
     fb.label(have)
     return r
 
@@ -734,6 +793,30 @@ def _skip_striking(fb, b, cx, helpers, army, skip):
     r = fb.reg(cx.t('bool'))
     fb.op('Call1', dst=r, fun=helpers['striking'], arg0=e)
     fb.op('JTrue', cond=r, offset=skip)
+
+
+
+
+TRAP_LOG_T = 30    # s: a rule's caught exception is logged (`trap` src, err) at most this often per rule
+
+
+def make_trap_hook(helpers):
+    """FB.trap_hook for the rule builds (behave.install): a trap's handler logs `trap` {src: building function, err:
+    the exception} at most every TRAP_LOG_T s per src, inside its own trap (the log can't throw into vanilla).
+    Rule traps were silent: Atreides' strat and every rally stopped logging mid-match with no trace."""
+    def hook(fb, exc, src):
+        b = B(fb)
+        cx = fb.cx
+        iexc, ih, skip = fb.reg(cx.t('dyn')), _uid('trh'), _uid('trs')
+        fb.op('Trap', exc=iexc, offset=ih)
+        _throttle(fb, b, cx, 'trap_' + src, _state(fb, b, cx), TRAP_LOG_T, skip)
+        err = fb.reg(cx.t('String'))
+        fb.op('Call1', dst=err, fun=cx.fn('$Std.string').findex.value, arg0=exc)
+        _log_ev(fb, b, cx, helpers, 'trap', [('src', src), ('err', err)])
+        fb.label(skip)
+        fb.op('EndTrap', exc=iexc)
+        fb.label(ih)
+    return hook
 
 
 __all__ = [n for n in dir() if not n.startswith('__')]

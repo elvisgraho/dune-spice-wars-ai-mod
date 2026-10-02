@@ -13,6 +13,23 @@ from crashlink.opcodes import opcodes
 KIND = {'void': 0, 'i32': 3, 'f64': 6, 'bool': 7, 'bytes': 8, 'dyn': 9, 'dynobj': 16}
 
 
+def _trap_src():
+    """Name of the rule building this trap: the nearest `build_*` (else module.function) on the Python stack."""
+    import sys
+    from pathlib import Path
+    f = sys._getframe(2)
+    first = None
+    while f is not None:
+        name = f.f_code.co_name
+        mod = Path(f.f_code.co_filename).stem
+        if first is None and mod != 'inject':
+            first = f'{mod}.{name}'
+        if name.startswith('build_') or name in ('safe_heal', 'pick_life', 'no_regen_heal'):
+            return f'{mod}.{name}'
+        f = f.f_back
+    return first or 'unknown'
+
+
 class Ctx:
     """Name -> id lookups for one Bytecode image."""
 
@@ -133,16 +150,29 @@ class FB:
             cur = nxt
         return cur
 
+    # set by behave.install for the rule builds only (cleared after: the next boot file has other function ids):
+    # hook(fb, exc, src) emits the handler's log; None = silent handler
+    trap_hook = None
+
     def try_(self):
-        """Start an exception trap; returns a token for end_try. Anything thrown inside is swallowed."""
+        """Start an exception trap; returns a token for end_try. Anything thrown inside is swallowed (logged as
+        `trap` with the building function's name when trap_hook is set)."""
         exc, label = self.reg(self.cx.t('dyn')), f'_trap{len(self.ops)}'
         self.op('Trap', exc=exc, offset=label)
-        return exc, label
+        return exc, label, _trap_src()
 
     def end_try(self, token):
-        exc, label = token
+        exc, label, src = token
         self.op('EndTrap', exc=exc)
-        self.label(label)  # handler = continue after the guarded block
+        hook = FB.trap_hook
+        if hook is None:
+            self.label(label)  # handler = continue after the guarded block
+            return
+        done = f'_trapok{len(self.ops)}'
+        self.op('JAlways', offset=done)  # normal path skips the handler's log
+        self.label(label)
+        hook(self, exc, src)
+        self.label(done)
 
     def build(self):
         for idx, field, name in self.fix:

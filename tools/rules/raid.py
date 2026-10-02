@@ -31,8 +31,8 @@ doesn't go out) and the entry test is RAID_TO instead of ENTER (overwhelming, sh
   (map `rscan`, read by strat_levers: vanilla's daily wish is 0 toward most at-war factions, so the enemy village
   next to a won fight was never a candidate), owned by nobody or by a faction at war with us, not
   a main base, not besieged; minus the vanilla Annex choices (getSiegeableVillages "Annex" with tryAnnexation's
-  aggressiveness gate, target scores, pickMapBest top RAID_KEEP; remembered AKEEP_T s in maps `akv` / `akf`, which
-  also keep them out of vanilla's Pillage targets: siege.build_scoring) and villages within
+  aggressiveness gate, target scores, pickMapBest top RAID_KEEP) and the villages `annex-keep` listed within AKEEP_T
+  (below; also kept out of vanilla's Pillage targets: siege.build_scoring), villages within
   BUNKER_R of our main base (the bunker redirect annexes them first), villages on an uncontested deep-desert ring
   we are closing (aimod_ddclean, Fremen), villages with our own Underworld HQ (our
   income there), villages our raid launched on less than RAID_RETRY s ago (aborted / cancelled at once: no loop)
@@ -155,11 +155,14 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     no_ent = fb.reg(cx.t('ent.Entity'))
     fb.op('Null', dst=no_ent)
 
-    def cover_at(dst, at, own, target=False):
+    def cover_at(dst, at, own, target=False, atk=False):
         """target: the structure at `at` is the raid target; its own turrets count (they fire until the pillage
-        starts; aimod_cover silences a besieged village by itself)."""
+        starts; aimod_cover silences a besieged village by itself). atk: our cover at the raid target counts
+        x OWN_COVER_ATK."""
         fb.op('CallN', dst=dst, fun=cover, args=[fac, at, no_ent if target else at, t_true if own else t_false,
                                                  no_arr])
+        if atk:
+            _atk_cover(fb, b, dst)
 
     def their_side(dst, s):
         """dst = at-war armies in reach + enemy turret cover + militia at structure s (entity reg ve)."""
@@ -292,7 +295,7 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('JSGte', a=hl, b=q, offset='aw_max')
     fb.op('Mov', dst=hl, src=q)
     fb.label('aw_max')
-    cover_at(q, ve, True)
+    cover_at(q, ve, True, atk=True)
     fb.op('Add', dst=r, a=m, b=q)
     fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', ve))
     fb.op('SDiv', dst=q, a=hl, b=tf)
@@ -444,19 +447,6 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('JNull', reg=choices, offset='noannex')
     fb.op('JSLte', a=b.field(choices, 'length'), b=zi, offset='noannex')
     fb.op('Mov', dst=ax, src=b.cast(b.call('hl.types.ArrayObj.getDyn', choices, zi), 'ent.Entity'))
-    # remember them (maps `akv` village -> time, `akf` village -> faction): protected for AKEEP_T from raid and from
-    # vanilla's Pillage gauge (siege.build_scoring); one faction per village (the last scan wins)
-    akv, akf = _global_map(fb, b, cx, 'akv'), _global_map(fb, b, cx, 'akf')
-    ki = fb.reg(cx.t('i32'))
-    fb.op('Mov', dst=ki, src=zi)
-    b.loop_head('akl')
-    fb.op('JSGte', a=ki, b=b.field(choices, 'length'), offset='noannex')
-    kc = b.call('hl.types.ArrayObj.getDyn', choices, ki)
-    fb.op('Incr', dst=ki)
-    fb.op('JNull', reg=kc, offset='akl')
-    b.call('haxe.ds.ObjectMap.set', akv, kc, fb.dyn(t))
-    b.call('haxe.ds.ObjectMap.set', akf, kc, fb.dyn(fac))
-    fb.op('JAlways', offset='akl')
     fb.label('noannex')
 
     need, dmin, dall, mh, ly = (fb.reg(cx.t('f64')) for _ in range(5))
@@ -519,11 +509,9 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('JNull', reg=choices, offset='nochoice')
     fb.op('JTrue', cond=b.call('hl.types.ArrayObj.contains', choices, fb.dyn(ve)), offset='v')
     fb.label('nochoice')
-    # ... nor what we listed as an Annex choice within AKEEP_T (a village sliding out of the top 3 for a moment)
-    akt = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'akv'), fb.dyn(ve))
+    # ... nor what annex-keep listed as one of our Annex choices within AKEEP_T (a village sliding out of the top 3)
+    akt = b.call('haxe.ds.ObjectMap.get', _fac_map(fb, b, cx, 'akeep', fac), fb.dyn(ve))
     fb.op('JNull', reg=akt, offset='akok')
-    fb.op('JNotEq', a=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'akf'), fb.dyn(ve)), b=fb.dyn(fac),
-          offset='akok')
     fb.op('SafeCast', dst=q, src=akt)
     fb.op('Sub', dst=q, a=t, b=q)
     fb.op('JSLt', a=q, b=b.const('f64', AKEEP_T), offset='v')
@@ -597,7 +585,7 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     # our raid force there (+ our turret cover), with the supply for the raid and the way home; our armies at home
     fb.op('Call2', dst=sd, fun=land, arg0=fac, arg1=ve)
     fb.op('Add', dst=lim, a=sd, b=home_m)
-    cover_at(m, ve, True)
+    cover_at(m, ve, True, atk=True)
     fb.op('Mov', dst=ms, src=zero)
     fb.op('Mov', dst=dmin, src=big)
     fb.op('Mov', dst=dall, src=big)
@@ -726,7 +714,7 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     # launch: the nearest raid-ready armies in reach until RAID_TO x their side (at least one)
     fb.op('Mul', dst=need, a=best_h, b=raid_to)
     fb.op('SDiv', dst=need, a=need, b=best_tf)
-    cover_at(m, best, True)
+    cover_at(m, best, True, atk=True)
     arr = _new_array(fb, b, cx)
     ny = fb.reg(cx.t('ent.Army'))
     nd = fb.reg(cx.t('f64'))
@@ -805,4 +793,74 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.label('end')
     fb.end_try(guard)
     fb.op('Ret', ret=void)
+    return fb.build()
+
+
+def build_annex_keep(cx, helpers, scores):
+    """aimod_annex_keep(mil, dt): every START s per faction, its next Annex choices as vanilla's tryAction would pick
+    them (getSiegeableVillages "Annex" with tryAnnexation's aggressiveness gate and the annex-reach marker `ascan`,
+    our target scores, pickMapBest top RAID_KEEP) go into map `akeep` (faction -> village -> time): for AKEEP_T s
+    they are no raid candidate and no target of vanilla's Pillage gauge (siege.build_scoring). Its own tick rule,
+    not raid's launch pass: that one exits early for minutes (raid gap, defending, Annex gauge full) and the
+    protection lapsed while vanilla's gauge kept pillaging (Smugglers' top choices Arslulah x3, Ya-lab). Per faction:
+    two factions eyeing one village each keep it. Fails safe: in a trap."""
+    fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
+    b = B(fb)
+    guard = fb.try_()
+    ctrl = b.field(0, 'controller')
+    fac = b.field(ctrl, 'owner')
+    fb.op('JNull', reg=fac, offset='end')
+    t = b.field(_state(fb, b, cx), 'time')
+    _tick(fb, b, cx, t, START, 'end')
+    zi = b.const('i32', 0)
+    t_false = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=t_false, value=False)
+    annex_s = fb.string('Annex')
+    aargs = b.call('$HAI.getDefaultStructureArgs', annex_s)
+    fb.op('JNotLt', a=b.call('logic.ai.AIMilitary.get_aggressiveness', 0),
+          b=b.call('logic.ai.AIMilitary.getActionRequiredAggressivenessByKind', 0, fb.string('Annexation')),
+          offset='aggr')
+    fb.op('SetField', obj=aargs, field=cx.field(fb.regs[aargs], 'allowEnemy'), src=t_false)
+    fb.label('aggr')
+    ann = _new_array(fb, b, cx)
+    nodyn = fb.reg(cx.t('dyn'))
+    fb.op('Null', dst=nodyn)
+    ascan = _global_map(fb, b, cx, 'ascan')
+    b.call('haxe.ds.ObjectMap.set', ascan, fb.dyn(fac), fb.dyn(t))
+    g2 = fb.try_()  # the marker must not outlive a throwing scan
+    b.call('logic.ai.$AIMilitary.getSiegeableVillages', ann, annex_s, fac, aargs)
+    fb.end_try(g2)
+    b.call('haxe.ds.ObjectMap.set', ascan, fb.dyn(fac), nodyn)
+    fb.op('JSLte', a=b.field(ann, 'length'), b=zi, offset='end')
+    sfn = cx.fn('logic.ai.$HScoring.structures')
+    sat = [a.value for a in cx.code.types[sfn.type.value].definition.args]
+    snull = []
+    for n in (3, 4, 5):
+        rr = fb.reg(sat[n])
+        fb.op('Null', dst=rr)
+        snull.append(rr)
+    sc = fb.reg(cx.code.types[sfn.type.value].definition.ret.value)
+    fb.op('CallN', dst=sc, fun=scores, args=[ann, fac, annex_s] + snull)
+    fb.op('JNull', reg=sc, offset='end')
+    pmb = cx.fn('lib.$Extensions_pickMapBest_ent_Structure.pickMapBest')
+    pat = [a.value for a in cx.code.types[pmb.type.value].definition.args]
+    cnt, pnull = fb.reg(pat[1]), fb.reg(pat[2])
+    fb.op('ToDyn', dst=cnt, src=b.const('i32', RAID_KEEP))
+    fb.op('Null', dst=pnull)
+    choices = fb.reg(cx.t('hl.types.ArrayObj'))
+    fb.op('Call3', dst=choices, fun=pmb.findex.value, arg0=sc, arg1=cnt, arg2=pnull)
+    fb.op('JNull', reg=choices, offset='end')
+    keep = _fac_map(fb, b, cx, 'akeep', fac)
+    ki = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=ki, src=zi)
+    b.loop_head('akl')
+    fb.op('JSGte', a=ki, b=b.field(choices, 'length'), offset='end')
+    kc = b.call('hl.types.ArrayObj.getDyn', choices, ki)
+    fb.op('Incr', dst=ki)
+    fb.op('JNull', reg=kc, offset='akl')
+    b.call('haxe.ds.ObjectMap.set', keep, kc, fb.dyn(t))
+    fb.op('JAlways', offset='akl')
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=fb.reg(cx.t('void')))
     return fb.build()

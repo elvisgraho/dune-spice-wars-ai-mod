@@ -50,6 +50,16 @@ from rules.sweep import *  # noqa: F401,F403
 
 
 def install(cx, helpers, new_ids):
+    """Rule builds with logging trap handlers (rules.common.make_trap_hook); the hook is cleared after, so the next
+    boot file (other function ids) and inject's own wrappers never get it."""
+    FB.trap_hook = make_trap_hook(helpers)
+    try:
+        return _install(cx, helpers, new_ids)
+    finally:
+        FB.trap_hook = None
+
+
+def _install(cx, helpers, new_ids):
     """Build the queries, the redirects and the per-faction tick. Returns (report, tick findex): tick(mil, dt) runs
     memory (record danger events first), strat (posture / press), hunt, raid, siege-engage, undeploy, then strand (a new hunt / raid claims its armies
     before idle ones are sent home)."""
@@ -165,7 +175,10 @@ def install(cx, helpers, new_ids):
     release = build_release(cx, helpers, relunits, threat, neutral, cover)  # rules/release.py
     sweep = sweep_stub(cx)  # the map sweep: swapped for the real one at the end (every map exists by then)
     new_ids.add(sweep)
-    tick = build_chain(cx, [memory, wormflee, ttick, dmz, strat, hunt, raid, rally, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, sact, sweep])
+    # next Annex choices kept from raid and vanilla's Pillage gauge (rules/raid.py; before raid, which reads them)
+    akeep = build_annex_keep(cx, helpers, helpers['scores'])
+    new_ids.add(akeep)
+    tick = build_chain(cx, [memory, wormflee, ttick, dmz, strat, hunt, akeep, raid, rally, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, sact, sweep])
     new_ids.update({dmz, sact, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
                     memory, tick})
     report['strand'] = 1
