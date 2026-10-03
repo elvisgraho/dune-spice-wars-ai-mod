@@ -102,6 +102,10 @@ KILL = 3.0         # "kill it on the way": a chase under enemy turret cover, or 
                    # in CONTACT of our free armies and we have KILL x (its threat + turret cover)
 BUNKER_W = 1.3     # vanilla target score x this for a village that forms a bunker with ours (Annex / Liberate)
 GATHER_R = 900     # contest of our OWN besieged village: free armies this far away join (vanilla Regroup gathers)
+DEF_NEAR_R = 300   # aimod_defend / contest stake: a structure this close to our active main base is the home front
+CONTEST_PIL_W = 0.5  # contest band (x CONTEST_W) of a pillage: below every capture contest, above every chase
+CONTEST_HOME_W = 0.25  # ... + this for a contest within DEF_NEAR_R of our main base: home captures > far captures >
+                     # home pillages > far pillages
 HOME_RING_R = 250  # a neutral village this close to our active main base, besieged by an at-war faction, is defended
                    # like our own (aimod_defend: posture, contest from GATHER_R, our walking Annexes released)
 RENEGADE_R = 150   # aimod_defend: a Renegade_Drop raid army this close to a raider-besieged village = a Takeover
@@ -156,6 +160,9 @@ WORM_ESC_D = 60    # worm flee: an army walking whose path ends this much farthe
                    # alone (it outruns it: aggro 30-60, strike <= 40 away, pre-attack 5-10 s; user: don't choke a move
                    # that makes it in time) ...
 WORM_SAFE_REACH = 30  # ... as is one whose path ends off the sand / in a worm-free zone within this (~5 s walk)
+WORM_LET_D = 80    # ... but walking away counts only while the worm is at least this far: closer, it has aggroed (30-60)
+                   # and strikes within seconds (Atreides 83:17: 4 armies let run at 3-16 from the worm, 312-326 of
+                   # path left, 3 eaten 10 s later): the nearest rock is the only escape
 WFLEE_T = 3        # s: a worm-targeted army on sand is re-sent to rock at most this often (vanilla orders move it back)
 WORM_HOLD = 20     # s: an army sent off the sand isn't free for hunts / raids / strand (no relaunch onto the same sand)
 WORM_NEAR = 150    # an army moved off the sand waits there (out of vanilla's Resupply / mission picks) while a worm is
@@ -167,6 +174,7 @@ ZONE_NO_WORM = 1641  # attribute Zone_NoSandworm (trait WormCalling_Neighbors: r
                      # canBeWormTarget: no worm target there)
 HFLEE_T = 20       # s: an attacked team harvester is released to vanilla's re-route at most this often (it packs up)
 RALLY_T = 2        # s: rally pass (rules/rally.py): gather strength when a structure faces more than we can beat
+RP_SNAP = 120      # rpoint: vanilla's recruit point belongs to our structure this close (its Airfield sits in the village)
 RALLY_MIN_H = 80000  # ... and that power is at least this (a lone raider is vanilla Defense's business)
 HOME_MIN_H = RALLY_MIN_H  # aimod_home: hostile power free to strike our land below this counts 0 (a raider band the
                    # village militia hold; the rally ignores it too): 20k FremenRaids vs no army home aborted pillages at 10%
@@ -177,6 +185,7 @@ STRIKE_RATIO = 1.0  # ... and fight it when the order's armies within LOCAL are 
                     # even or better starts the fight (user), the vanilla fight retreat still judges it after 5 s
 STRIKE_MAX = 30     # s: ... a strike ends after this, then the march goes on
 STRIKE_LEASH = 120  # ... or once the army is this far from where it started (a running enemy isn't chased; user)
+STRIKE_TO = 1.5     # ... joined nearest first until this x the target's side (not every order army in reach: the rest marches on)
 AA_R = 120          # Fremen F_Special_2 is an anti-air turret (trait: can only attack flying units, attack plane 2,
                     # range 80): installed only with an at-war flying army within this (80 + 40), and undeployed
                     # when none is (rules/deploy.py; 3 installed at Arkwaz held an Annex at balance 0 for 15 min)
@@ -235,6 +244,8 @@ SD_DUR = 90        # s: its duration (3 days x 30 s)
 SD_CHECK = 3       # s: sdrop pass period
 SD_CAST_R = 150    # a locked task's drop is cast once an order army is this close to the target (Engage: the armies
                    # are entering the target zone; the militia fight follows)
+SD_CAST_FIGHT = SUP_DRAIN_S * 20  # a locked drop is cast when an order army losing supply holds <= the walk home
+                   # + this: ~20 s of fight drain left (earlier wastes the 3 days; a plain occupation never drains)
 SD_EMERG = SUP_DRAIN_S * 20  # emergency drop: an army off our land with less supply than ~20 s of drain ...
 SD_EMERG_LAND = 150  # ... at least this far from our land (and short for the walk home), staying in its zone
 SD_FRESH = SD_CHECK * 2 + 1  # s: raid supply budget counts on a free (unlocked) drop seen this recently
@@ -422,6 +433,7 @@ ANNEX_SIETCH = 10  # Annex score + this for a village whose zone has a sietch (Z
 ANNEX_SPICE1 = 4    # Annex score x this for a spice village while we own none (vanilla +100 too), after the cost
                     # ratio and every other term (x2 could lose to a +50 special x centre x compactness): the first capture is a spice field
                     # ratio: the opening takes a spice field first. Not for SPICE_ANY factions (harvest anywhere)
+AF_NONE = ('Fremen',)  # cdb building Airfield notForFactions: they never get one (worm rides instead)
 SPICE_ANY = ('Fremen', 'Vernius')  # their first-spice bonus (vanilla +100) is removed
 ANNEX_ZONES = 1    # Annex target reach: vanilla's 1 zone from our territory + this (every faction; Smugglers get FAR_ZONES
                    # too): vanilla offered 1-2 candidates per pick, so scores had nothing to choose from
@@ -1029,6 +1041,40 @@ def make_trap_hook(helpers):
     return hook
 
 
+def _pillaging(fb, b, cx, s, yes):
+    """Jump to `yes` when structure s's running occupation is a Pillage (`SiegeComponent.getOccupationActionKind`):
+    a 20-day loss of production, while an Annex / Liberate / Takeover loses the village. A siege still in its militia
+    fight (no occupation yet) isn't known to be one and counts as a capture."""
+    sg = b.field(s, 'siege')
+    no = _uid('pln')
+    fb.op('JNull', reg=sg, offset=no)
+    k = b.call('ent.comp.SiegeComponent.getOccupationActionKind', sg)
+    fb.op('JNull', reg=k, offset=no)
+    fb.op('JEq', a=b.call('String.__compare', k, fb.dyn(fb.string('Pillage'))), b=b.const('i32', 0), offset=yes)
+    fb.label(no)
+
+
+def _base_near(fb, b, cx, fac, e, r, yes):
+    """Jump to `yes` when entity e is within r of one of fac's active main bases."""
+    lo = _uid('bnr')
+    k = fb.reg(cx.t('i32'))
+    ee, me = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=ee, src=e)
+    mbs = b.field(fac, 'mainBases')
+    fb.op('JNull', reg=mbs, offset=lo + 'd')
+    fb.op('Mov', dst=k, src=b.const('i32', 0))
+    b.loop_head(lo)
+    fb.op('JSGte', a=k, b=b.field(mbs, 'length'), offset=lo + 'd')
+    mb = b.cast(b.call('hl.types.ArrayObj.getDyn', mbs, k), 'ent.Structure')
+    fb.op('Incr', dst=k)
+    fb.op('JNull', reg=mb, offset=lo)
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', mb), offset=lo)
+    fb.op('Mov', dst=me, src=mb)
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', ee, me), b=b.const('f64', r), offset=yes)
+    fb.op('JAlways', offset=lo)
+    fb.label(lo + 'd')
+
+
 def _pannex_ok(fb, b, cx, fac, s, no):
     """Jump to `no` unless fac may spend PeacefullyAnnex on structure s (pannex fallback and vanilla's
     checkPeacefulAnnexation, rules/pannex.py): we own >= PANNEX_MIN_VILLAGES villages, hold >= PANNEX_INF Influence
@@ -1047,6 +1093,143 @@ def _pannex_ok(fb, b, cx, fac, s, no):
     hops = fb.reg(cx.t('i32'))
     fb.op('Call3', dst=hops, fun=gdb.findex.value, arg0=z, arg1=fac, arg2=gnull)
     fb.op('JSLt', a=hops, b=b.const('i32', PANNEX_HOPS), offset=no)
+
+
+def _base_dist(fb, b, s, fac):
+    """Distance from structure s to fac's nearest active main base (1 << 30: none)."""
+    cx = fb.cx
+    d, bd = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    k = fb.reg(cx.t('i32'))
+    se = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=se, src=s)
+    fb.op('Mov', dst=bd, src=b.const('f64', 1 << 30))
+    lo = _uid('bdl')
+    mbs = b.field(fac, 'mainBases')
+    fb.op('JNull', reg=mbs, offset=lo + 'd')
+    fb.op('Mov', dst=k, src=b.const('i32', 0))
+    b.loop_head(lo)
+    fb.op('JSGte', a=k, b=b.field(mbs, 'length'), offset=lo + 'd')
+    mb = b.cast(b.call('hl.types.ArrayObj.getDyn', mbs, k), 'ent.Structure')
+    fb.op('Incr', dst=k)
+    fb.op('JNull', reg=mb, offset=lo)
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', mb), offset=lo)
+    me = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=me, src=mb)
+    fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', se, me))
+    fb.op('JSGte', a=d, b=bd, offset=lo)
+    fb.op('Mov', dst=bd, src=d)
+    fb.op('JAlways', offset=lo)
+    fb.label(lo + 'd')
+    return bd
+
+
+def _af_remote(fb, b, cx, s, z, fac, yes, no, none):
+    """Airfield-steer's remote test for village s (zone z) of fac: jump to `yes` when >= TURRET_REMOTE zones
+    (Zone.getDistanceToPlayerBase) or >= REMOTE_D in a straight line from fac's nearest active main base, `none` when
+    fac has no active main base (no measure), else `no`. Returns (db, hops) registers."""
+    db = _base_dist(fb, b, s, fac)
+    hops = fb.reg(cx.t('i32'))
+    gdb = cx.fn('ent.Zone.getDistanceToPlayerBase')
+    gnull = fb.reg(cx.code.types[gdb.type.value].definition.args[2].value)
+    fb.op('Null', dst=gnull)
+    fb.op('Call3', dst=hops, fun=gdb.findex.value, arg0=z, arg1=fac, arg2=gnull)
+    fb.op('JSGte', a=db, b=b.const('f64', 1 << 29), offset=none)  # no main base of ours: no measure
+    fb.op('JSGte', a=db, b=b.const('f64', REMOTE_D), offset=yes)
+    fb.op('JSGte', a=hops, b=b.const('i32', 99), offset=no)
+    fb.op('JSGte', a=hops, b=b.const('i32', TURRET_REMOTE), offset=yes)
+    fb.op('JAlways', offset=no)
+    return db, hops
+
+
+def _af_behind(fb, b, cx, se, fac, fail):
+    """Bool register: entity se lies behind fac's nearest active main base B (every other faction's active main base
+    M has d(se, M) >= d(B, M): between us and the map border). `fail` when fac has no main base list / none active."""
+    zi = b.const('i32', 0)
+    L = {n: _uid('afb' + n) for n in ('mb', 'mbd', 'of', 'ofd', 'om', 'bhd')}
+    bm = fb.reg(cx.t('ent.Entity'))  # our nearest active main base
+    fb.op('Null', dst=bm)
+    d, bd = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=bd, src=b.const('f64', 1 << 30))
+    i, j = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    me = fb.reg(cx.t('ent.Entity'))
+    mbs = b.field(fac, 'mainBases')
+    fb.op('JNull', reg=mbs, offset=fail)
+    fb.op('Mov', dst=i, src=zi)
+    b.loop_head(L['mb'])
+    fb.op('JSGte', a=i, b=b.field(mbs, 'length'), offset=L['mbd'])
+    mb = b.cast(b.call('hl.types.ArrayObj.getDyn', mbs, i), 'ent.Structure')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=mb, offset=L['mb'])
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', mb), offset=L['mb'])
+    fb.op('Mov', dst=me, src=mb)
+    fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', se, me))
+    fb.op('JSGte', a=d, b=bd, offset=L['mb'])
+    fb.op('Mov', dst=bd, src=d)
+    fb.op('Mov', dst=bm, src=me)
+    fb.op('JAlways', offset=L['mb'])
+    fb.label(L['mbd'])
+    fb.op('JNull', reg=bm, offset=fail)
+    behind = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=behind, value=False)
+    facs = b.cast(fb.get(_state(fb, b, cx), 'factions', 'array'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=facs, offset=L['bhd'])
+    nb = fb.reg(cx.t('i32'))  # other active main bases seen
+    fb.op('Mov', dst=nb, src=zi)
+    fb.op('Mov', dst=i, src=zi)
+    b.loop_head(L['of'])
+    fb.op('JSGte', a=i, b=b.field(facs, 'length'), offset=L['ofd'])
+    of = b.cast(b.call('hl.types.ArrayObj.getDyn', facs, i), 'ent.Faction')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=of, offset=L['of'])
+    fb.op('JEq', a=of, b=fac, offset=L['of'])
+    ombs = b.field(of, 'mainBases')
+    fb.op('JNull', reg=ombs, offset=L['of'])
+    fb.op('Mov', dst=j, src=zi)
+    b.loop_head(L['om'])
+    fb.op('JSGte', a=j, b=b.field(ombs, 'length'), offset=L['of'])
+    om = b.cast(b.call('hl.types.ArrayObj.getDyn', ombs, j), 'ent.Structure')
+    fb.op('Incr', dst=j)
+    fb.op('JNull', reg=om, offset=L['om'])
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', om), offset=L['om'])
+    fb.op('Mov', dst=me, src=om)
+    fb.op('Incr', dst=nb)
+    # s nearer to this base than our base is: s is on the way somewhere, not behind us
+    fb.op('JSLt', a=b.call('ent.Entity.getDistTo', se, me), b=b.call('ent.Entity.getDistTo', bm, me), offset=L['bhd'])
+    fb.op('JAlways', offset=L['om'])
+    fb.label(L['ofd'])
+    fb.op('JSLte', a=nb, b=zi, offset=L['bhd'])  # nobody else: no "behind"
+    fb.op('Bool', dst=behind, value=True)
+    fb.label(L['bhd'])
+    return behind
+
+
+def _af_spaced(fb, b, cx, s, se, fac, airfield, gk, gkn, ku):
+    """Bool register: another structure of fac (not s) within AF_SPACING of se holds an Airfield (built or going
+    up: Upgrades.getKind)."""
+    zi = b.const('i32', 0)
+    lo = _uid('afs')
+    i = fb.reg(cx.t('i32'))
+    me = fb.reg(cx.t('ent.Entity'))
+    spaced = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=spaced, value=False)
+    mine = b.cast(fb.get(fac, 'structures', 'array'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=mine, offset=lo + 'd')
+    fb.op('Mov', dst=i, src=zi)
+    b.loop_head(lo)
+    fb.op('JSGte', a=i, b=b.field(mine, 'length'), offset=lo + 'd')
+    st = b.cast(b.call('hl.types.ArrayObj.getDyn', mine, i), 'ent.Structure')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=st, offset=lo)
+    fb.op('JEq', a=st, b=s, offset=lo)
+    fb.op('Mov', dst=me, src=st)
+    fb.op('JSGte', a=b.call('ent.Entity.getDistTo', se, me), b=b.const('f64', AF_SPACING), offset=lo)
+    sup = b.field(st, 'upgrades')
+    fb.op('JNull', reg=sup, offset=lo)
+    fb.op('CallN', dst=ku, fun=gk.findex.value, args=[sup, airfield] + gkn)
+    fb.op('JNull', reg=ku, offset=lo)
+    fb.op('Bool', dst=spaced, value=True)
+    fb.label(lo + 'd')
+    return spaced
 
 
 __all__ = [n for n in dir() if not n.startswith('__')]

@@ -361,8 +361,9 @@ def build_spice_first(cx, helpers, new_ids, inner):
     scores max(score, 0) + SPICE_FIRST_W, every other pair on that village NaN (dropped), so vanilla's weighted pick
     (Insane: best 2) can't put a Marketplace or a battery first and the village saves for its harvester. Vanilla gave
     the Refinery base + aiWeight 10, below village-bonus buildings (upgrade factor x 10) and under-produced resources.
-    Refinery not buildable (notForFactions Fremen / Vernius, full, occupied): untouched. Log `rfirst` (s, sc vanilla)
-    once per village per 60 s. Fails safe: inner's score on error."""
+    Refinery not buildable (notForFactions Fremen / Vernius, full, occupied): untouched. A remote village that wants
+    an Airfield (airfield-steer's test) builds that first: untouched until its Airfield stands or goes up (log `rfaf`
+    s). Log `rfirst` (s, sc vanilla) once per village per 60 s. Fails safe: inner's score on error."""
     orig = cx.fn('logic.ai.$HScoring.getBuildingStructureScore')
     ft = cx.code.types[orig.type.value].definition
     fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=orig.type.value)
@@ -433,6 +434,27 @@ def build_spice_first(cx, helpers, new_ids, inner):
     _log_ev(fb, b, cx, helpers, 'rnot', [('f', fb.get(1, 'kind')), ('s', rse), ('r', rif)])
     fb.op('JAlways', offset='end')
     fb.label('can')
+    # a remote village that wants an Airfield (airfield-steer's measure: remote, not behind our base, none of ours
+    # within AF_SPACING, one can go up): the Airfield first, then the Refinery (user: Atreides' Marmah, 594 from
+    # Arrakeen, saved for its Refinery while armies walked the whole way)
+    sfe = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=sfe, src=s)
+    airfield = fb.string('Airfield')
+    _af_remote(fb, b, cx, s, z, 1, 'afrem', 'afno', 'afno')
+    fb.label('afrem')
+    fb.op('CallN', dst=ku, fun=gk.findex.value, args=[up, airfield] + gkn)
+    fb.op('JNotNull', reg=ku, offset='afno')  # its Airfield stands or goes up: the Refinery's turn
+    fb.op('JTrue', cond=_af_behind(fb, b, cx, sfe, 1, 'afno'), offset='afno')
+    fb.op('JTrue', cond=_af_spaced(fb, b, cx, s, sfe, 1, airfield, gk, gkn, ku), offset='afno')
+    fb.op('CallN', dst=rr, fun=ca.findex.value, args=[up, airfield, dref] + cnul)
+    fb.op('EnumIndex', dst=ri, value=rr)
+    fb.op('JEq', a=ri, b=b.const('i32', rnames.index('Success')), offset='afyes')
+    fb.op('JNotEq', a=ri, b=b.const('i32', rnames.index('MissingResources')), offset='afno')
+    fb.label('afyes')
+    _throttle(fb, b, cx, 'rfaf', sfe, 60, 'end')
+    _log_ev(fb, b, cx, helpers, 'rfaf', [('f', fb.get(1, 'kind')), ('s', sfe)])
+    fb.op('JAlways', offset='end')
+    fb.label('afno')
     k = fb.get(0, 'k')
     fb.op('JNull', reg=k, offset='end')
     ks = b.cast(k, 'String')
@@ -456,34 +478,6 @@ def build_spice_first(cx, helpers, new_ids, inner):
     w = fb.build()
     new_ids.add(w)
     return w
-
-
-def _base_dist(fb, b, s, fac):
-    """Distance from structure s to fac's nearest active main base (1 << 30: none)."""
-    cx = fb.cx
-    d, bd = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
-    k = fb.reg(cx.t('i32'))
-    se = fb.reg(cx.t('ent.Entity'))
-    fb.op('Mov', dst=se, src=s)
-    fb.op('Mov', dst=bd, src=b.const('f64', 1 << 30))
-    lo = _uid('bdl')
-    mbs = b.field(fac, 'mainBases')
-    fb.op('JNull', reg=mbs, offset=lo + 'd')
-    fb.op('Mov', dst=k, src=b.const('i32', 0))
-    b.loop_head(lo)
-    fb.op('JSGte', a=k, b=b.field(mbs, 'length'), offset=lo + 'd')
-    mb = b.cast(b.call('hl.types.ArrayObj.getDyn', mbs, k), 'ent.Structure')
-    fb.op('Incr', dst=k)
-    fb.op('JNull', reg=mb, offset=lo)
-    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', mb), offset=lo)
-    me = fb.reg(cx.t('ent.Entity'))
-    fb.op('Mov', dst=me, src=mb)
-    fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', se, me))
-    fb.op('JSGte', a=d, b=bd, offset=lo)
-    fb.op('Mov', dst=bd, src=d)
-    fb.op('JAlways', offset=lo)
-    fb.label(lo + 'd')
-    return bd
 
 
 def build_wonder(cx, helpers, new_ids, inner):
@@ -758,96 +752,14 @@ def build_airfield(cx, helpers, threat, new_ids, inner):
     ku = fb.reg(cx.code.types[gk.type.value].definition.ret.value)
     why = fb.reg(cx.t('String'))
     # remote?
-    db = _base_dist(fb, b, s, 1)
-    hops = fb.reg(cx.t('i32'))
-    gdb = cx.fn('ent.Zone.getDistanceToPlayerBase')
-    gnull = fb.reg(cx.code.types[gdb.type.value].definition.args[2].value)
-    fb.op('Null', dst=gnull)
-    fb.op('Call3', dst=hops, fun=gdb.findex.value, arg0=z, arg1=1, arg2=gnull)
-    fb.op('JSGte', a=db, b=b.const('f64', 1 << 29), offset='end')  # no main base of ours: no measure
-    fb.op('JSGte', a=db, b=b.const('f64', REMOTE_D), offset='remote')
-    fb.op('JSGte', a=hops, b=b.const('i32', 99), offset='near')
-    fb.op('JSGte', a=hops, b=b.const('i32', TURRET_REMOTE), offset='remote')
+    db, hops = _af_remote(fb, b, cx, s, z, 1, 'remote', 'near', 'end')
     fb.label('near')
     # not remote: an Airfield pick stands only where it isn't behind us / next to another (checks below), a battery
     # is turret-steer's
     fb.op('JFalse', cond=isaf, offset='end')
     fb.label('remote')
-    # behind our base: every other faction's active main base is at least as far from s as from our base
-    bm = fb.reg(cx.t('ent.Entity'))  # our nearest active main base
-    fb.op('Null', dst=bm)
-    d, bd = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
-    fb.op('Mov', dst=bd, src=b.const('f64', 1 << 30))
-    i, j = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
-    me = fb.reg(cx.t('ent.Entity'))
-    mbs = b.field(1, 'mainBases')
-    fb.op('JNull', reg=mbs, offset='end')
-    fb.op('Mov', dst=i, src=zi)
-    b.loop_head('mb')
-    fb.op('JSGte', a=i, b=b.field(mbs, 'length'), offset='mbd')
-    mb = b.cast(b.call('hl.types.ArrayObj.getDyn', mbs, i), 'ent.Structure')
-    fb.op('Incr', dst=i)
-    fb.op('JNull', reg=mb, offset='mb')
-    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', mb), offset='mb')
-    fb.op('Mov', dst=me, src=mb)
-    fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', se, me))
-    fb.op('JSGte', a=d, b=bd, offset='mb')
-    fb.op('Mov', dst=bd, src=d)
-    fb.op('Mov', dst=bm, src=me)
-    fb.op('JAlways', offset='mb')
-    fb.label('mbd')
-    fb.op('JNull', reg=bm, offset='end')
-    behind = fb.reg(cx.t('bool'))
-    fb.op('Bool', dst=behind, value=False)
-    facs = b.cast(fb.get(_state(fb, b, cx), 'factions', 'array'), 'hl.types.ArrayObj')
-    fb.op('JNull', reg=facs, offset='bhd')
-    nb = fb.reg(cx.t('i32'))  # other active main bases seen
-    fb.op('Mov', dst=nb, src=zi)
-    fb.op('Mov', dst=i, src=zi)
-    b.loop_head('of')
-    fb.op('JSGte', a=i, b=b.field(facs, 'length'), offset='ofd')
-    of = b.cast(b.call('hl.types.ArrayObj.getDyn', facs, i), 'ent.Faction')
-    fb.op('Incr', dst=i)
-    fb.op('JNull', reg=of, offset='of')
-    fb.op('JEq', a=of, b=1, offset='of')
-    ombs = b.field(of, 'mainBases')
-    fb.op('JNull', reg=ombs, offset='of')
-    fb.op('Mov', dst=j, src=zi)
-    b.loop_head('om')
-    fb.op('JSGte', a=j, b=b.field(ombs, 'length'), offset='of')
-    om = b.cast(b.call('hl.types.ArrayObj.getDyn', ombs, j), 'ent.Structure')
-    fb.op('Incr', dst=j)
-    fb.op('JNull', reg=om, offset='om')
-    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', om), offset='om')
-    fb.op('Mov', dst=me, src=om)
-    fb.op('Incr', dst=nb)
-    # s nearer to this base than our base is: s is on the way somewhere, not behind us
-    fb.op('JSLt', a=b.call('ent.Entity.getDistTo', se, me), b=b.call('ent.Entity.getDistTo', bm, me), offset='bhd')
-    fb.op('JAlways', offset='om')
-    fb.label('ofd')
-    fb.op('JSLte', a=nb, b=zi, offset='bhd')  # nobody else: no "behind"
-    fb.op('Bool', dst=behind, value=True)
-    fb.label('bhd')
-    # spaced: another Airfield of ours within AF_SPACING
-    spaced = fb.reg(cx.t('bool'))
-    fb.op('Bool', dst=spaced, value=False)
-    mine = b.cast(fb.get(1, 'structures', 'array'), 'hl.types.ArrayObj')
-    fb.op('JNull', reg=mine, offset='spd')
-    fb.op('Mov', dst=i, src=zi)
-    b.loop_head('sp')
-    fb.op('JSGte', a=i, b=b.field(mine, 'length'), offset='spd')
-    st = b.cast(b.call('hl.types.ArrayObj.getDyn', mine, i), 'ent.Structure')
-    fb.op('Incr', dst=i)
-    fb.op('JNull', reg=st, offset='sp')
-    fb.op('JEq', a=st, b=s, offset='sp')
-    fb.op('Mov', dst=me, src=st)
-    fb.op('JSGte', a=b.call('ent.Entity.getDistTo', se, me), b=b.const('f64', AF_SPACING), offset='sp')
-    sup = b.field(st, 'upgrades')
-    fb.op('JNull', reg=sup, offset='sp')
-    fb.op('CallN', dst=ku, fun=gk.findex.value, args=[sup, airfield] + gkn)
-    fb.op('JNull', reg=ku, offset='sp')
-    fb.op('Bool', dst=spaced, value=True)
-    fb.label('spd')
+    behind = _af_behind(fb, b, cx, se, 1, 'end')
+    spaced = _af_spaced(fb, b, cx, s, se, 1, airfield, gk, gkn, ku)
     fb.op('JFalse', cond=isaf, offset='bat')
     # --- Airfield pair
     fb.op('JTrue', cond=behind, offset='veto_b')
@@ -945,3 +857,44 @@ def _nan_f(fb, b, cx):
     z = b.const('f64', 0)
     fb.op('SDiv', dst=r, a=z, b=z)
     return r
+
+
+def build_bpick(cx, helpers, new_ids):
+    """Diagnostics: which building pair vanilla actually picks. In `BuildingManager.checkBuildings`, the first
+    getBuildingStructureScore call after `pickMapWeight` scores the picked pair (`selectedBestScore`); it goes through
+    this wrapper (vanilla result unchanged) that logs `bpick` (f, s, k, sc) once per village per 30 s: why remote
+    villages kept `afield` +100 rows for minutes without an Airfield (Atreides Marmah / Sharas)."""
+    orig = cx.fn('logic.ai.$HScoring.getBuildingStructureScore')
+    cb = cx.fn('logic.ai.BuildingManager.checkBuildings')
+    pmw = {f.findex.value for nm, f in cx.funcs.items() if 'pickMapWeight' in nm}
+    ops = cb.ops
+    k0 = next((i for i, op in enumerate(ops) if op.op.startswith('Call') and op.df.get('fun') is not None
+               and op.df['fun'].value in pmw), None)
+    if k0 is None:
+        raise ValueError('bpick: no pickMapWeight call in checkBuildings')
+    site = next((op for op in ops[k0:] if op.op.startswith('Call') and op.df.get('fun') is not None
+                 and op.df['fun'].value == orig.findex.value), None)
+    if site is None:
+        raise ValueError('bpick: no getBuildingStructureScore call after pickMapWeight in checkBuildings')
+    ft = cx.code.types[orig.type.value].definition
+    fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=orig.type.value)
+    b = B(fb)
+    res = fb.reg(cx.t('f64'))
+    fb.op('Call4', dst=res, fun=orig.findex.value, arg0=0, arg1=1, arg2=2, arg3=3)  # vanilla, outside the trap
+    guard = fb.try_()
+    fb.op('JNull', reg=1, offset='end')
+    so = fb.get(0, 's')
+    fb.op('JNull', reg=so, offset='end')
+    s = b.cast(so, 'ent.Structure')
+    fb.op('JNull', reg=s, offset='end')
+    se = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=se, src=s)
+    _throttle(fb, b, cx, 'bpick', se, 30, 'end')
+    _log_ev(fb, b, cx, helpers, 'bpick', [('f', fb.get(1, 'kind')), ('s', se), ('k', fb.get(0, 'k')), ('sc', res)])
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    new_ids.add(w)
+    site.df['fun'].value = w
+    return {'bpick': 1}

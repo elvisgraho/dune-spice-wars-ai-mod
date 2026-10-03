@@ -44,6 +44,8 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
   sreach: f, s, rk, hops, rec (special-region village not ours: region id, zone hops to our territory, surveyed by us; rules/sdiag.py)
   wlet  : f, a, d, pe (worm-targeted army left to walk out on its own: d worm distance, pe path left; rules/worm.py)
   aagate: f, a (FSpecialInstall refused: no at-war flying army within AA_R; rules/deploy.py)
+  opgate: f, s, k, n (siege order on an ownerless target: its n optional operations dropped; rules/ops.py)
+  fopen : f, act, n (Fremen opening: first Annex held, n neutral villages surveyed; rules/fopen.py)
   afield / afveto: f, s, sc, d, hops / why (Airfield lifted on a remote village / vanilla's Airfield dropped: behind | spaced; rules/build.py)
   bkeep : f, tgt, n, ph (siege order kept after its last besieger of ours died; rules/orders.py siege-keep)
   tkeep : f, a, n, ph (our Military order kept before Action when another order took army a; rules/orders.py take-keep)
@@ -379,6 +381,7 @@ def summarize(events, faction=None, all_orders=False):
     fights, micro, snaps, aws = [], defaultdict(Counter), {}, []
     armysz = []  # rules/army.py: cpdis / mpgate
     rfails = []  # rules/common.py step probe: a tick rule run that died silently
+    sweeps = []  # sweep.py map sweep rows
     cvbads, rfirsts, rnots = [], [], []  # world.py aimod_cover1 trap (a structure that threw) / build.py spice-first
     calls = defaultdict(lambda: {'n': 0, 'f': Counter(), 'r': Counter()})
     stops = Counter()
@@ -478,9 +481,10 @@ def summarize(events, faction=None, all_orders=False):
         elif k in ('gather', 'stage'):
             gathers.append(e)
         elif k in ('treaty', 'patrol', 'turret', 'tveto', 'aring', 'pkeep', 'odead', 'okeep', 'fpeace', 'pannex', 'pagate', 'sdrop', 'airpick', 'rejoin', 'dall', 'uhqcap',
-                   'uhqres', 'uhqp', 'uhqx', 'dmz', 'sreach', 'wsteer', 'wveto', 'afield', 'afveto', 'aagate', 'undeploy', 'bkeep', 'tkeep', 'tdem'):
+                   'uhqres', 'uhqp', 'uhqx', 'dmz', 'sreach', 'wsteer', 'wveto', 'afield', 'afveto', 'aagate', 'undeploy', 'bkeep', 'tkeep', 'tdem',
+                   'rpoint', 'rfaf', 'bpick'):
             standoff.append(e)
-        elif k in ('wflee', 'weaten', 'dstep', 'whold', 'hrun', 'spos', 'unstick', 'keepcap', 'tension', 'hride', 'rride'):
+        elif k in ('wflee', 'weaten', 'dstep', 'whold', 'hrun', 'hpick', 'spos', 'unstick', 'keepcap', 'tension', 'hride', 'rride'):
             worms.append(e)
         elif k in ('ascore', 'alone'):
             ascores.append(e)
@@ -498,6 +502,8 @@ def summarize(events, faction=None, all_orders=False):
             rfirsts.append(e)
         elif k == 'rnot':
             rnots.append(e)
+        elif k == 'sweep':
+            sweeps.append(e)
         elif k == 'wzb':
             wzbs.append(e)
         elif k == 'hunt':
@@ -700,7 +706,14 @@ def summarize(events, faction=None, all_orders=False):
                            f"sup{e.get('sup')} land{e.get('land')} pw{kpw(e.get('pw'))}")
             elif e['e'] == 'patrol':
                 out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} patrol {ent(e.get('s'))[:22]:<22} "
-                           f"{ent(e.get('a'))[:20]} n{e.get('n')} h{kpw(e.get('h'))} m{kpw(e.get('m'))}")
+                           f"{ent(e.get('a'))[:20]} n{e.get('n')} h{kpw(e.get('h'))} m{kpw(e.get('m'))} {e.get('why') or ''}")
+            elif e['e'] == 'rpoint':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} rpoint {e.get('why')} {ent(e.get('s'))[:22]:<22} "
+                           f"h{kpw(e.get('h'))} m{kpw(e.get('m'))} (recruit point moved off vanilla's)")
+            elif e['e'] == 'bpick':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} bpick  {ent(e.get('s'))[:22]:<22} {e.get('k')} sc{e.get('sc')} (building picked, vanilla score)")
+            elif e['e'] == 'rfaf':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} rfaf   {ent(e.get('s'))[:22]:<22} (remote spice village: Airfield before Refinery)")
             elif e['e'] == 'odead':
                 out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} odead  {ent(e.get('a'))[:22]:<22} hp{e.get('hp')} ph{e.get('ph')} n{e.get('n')}")
             elif e['e'] == 'okeep':
@@ -796,6 +809,12 @@ def summarize(events, faction=None, all_orders=False):
             ri = int(rr) if isinstance(rr, (int, float)) else -1
             out.append(f"  {f} {s} {rn[ri] if 0 <= ri < len(rn) else rr} x{n}")
 
+    if sweeps:
+        out.append('\n## Map sweep (sweep.py): keys held in our maps over time, the two largest maps (name keys)')
+        step = max(1, len(sweeps) // 10)
+        for e in sweeps[::step] + ([sweeps[-1]] if (len(sweeps) - 1) % step else []):
+            out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} keys{e.get('keys')} removed{e.get('n')} "
+                       f"{e.get('m1', '-')} {e.get('k1', '')} {e.get('m2', '-')} {e.get('k2', '')}")
     if armysz:
         out.append('\n## Army size (tools/rules/army.py): cpdis = temporary army disbanded on a CP overflow '
                    '(cp its upkeep, free = net CP before); mpgate = unit pick that vanilla Manpower goals would have blocked; '
@@ -826,6 +845,9 @@ def summarize(events, faction=None, all_orders=False):
             elif e['e'] == 'hrun':
                 out.append(f"  {clock(e['_t'])} {e.get('f')} HARVESTER RUN {ent(e.get('a'))[:22]:<22} -> {ent(e.get('s'))[:22] if e.get('s') else 'main base'} "
                            f"H{kpw(e.get('H'))} M{kpw(e.get('M'))} ok{int(bool(e.get('ok')))}")
+            elif e['e'] == 'hpick':
+                out.append(f"  {clock(e['_t'])} {e.get('f')} harvester field {ent(e.get('a'))[:22]:<22} -> {ent(e.get('s'))[:22]} "
+                           f"danger{e.get('dg')} d{e.get('d')} (chosen field still dangerous)")
             elif e['e'] == 'dstep':
                 out.append(f"  {clock(e['_t'])} {e.get('f')} desert-step {ent(e.get('a'))[:22]:<22} -> {ent(e.get('tgt'))[:22]} d{e.get('d')} ok{int(bool(e.get('ok')))}")
             else:

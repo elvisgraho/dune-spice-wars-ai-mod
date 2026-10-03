@@ -45,6 +45,9 @@ from rules.sdiag import *  # noqa: F401,F403
 from rules.release import *  # noqa: F401,F403
 from rules.pannex import *  # noqa: F401,F403
 from rules.sdrop import *  # noqa: F401,F403
+from rules.ops import *  # noqa: F401,F403
+from rules.fopen import *  # noqa: F401,F403
+from rules.isai import *  # noqa: F401,F403
 from rules.dmz import *  # noqa: F401,F403
 from rules.claim import *  # noqa: F401,F403
 from rules.strike import *  # noqa: F401,F403
@@ -112,6 +115,8 @@ def _install(cx, helpers, new_ids):
     new_ids.update({helpers['ddclean'], helpers['ddhold']})
     home = build_home(cx, pw, land)
     homeown = build_home(cx, pw, land, own=True)
+    helpers['fopen'] = build_fopen(cx, helpers)  # rules/fopen.py: Fremen opening scout hold (read by the launch gate)
+    new_ids.add(helpers['fopen'])
     spacing = build_spacing(cx, helpers, defend, land, home, homeown)
     new_ids.add(spacing)
     report['annex-spacing'] = 1
@@ -166,6 +171,7 @@ def _install(cx, helpers, new_ids):
     afw = build_airfield(cx, helpers, threat, new_ids, wnd)  # remote villages: Airfield first, spaced (rules/build.py)
     report.update(build_turret_steer(cx, helpers, threat, cover, new_ids, inner=afw))
     report['airfield-steer'] = 1
+    report.update(build_bpick(cx, helpers, new_ids))  # diagnostics: the building pair vanilla picks (rules/build.py)
     sengage = build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain, neutral)
     idle = build_free(cx, pw, 0, 0, patrol_ok=False)
     helpers['wormheld'] = build_wormheld(cx)  # worm-flee hold: out of vanilla's Resupply / mission picks
@@ -183,6 +189,7 @@ def _install(cx, helpers, new_ids):
     report.update(build_take_keep(cx, helpers, new_ids))  # rules/orders.py: one army taken by another order doesn't scrap it
     strand = build_strand(cx, helpers, idle, unsafe)
     report.update(build_patrol_gate(cx, helpers, hsafe, own, pw, new_ids))
+    report.update(build_rpoint(cx, helpers, threat, own, new_ids))  # rules/rally.py: recruits not delivered into a lost fight
     air = build_air(cx)  # rules/deploy.py: at-war flying armies near a unit (what an installed F_Special_2 can hit)
     new_ids.add(air)
     undeploy = build_undeploy(cx, helpers, air)
@@ -190,6 +197,8 @@ def _install(cx, helpers, new_ids):
     report.update(build_aa_gate(cx, helpers, air, new_ids))
     report.update(build_pannex_gate(cx, helpers, new_ids))  # rules/pannex.py: vanilla's PeacefullyAnnex gated
     report.update(build_sdrop_block(cx, helpers, new_ids))  # rules/sdrop.py: vanilla never launches Supply Drop
+    report.update(build_ops_gate(cx, helpers, new_ids))  # rules/ops.py: no optional ops on neutral targets
+    report.update(build_isai_guard(cx, helpers, new_ids))  # rules/isai.py: `ai true` leaves running AIs alone
     sdrop = build_sdrop(cx, helpers, pw, land, supok, own, threat)  # rules/sdrop.py: our Supply Drop use (task lock, emergency)
     report.update(build_sdrop_buy(cx, helpers, new_ids))  # rules/sdrop.py: no second unlocked drop bought
     report.update(build_sdrop_trip(cx, helpers, new_ids))  # rules/sdrop.py: a locked drop lifts vanilla's InsufficientSupply cancel

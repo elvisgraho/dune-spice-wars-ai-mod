@@ -8,7 +8,7 @@ deployed F_Harvester near Haththah (zone worm activity 3) vanished together. `Sa
 
 Every WORM_T s per faction: each of our armies with `isWormTarget()` and `isOnSand()`, outside a protected zone (at most every WFLEE_T s per
 army), unless it makes it on its own (moving, not fighting, and its path ends >= WORM_ESC_D farther from the worm
-than it is now, or off the sand within WORM_SAFE_REACH: the worm aggroes within 30-60, strikes <= 40 away after a
+than it is now while the worm is >= WORM_LET_D away, or off the sand within WORM_SAFE_REACH: the worm aggroes within 30-60, strikes <= 40 away after a
 5-10 s wind-up; logged `wlet` a, d worm distance, pe path left, once per army per 10 s): the AI order holding it is stopped (Cancel: a hunt / raid / siege would walk it back onto the sand), and it and
 the order's other armies on sand within WORM_NEAR of the worm each get `doAction("Move", {actionTarget:
 EWorldPosition})` to the nearest safe point: rock (`World.isSandAt`) or sand in a zone the worm can't strike (_no_worm_zone: worm activity
@@ -183,8 +183,10 @@ def build_worm_flee(cx, helpers):
     fb.op('JSLte', a=dpa, b=b.const('f64', 2), offset='flee')  # standing (path done)
     dist2(dpw, pex, pey, b.field(wv, 'posx'), b.field(wv, 'posy'))
     dist2(daw, b.field(a, 'posx'), b.field(a, 'posy'), b.field(wv, 'posx'), b.field(wv, 'posy'))
+    fb.op('JSLt', a=daw, b=b.const('f64', WORM_LET_D), offset='reach')  # already on it: no outrunning it
     fb.op('Sub', dst=lq, a=dpw, b=daw)
     fb.op('JSGte', a=lq, b=b.const('f64', WORM_ESC_D), offset='letrun')
+    fb.label('reach')
     fb.op('JSGt', a=dpa, b=b.const('f64', WORM_SAFE_REACH), offset='flee')
     fb.op('JTrue', cond=b.call('world.WorldBase.isSandAt', world, pex, pey), offset='flee')
     fb.label('letrun')

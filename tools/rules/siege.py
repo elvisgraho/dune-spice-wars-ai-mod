@@ -1499,6 +1499,7 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
        LIB_KEEP x our armies within d of our land (aimod_homeown) x OWN_T -> refuse, why exposed (the farther, the
        more of them count). Judged at launch only: a running order is never re-judged (no flip-flop). Pillage is
        raid's; Annex has its own value per cost.
+    1c. scout: Fremen opening hold (aimod_fopen, rules/fopen.py) -> refuse an Annex, why scout.
     3. annex-spacing: one of our Military orders already targets another structure within ADJ_R of s (two thin
        sieges side by side split the force) -> refuse (log `space`, why space).
     Refusal = onActionEnd(gauge(k), Dismiss, data): gauge un-paused, no decay, no onFailure blocks; `exposed` lasts
@@ -1616,6 +1617,14 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     fb.label('bunker2')
     cmp = b.call('String.__compare', 1, fb.dyn(fb.string('Annex')))
     fb.op('JNotEq', a=cmp, b=zi, offset='spacing')
+    # 1c. Fremen opening scout hold (rules/fopen.py): no first Annex before a ring village or FOPEN_N choices are known
+    hold = fb.reg(cx.t('bool'))
+    fb.op('Call1', dst=hold, fun=helpers['fopen'], arg0=fac)
+    fb.op('JFalse', cond=hold, offset='fopen_no')
+    fb.op('Mov', dst=why, src=fb.string('scout'))
+    fb.op('Bool', dst=blocked, value=True)
+    fb.op('JAlways', offset='done')
+    fb.label('fopen_no')
     state = _state(fb, b, cx)
     villages = b.field(state, 'villages')
     fb.op('JNull', reg=villages, offset='spacing')

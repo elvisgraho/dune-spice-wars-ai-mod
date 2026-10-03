@@ -9,8 +9,10 @@ from an order before Action cancels the whole order).
 Tick (every STRIKE_T s per faction), pass 2: our Military orders on a structure in Regroup / Engage. An order army not
 striking: the nearest visible army of a faction at war with us (neutral raiders / militia ignored: they may be on
 their way to someone else) within STRIKE_R (turret range + a little) starts a strike when the order's armies within
-LOCAL of it >= STRIKE_RATIO x (aimod_threat(fac, it, LOCAL) + enemy cover there): every order army within LOCAL of
-it gets doAction("ArmyFight", EEntity(it)) (vanilla micro's attack call) without leaving the order (maps `strk`
+LOCAL of it >= STRIKE_RATIO x (aimod_threat(fac, it, LOCAL) + enemy cover there). Only armed targets (aimod_pw > 0, no
+harvester: Harkonnen sent 14 of 15 Annex armies at a Fremen harvester with Fremen armies near it). Order armies within
+LOCAL of it join nearest first until their power >= STRIKE_TO x that side; each gets doAction("ArmyFight",
+EEntity(it)) (vanilla micro's attack call) without leaving the order (maps `strk`
 army -> last refresh, `strt` -> target, `strs` -> start time, `strx` / `stry` -> start position).
 Pass 1 re-judges every striking army of ours (map `stro` army -> its order), also one whose order ended: it ends
 (log `strike` act end, why) when it left its order or the order ended / went past Action (`order`: no endless
@@ -248,6 +250,11 @@ def build_strike(cx, helpers, pw, threat, cover, striking):
     fb.op('JSGt', a=d, b=dn, offset='x')
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, fac, xo), offset='x')
     fb.op('JFalse', cond=b.call('ent.Entity.isVisibleForFaction', x, fac), offset='x')
+    # armed armies only: a harvester (or anything powerless) can't hurt the march; Harkonnen's 15-army Annex of
+    # Ulrekh sent 14 armies at a Fremen harvester because Fremen armies stood within LOCAL of it (H 275k)
+    fb.op('JNotNull', reg=b.field(x, 'harvestComponent'), offset='x')
+    fb.op('Call1', dst=q, fun=pw, arg0=x)
+    fb.op('JSLte', a=q, b=zero, offset='x')
     fb.op('Mov', dst=dn, src=d)
     fb.op('Mov', dst=e, src=x)
     fb.op('JAlways', offset='x')
@@ -255,29 +262,49 @@ def build_strike(cx, helpers, pw, threat, cover, striking):
     fb.op('JNull', reg=e, offset='u')
     fb.op('Mov', dst=ee, src=e)
     balance(ee, 'sb')
-    fb.op('JSLte', a=h, b=zero, offset='u')  # a powerless army (harvester): nothing to fight
+    fb.op('JSLte', a=h, b=zero, offset='u')  # nothing armed there
     fb.op('JSLt', a=m, b=h, offset='u')
-    # start: every order army within LOCAL of it that isn't striking yet
+    # start: order armies within LOCAL of it that aren't striking yet, nearest first, until STRIKE_TO x its side
+    need, sent, bd = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mul', dst=need, a=h, b=_ratio(fb, b, STRIKE_TO))
+    fb.op('Mov', dst=sent, src=zero)
     fb.op('Mov', dst=n, src=zi)
-    y = _army_loop(fb, b, units, un, k, 'g', 'gd')
-    fb.op('JNotNull', reg=b.field(y, 'harvestComponent'), offset='g')
-    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', y, ee), b=local, offset='g')
+    best = fb.reg(cx.t('ent.Army'))
     ye = fb.reg(cx.t('ent.Entity'))
+    fb.label('gp')
+    fb.op('JSLte', a=n, b=zi, offset='gpick')
+    fb.op('JSGte', a=sent, b=need, offset='gd')
+    fb.label('gpick')
+    fb.op('Null', dst=best)
+    fb.op('Mov', dst=bd, src=local)
+    y = _army_loop(fb, b, units, un, k, 'g', 'gsel')
+    fb.op('JNotNull', reg=b.field(y, 'harvestComponent'), offset='g')
+    fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', y, ee))
+    fb.op('JSGt', a=d, b=bd, offset='g')
     fb.op('Mov', dst=ye, src=y)
     fb.op('Call1', dst=st, fun=striking, arg0=ye)
     fb.op('JTrue', cond=st, offset='g')
     fb.op('Call1', dst=st, fun=helpers['wormonly'], arg0=ye)  # waiting on rock from a worm: not sent onto the sand
     fb.op('JTrue', cond=st, offset='g')
-    _do_on(fb, b, cx, ye, 'ArmyFight', ee, fac)
-    b.call('haxe.ds.ObjectMap.set', strk, fb.dyn(y), fb.dyn(t))
-    b.call('haxe.ds.ObjectMap.set', strt, fb.dyn(y), fb.dyn(e))
-    b.call('haxe.ds.ObjectMap.set', strs, fb.dyn(y), fb.dyn(t))
-    b.call('haxe.ds.ObjectMap.set', stro, fb.dyn(y), fb.dyn(o))
-    b.call('haxe.ds.ObjectMap.set', strx, fb.dyn(y), fb.dyn(b.field(y, 'posx')))
-    b.call('haxe.ds.ObjectMap.set', stry, fb.dyn(y), fb.dyn(b.field(y, 'posy')))
-    fb.op('Incr', dst=n)
+    fb.op('Mov', dst=bd, src=d)
+    fb.op('Mov', dst=best, src=y)
     fb.op('JAlways', offset='g')
+    fb.label('gsel')
+    fb.op('JNull', reg=best, offset='gd')
+    fb.op('Mov', dst=ye, src=best)
+    _do_on(fb, b, cx, ye, 'ArmyFight', ee, fac)
+    b.call('haxe.ds.ObjectMap.set', strk, fb.dyn(best), fb.dyn(t))
+    b.call('haxe.ds.ObjectMap.set', strt, fb.dyn(best), fb.dyn(e))
+    b.call('haxe.ds.ObjectMap.set', strs, fb.dyn(best), fb.dyn(t))
+    b.call('haxe.ds.ObjectMap.set', stro, fb.dyn(best), fb.dyn(o))
+    b.call('haxe.ds.ObjectMap.set', strx, fb.dyn(best), fb.dyn(b.field(best, 'posx')))
+    b.call('haxe.ds.ObjectMap.set', stry, fb.dyn(best), fb.dyn(b.field(best, 'posy')))
+    fb.op('Call1', dst=q, fun=pw, arg0=best)
+    fb.op('Add', dst=sent, a=sent, b=q)
+    fb.op('Incr', dst=n)
+    fb.op('JAlways', offset='gp')
     fb.label('gd')
+    fb.op('JSLte', a=n, b=zi, offset='u')  # nobody new sent (all already striking): no row
     nf = fb.reg(cx.t('f64'))
     fb.op('ToSFloat', dst=nf, src=n)
     _log_ev(fb, b, cx, helpers, 'strike', [('f', fb.get(fac, 'kind')), ('act', 'start'), ('a', a2), ('en', e),

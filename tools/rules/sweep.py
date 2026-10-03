@@ -8,7 +8,7 @@ ObjectMap.keys) is walked and a key is removed when it is a dead / removed entit
 structure, ...), an AIOrder with no units left (AIOrder.stop empties them; an order whose armies all died too), or
 a Warzone no longer in State.warzones.warzones (the fight ended). Other keys (factions, the State, live entities) stay.
 Each test runs in its own trap (a key of another type fails the cast and is skipped). Logs `sweep` (n removed,
-keys = keys seen, maps)."""
+keys = keys seen, maps, m1 / k1 and m2 / k2 the two largest maps by name and key count)."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
 
 
@@ -43,6 +43,13 @@ def build_sweep(cx, helpers, names):
     i, n = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
     key = fb.reg(cx.t('dyn'))
     ke = fb.reg(cx.t('ent.Entity'))
+    # the two largest maps (name, keys): which map keeps growing (keys 165 -> 1275 over 106 min, n ~0 per pass)
+    t1n, t2n = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    t1s, t2s = fb.reg(cx.t('String')), fb.reg(cx.t('String'))
+    fb.op('Mov', dst=t1n, src=b.const('i32', -1))
+    fb.op('Mov', dst=t2n, src=b.const('i32', -1))
+    fb.op('Null', dst=t1s)
+    fb.op('Null', dst=t2s)
     ko = fb.reg(cx.t('logic.ai.AIOrder'))
     for name in names:
         u = _uid('sw')
@@ -52,6 +59,17 @@ def build_sweep(cx, helpers, names):
         fb.op('JNull', reg=arr, offset=u + 'x')
         fb.op('ArraySize', dst=n, array=arr)
         fb.op('Add', dst=seen, a=seen, b=n)
+        fb.op('JSLte', a=n, b=t2n, offset=u + 't')
+        fb.op('JSLte', a=n, b=t1n, offset=u + 't2')
+        fb.op('Mov', dst=t2n, src=t1n)
+        fb.op('Mov', dst=t2s, src=t1s)
+        fb.op('Mov', dst=t1n, src=n)
+        fb.op('Mov', dst=t1s, src=fb.string(name))
+        fb.op('JAlways', offset=u + 't')
+        fb.label(u + 't2')
+        fb.op('Mov', dst=t2n, src=n)
+        fb.op('Mov', dst=t2s, src=fb.string(name))
+        fb.label(u + 't')
         fb.op('Mov', dst=i, src=b.const('i32', 0))
         b.loop_head(u + 'l')
         fb.op('JSGte', a=i, b=n, offset=u + 'x')
@@ -94,8 +112,11 @@ def build_sweep(cx, helpers, names):
     remf, seenf, mapsf = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), b.const('f64', len(names))
     fb.op('ToSFloat', dst=remf, src=rem)
     fb.op('ToSFloat', dst=seenf, src=seen)
+    t1f, t2f = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('ToSFloat', dst=t1f, src=t1n)
+    fb.op('ToSFloat', dst=t2f, src=t2n)
     _log_ev(fb, b, cx, helpers, 'sweep', [('f', fb.get(fac, 'kind')), ('n', remf), ('keys', seenf),
-                                          ('maps', mapsf)])
+                                          ('maps', mapsf), ('m1', t1s), ('k1', t1f), ('m2', t2s), ('k2', t2f)])
     fb.label('end')
     fb.end_try(guard)
     fb.op('Ret', ret=void)

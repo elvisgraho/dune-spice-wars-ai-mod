@@ -9,8 +9,8 @@ ai-mod\mod.cmd testbed on      # game closed; re-run after editing scenario.json
 ai-mod\mod.cmd launch          # or start normally
 ```
 1. Main menu: press **O** → the match starts loading (no lobby).
-2. In game: press **P** once. You become AI too, every faction pair goes to War, speed x2.
-3. Watch: **L** drop a marker in the AI log (press it right when the AI does something dumb), **F9** / **K** / **F10** speed 1 / 2 / 4, `/` console. **Tab** / Shift+Tab take control of a faction and switch its AI off (`Player.onConnect` → `set_isAI(false)`; a Landsraad vote as the player can do the same): press **P** again to turn every AI back on. `mod log` prints `!AI OFF: <faction> <from>-<to>` right under its header for every such window (traced `ent.Faction.set_isAI`, `src` = caller); rules judged in that window mean nothing.
+2. In game: press **P** once. You become AI too, speed x4. Diplomacy is left to the AIs (no forced war, so truces survive pressing P again after a Tab).
+3. Watch: **L** drop a marker in the AI log (press it right when the AI does something dumb), **F9** / **F10** speed 2 / 4, **K** fog toggle, `/` console. **Tab** / Shift+Tab take control of a faction and switch its AI off (`Player.onConnect` → `set_isAI(false)`; a Landsraad vote as the player can do the same): press **P** again to turn every AI back on. `mod log` prints `!AI OFF: <faction> <from>-<to>` right under its header for every such window (traced `ent.Faction.set_isAI`, `src` = caller); rules judged in that window mean nothing.
 
 `ai-mod\mod.cmd testbed off` restores vanilla (boot files from `backup/`, pack removed, prefs macros restored).
 
@@ -25,7 +25,7 @@ ai-mod\mod.cmd launch          # or start normally
 | Each main base spawns `armies[faction]` at start | data: `structure.<base>.startUnits` (after the ornithopter) |
 | Big starting stockpiles | data: `faction.startResources` (non-mode entries); applies to all modes while installed |
 | Your `patches/data.json` AI changes | same pack, so you test your mod |
-| O/P/K/L/F9/F10 macros (L = `info` = log marker, F9/K/F10 = speed 1/2/4), fog off | `prefs.sav` (`shortcutCommands`, `admin.noFog`) |
+| O/P/K/L/F9/F10 macros (L = `info` = log marker, F9/F10 = speed 2/4, K = fog), fog off | `prefs.sav` (`shortcutCommands`, `admin.noFog`) |
 
 Seed stays random (`PREFS.seed = 0`). AI difficulty is **Insane** (hard-coded in `allFactionsNewGame`). Hegemony, political and economy victories are blocked, so matches run until military supremacy.
 

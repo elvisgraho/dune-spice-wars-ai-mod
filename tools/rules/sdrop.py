@@ -11,9 +11,10 @@ militia fight, a fight off our land, a stranded army.
 - `aimod_sdrop(mil, dt)` (tick chain before raid, every SD_CHECK s), only while we hold a ready MSupplyDrop
   (MissionManager.getCompleteMissions):
   1. Locked task (map `sdlk` faction -> order, one slot): kept while the order lives (phase <= Action) and its
-     target zone isn't ours; cast on the target zone once an order army is within SD_CAST_R of the target in Engage,
-     or in Action whatever the progress (an unguarded village occupies at once, and the refill is what a trip that
-     spent all but SUP_RESERVE needs for the way home; a Liberation refills nothing) (act cast why lock). Else
+     target zone isn't ours; cast on the target zone (Engage or Action) only when it is needed: a non-mech order
+     army within SD_CAST_R of the target is losing supply now (a fight: a plain capture / pillage doesn't drain)
+     and holds no more than the walk home from the target (SUP_WALK x aimod_land + SUP_RESERVE) + SD_CAST_FIGHT
+     (act cast why lock); otherwise the lock just reserves the drop. Else
      unlock (act unlock why gone / own). While it waits, a second drop held (sdrop-buy allows one) goes on to the
      emergency step, never to a second lock or the free flag.
   2. No lock: lock the newest Military siege order (structure target, Preparation .. Action) off our zone with a
@@ -189,15 +190,22 @@ def build_sdrop(cx, helpers, pw, land, supok, own, threat):
     fb.op('JSGt', a=ph, b=b.const('i32', ACTION), offset='un_gone')
     struct_target(o, 'un_gone')
     fb.op('JEq', a=b.field(z, 'owner'), b=fac, offset='un_own')
-    # Action: cast whatever the progress (an unguarded village starts occupying at once; the drop's refill is what a
-    # trip that spent all but SUP_RESERVE needs for the way home: a Liberation refills nothing)
-    fb.op('JEq', a=ph, b=b.const('i32', ACTION), offset='lk_cast')
+    # Engage / Action: the lock reserves the drop, the cast waits for the need. An order army at the target that is
+    # losing supply now (a fight; a plain occupation doesn't drain) with no more than the walk home from the target
+    # (SUP_WALK x aimod_land + SUP_RESERVE) + SD_CAST_FIGHT left. Harkonnen cast at Harnun at 125-135 of 225 with
+    # ~100 needed for the way home (lock 3 s after Action, order cancelled 43 s later).
     fb.op('JSLt', a=ph, b=b.const('i32', ENGAGE), offset='lk_hold')  # still gathering / walking: hold it
-    # Engage: an order army at the target
+    cneed = fb.reg(cx.t('f64'))
+    fb.op('Call2', dst=cneed, fun=land, arg0=fac, arg1=ve)
+    fb.op('Mul', dst=cneed, a=cneed, b=_ratio(fb, b, SUP_WALK))
+    fb.op('Add', dst=cneed, a=cneed, b=_ratio(fb, b, SUP_RESERVE + SD_CAST_FIGHT))
     units = b.field(o, 'units')
     fb.op('JNull', reg=units, offset='lk_hold')
     a = _army_loop(fb, b, units, b.field(units, 'length'), k, 'lka', 'lk_hold')
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', a, ve), b=b.const('f64', SD_CAST_R), offset='lka')
+    fb.op('JTrue', cond=b.call('ent.Unit.isMechanical', a), offset='lka')
+    fb.op('JFalse', cond=b.call('ent.Army.isLosingSupply', a), offset='lka')
+    fb.op('JSGt', a=b.call('ent.Army.get_supply', a), b=cneed, offset='lka')
     fb.label('lk_cast')
     cast_drop('lk_fail')
     b.call('haxe.ds.ObjectMap.remove', lk, fb.dyn(fac))

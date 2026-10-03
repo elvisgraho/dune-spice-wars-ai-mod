@@ -138,8 +138,11 @@ def build_patrol_gate(cx, helpers, hsafe, own, pw, new_ids):
     main-base one) goes through this wrapper: a Patrol is dropped when the hostile power at its village (undiscounted
     threat within SAFE_R, the heal / strand safety measure: armies rest there) exceeds OWN_T x (our armies there +
     the whole patrol group): the group couldn't hold it. A group that would win still reinforces a threatened border.
+    Also dropped (why noaf): a remote village (airfield-steer's measure) with no Airfield of ours at it or within
+    AF_SPACING while every army of the group is REMOTE_D or more away (not for AF_NONE factions): the walk crosses the
+    map; its Airfield goes up first, then the patrol shuttles.
     Dropped: the armies stay idle where they are (free for rally, hunts, sieges). Logs `patrol` (s, a first army,
-    n armies, h, m) once per village per 30 s. Fails safe: in a trap, vanilla's order on error."""
+    n armies, h, m, why threat / noaf) once per village per 30 s. Fails safe: in a trap, vanilla's order on error."""
     orig = cx.fn('logic.ai.AIOrders.addOrder')
     ids = {orig.findex.value, helpers.get('addOrder')}
     cp = cx.fn('logic.ai.AIMilitary.checkPatrols')
@@ -169,6 +172,52 @@ def build_patrol_gate(cx, helpers, hsafe, own, pw, new_ids):
     fac = b.field(b.field(0, 'controller'), 'owner')
     fb.op('JNull', reg=fac, offset='end')
     h, m, p = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    a0 = fb.reg(cx.t('ent.Army'))
+    fb.op('Null', dst=a0)
+    s = b.cast(4, 'ent.Structure')
+    why = fb.reg(cx.t('String'))
+    fb.op('Mov', dst=why, src=fb.string('threat'))
+    # a remote village (airfield-steer's measure) with no Airfield of ours at or near it, the group still REMOTE_D
+    # away: no walk across the map (Atreides sent 5 armies from Grim-in to Marmah, 525 over sand, right after its
+    # peaceful annex: taken by an Annex on the way, worm-eaten); airfield-steer builds its Airfield first, then the
+    # patrol shuttles. Not for factions without Airfields (AF_NONE)
+    fkd = b.field(fac, 'kind')
+    fb.op('JNull', reg=fkd, offset='pthr')
+    for nm in AF_NONE:
+        fb.op('JEq', a=b.call('String.__compare', fkd, fb.dyn(fb.string(nm))), b=b.const('i32', 0), offset='pthr')
+    fb.op('JNull', reg=s, offset='pthr')
+    sz = b.call('ent.Entity.get_zone', s)
+    fb.op('JNull', reg=sz, offset='pthr')
+    _af_remote(fb, b, cx, s, sz, fac, 'prem', 'pthr', 'pthr')
+    fb.label('prem')
+    ka = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=ka, src=b.const('i32', 0))
+    b.loop_head('pnr')
+    fb.op('JSGte', a=ka, b=b.field(3, 'length'), offset='pfar')
+    pa = b.cast(b.call('hl.types.ArrayObj.getDyn', 3, ka), 'ent.Army')
+    fb.op('Incr', dst=ka)
+    fb.op('JNull', reg=pa, offset='pnr')
+    fb.op('JSLt', a=b.call('ent.Entity.getDistTo', pa, 4), b=b.const('f64', REMOTE_D), offset='pthr')  # near already
+    fb.op('JAlways', offset='pnr')
+    fb.label('pfar')
+    gk = cx.fn('logic.Upgrades.getKind')
+    gkn = []
+    for t_ in [a.value for a in cx.code.types[gk.type.value].definition.args][2:]:
+        r_ = fb.reg(t_)
+        fb.op('Null', dst=r_)
+        gkn.append(r_)
+    ku = fb.reg(cx.code.types[gk.type.value].definition.ret.value)
+    airfield = fb.string('Airfield')
+    sup = b.field(s, 'upgrades')
+    fb.op('JNull', reg=sup, offset='pthr')
+    fb.op('CallN', dst=ku, fun=gk.findex.value, args=[sup, airfield] + gkn)
+    fb.op('JNotNull', reg=ku, offset='pthr')  # its own Airfield (built or going up)
+    fb.op('JTrue', cond=_af_spaced(fb, b, cx, s, 4, fac, airfield, gk, gkn, ku), offset='pthr')  # one nearby
+    fb.op('Mov', dst=why, src=fb.string('noaf'))
+    fb.op('Mov', dst=h, src=b.const('f64', 0))
+    fb.op('Mov', dst=m, src=b.const('f64', 0))
+    fb.op('JAlways', offset='pdrop')
+    fb.label('pthr')
     rr = b.const('f64', SAFE_R)
     fb.op('Call3', dst=h, fun=hsafe, arg0=fac, arg1=4, arg2=rr)
     fb.op('JSLte', a=h, b=b.const('f64', 0), offset='end')
@@ -176,8 +225,6 @@ def build_patrol_gate(cx, helpers, hsafe, own, pw, new_ids):
     fb.op('Null', dst=na)
     fb.op('CallN', dst=m, fun=own, args=[fac, 4, rr, na])
     k = fb.reg(cx.t('i32'))
-    a0 = fb.reg(cx.t('ent.Army'))
-    fb.op('Null', dst=a0)
     fb.op('Mov', dst=k, src=b.const('i32', 0))
     b.loop_head('grp')
     fb.op('JSGte', a=k, b=n, offset='grpd')
@@ -192,11 +239,11 @@ def build_patrol_gate(cx, helpers, hsafe, own, pw, new_ids):
     fb.label('grpd')
     fb.op('Mul', dst=p, a=m, b=_ratio(fb, b, OWN_T))
     fb.op('JSLte', a=h, b=p, offset='end')
+    fb.label('pdrop')
     fb.op('Bool', dst=skip, value=True)
-    s = b.cast(4, 'ent.Structure')
     _throttle(fb, b, cx, 'patrol', s, 30, 'end')
     _log_ev(fb, b, cx, helpers, 'patrol', [('f', fb.get(fac, 'kind')), ('s', s), ('a', a0), ('n', n), ('h', h),
-                                           ('m', m)])
+                                           ('m', m), ('why', why)])
     fb.label('end')
     fb.end_try(guard)
     fb.op('JTrue', cond=skip, offset='ret')

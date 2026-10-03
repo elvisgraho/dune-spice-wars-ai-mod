@@ -852,6 +852,7 @@ def build_defend(cx, sieged, helpers, threat, neutral, own, cover, terrain):
     transit, e.g. a worm ride: those read 0): our armies within GATHER_R (+ our cover) x terrain below DEF_HOPE_IN x (threat +
     other raiders + enemy cover) there, left at DEF_HOPE_OUT (map `dhl` structure -> when last hopeless, 30 s, log `dhope`): a lost
     cause must not freeze every offensive (Atreides at Adnih / Tuonah vs 600-900k Fremen sat 4.5 min doing nothing).
+    Several: the highest stake wins (a capture over a pillage, then the nearest to our active main base).
     Non-null = defensive posture: no new offensives (vanilla siege actions, chases) until it is resolved."""
     st_t = cx.t('ent.Structure')
     fb = FB(cx, [cx.t('ent.Faction')], st_t)
@@ -969,6 +970,10 @@ def build_defend(cx, sieged, helpers, threat, neutral, own, cover, terrain):
     i = fb.reg(cx.t('i32'))
     villages = b.field(_state(fb, b, cx), 'villages')
     bases = b.field(0, 'mainBases')
+    kq, kb, kd, kbest = (fb.reg(cx.t('f64')) for _ in range(4))
+    fb.op('Mov', dst=kbest, src=b.const('f64', -(1 << 30)))
+    kj = fb.reg(cx.t('i32'))
+    ke, kme = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('ent.Entity'))
     for name, arr in (('v', villages), ('b', bases)):
         done = f'{name}done'
         fb.op('JNull', reg=arr, offset=done)
@@ -991,9 +996,36 @@ def build_defend(cx, sieged, helpers, threat, neutral, own, cover, terrain):
         fb.op('JAlways', offset=name)
         fb.label(f'{name}f')
         hopeless(s, name)
+        # stake: a capture (Annex / Liberate / Takeover, or a siege whose occupation hasn't started) over a pillage,
+        # then the nearest to our active main base (user: Atreides defended Sharas' pillage while Fremen annexed
+        # Grim-in next to Arrakeen)
+        fb.op('Mov', dst=kq, src=b.const('f64', 1 << 20))
+        _pillaging(fb, b, cx, s, f'{name}p')
+        fb.op('Mov', dst=kq, src=b.const('f64', 1 << 21))
+        fb.label(f'{name}p')
+        fb.op('Mov', dst=ke, src=s)
+        fb.op('Mov', dst=kb, src=b.const('f64', 1 << 19))
+        fb.op('JNull', reg=bases, offset=f'{name}bd')
+        fb.op('Mov', dst=kj, src=b.const('i32', 0))
+        b.loop_head(f'{name}bl')
+        fb.op('JSGte', a=kj, b=b.field(bases, 'length'), offset=f'{name}bd')
+        kmb = b.cast(b.call('hl.types.ArrayObj.getDyn', bases, kj), 'ent.Structure')
+        fb.op('Incr', dst=kj)
+        fb.op('JNull', reg=kmb, offset=f'{name}bl')
+        fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', kmb), offset=f'{name}bl')
+        fb.op('Mov', dst=kme, src=kmb)
+        fb.op('Mov', dst=kd, src=b.call('ent.Entity.getDistTo', ke, kme))
+        fb.op('JSGte', a=kd, b=kb, offset=f'{name}bl')
+        fb.op('Mov', dst=kb, src=kd)
+        fb.op('JAlways', offset=f'{name}bl')
+        fb.label(f'{name}bd')
+        fb.op('Sub', dst=kq, a=kq, b=kb)
+        fb.op('JSLte', a=kq, b=kbest, offset=name)
+        fb.op('Mov', dst=kbest, src=kq)
         fb.op('Mov', dst=res, src=s)
-        fb.op('JAlways', offset='end')
+        fb.op('JAlways', offset=name)
         fb.label(done)
+    fb.op('JNotNull', reg=res, offset='end')
     # home ring: a neutral village next to one of our active main bases under an at-war faction's siege
     fb.op('JNull', reg=villages, offset='hdone')
     fb.op('JNull', reg=bases, offset='hdone')

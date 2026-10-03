@@ -212,7 +212,8 @@ def harvest_fields(cx, danger, helpers, new_ids):
     """Harvesting-team field choice: AIController.checkHarvestingTeams binds findClosestFreeSpice(unit) (a closure),
     which sorts usableSpiceFields by a (unit, field) -> squared-distance closure. That key closure is redirected to a
     wrapper: key + aimod_danger(unit owner, field zone) x DANGER_KEY. Logs `hfield` (a unit, s field, dg%) when a
-    penalty applies, once per field per 10 s. Original key on any error."""
+    penalty applies, once per field per 10 s, and `hpick` (a, s, dg%, d) when the field finally chosen is still
+    dangerous. Original key / pick on any error."""
     unit_t, struct_t, f64 = cx.t('ent.Unit'), cx.t('ent.Structure'), cx.t('f64')
 
     def closures(fn, want):
@@ -255,4 +256,31 @@ def harvest_fields(cx, danger, helpers, new_ids):
     wr = fb.build()
     op.df['fun'].value = wr
     new_ids.add(wr)
+    # the pick itself (hfield rows are per evaluated field): `hpick` (a, s chosen field, dg% its danger, d) when the
+    # chosen field is still dangerous, once per unit per 10 s: did the team re-route avoid the danger zone?
+    fop, ftgt = finder[0]
+    fft = cx.code.types[ftgt.type.value].definition
+    fargs = [a.value for a in fft.args]
+    fb = FB(cx, fargs, struct_t, fun_type=ftgt.type.value)
+    b = B(fb)
+    r = fb.reg(struct_t)
+    fb.op('Call2', dst=r, fun=ftgt.findex.value, arg0=0, arg1=1)  # vanilla pick, outside any trap
+    guard = fb.try_()
+    fb.op('JNull', reg=r, offset='ok')
+    w = fb.reg(f64)
+    fb.op('Call2', dst=w, fun=danger, arg0=b.call('ent.Entity.get_owner', 1), arg1=b.call('ent.Entity.get_zone', r))
+    fb.op('JSLte', a=w, b=b.const('f64', 0), offset='ok')
+    ue = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=ue, src=1)
+    _throttle(fb, b, cx, 'hpick', ue, 10, 'ok')
+    re_ = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=re_, src=r)
+    _log_ev(fb, b, cx, helpers, 'hpick', [('f', fb.get(b.call('ent.Entity.get_owner', 1), 'kind')), ('a', ue),
+                                          ('s', r), ('dg%', w), ('d', b.call('ent.Entity.getDistTo', ue, re_))])
+    fb.label('ok')
+    fb.end_try(guard)
+    fb.op('Ret', ret=r)
+    wp = fb.build()
+    fop.df['fun'].value = wp
+    new_ids.add(wp)
     return {'memory:harvest-fields': 1}

@@ -515,3 +515,106 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.end_try(guard)
     fb.op('Ret', ret=void)
     return fb.build()
+
+
+def build_rpoint(cx, helpers, threat, own, new_ids):
+    """Recruit point (user: "when enemies cap villages near my base, the spawn of my units should be set somewhere
+    else, not to die 1 by 1"). Vanilla `AIUnits.checkRallyPoint` (every `buyUnit`) sets the faction rally point, where
+    recruits are delivered, to our Airfield nearest the closest fight we are in (`getClosestAirfieldAsync`, closure
+    calling `Faction.setRallyPoint`): with an enemy stack capturing a village next to it, every recruit lands in that
+    fight alone. That call goes through this wrapper: while our rally runs (map `rlyp`: its gather point R), recruits
+    go to R; else when the structure at vanilla's point (ours, within RP_SNAP) has at-war power >= RALLY_MIN_H within
+    LOCAL that our armies there x OWN_T don't hold, to our main base's own recruit point (`resetRallyPoint`'s
+    target; none when that structure is the main base itself: nowhere safer). Logs `rpoint` (why rally / danger, s,
+    h, m) once per faction per 30 s. Fails safe: vanilla's point on error."""
+    orig = cx.fn('ent.Faction.setRallyPoint')
+    ft = cx.code.types[orig.type.value].definition
+    args = [a.value for a in ft.args]
+    if len(args) != 3:
+        raise ValueError('rpoint: setRallyPoint(fac, x, y) expected')
+    crp = cx.fn('logic.ai.AIUnits.checkRallyPoint')
+    clo = [op.df['fun'].value for op in crp.ops if op.op in ('InstanceClosure', 'Closure')]
+    if len(clo) != 1:
+        raise ValueError(f'rpoint: expected 1 closure in checkRallyPoint, found {len(clo)}')
+    cfn = next(f for f in cx.code.functions if f.findex.value == clo[0])
+    sites = [op for op in cfn.ops if op.op.startswith('Call') and op.df.get('fun') is not None
+             and op.df['fun'].value == orig.findex.value]
+    if len(sites) != 1:
+        raise ValueError(f'rpoint: expected 1 setRallyPoint call in the checkRallyPoint closure, found {len(sites)}')
+    fb = FB(cx, args, ft.ret.value, fun_type=orig.type.value)
+    b = B(fb)
+    nx, ny = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=nx, src=1)
+    fb.op('Mov', dst=ny, src=2)
+    why = fb.reg(cx.t('String'))
+    se = fb.reg(cx.t('ent.Entity'))
+    fb.op('Null', dst=se)
+    h, m, d, bd = (fb.reg(cx.t('f64')) for _ in range(4))
+    fb.op('Mov', dst=h, src=b.const('f64', 0))
+    fb.op('Mov', dst=m, src=b.const('f64', 0))
+    guard = fb.try_()
+    fb.op('JNull', reg=0, offset='end')
+    # our rally runs: recruits join the gathered force
+    rp = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rlyp'), fb.dyn(0))
+    fb.op('JNull', reg=rp, offset='judge')
+    re_ = b.cast(rp, 'ent.Entity')
+    fb.op('JNull', reg=re_, offset='judge')
+    fb.op('Mov', dst=se, src=re_)
+    fb.op('Mov', dst=nx, src=b.field(re_, 'posx'))
+    fb.op('Mov', dst=ny, src=b.field(re_, 'posy'))
+    fb.op('Mov', dst=why, src=fb.string('rally'))
+    fb.op('JAlways', offset='log')
+    fb.label('judge')
+    # the structure of ours at vanilla's point
+    mine = b.cast(fb.get(0, 'structures', 'array'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=mine, offset='end')
+    k = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=k, src=b.const('i32', 0))
+    fb.op('Mov', dst=bd, src=b.const('f64', RP_SNAP))
+    lq, lr = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    b.loop_head('st')
+    fb.op('JSGte', a=k, b=b.field(mine, 'length'), offset='std')
+    st = b.cast(b.call('hl.types.ArrayObj.getDyn', mine, k), 'ent.Structure')
+    fb.op('Incr', dst=k)
+    fb.op('JNull', reg=st, offset='st')
+    fb.op('Sub', dst=lq, a=b.field(st, 'posx'), b=1)
+    fb.op('Mul', dst=lq, a=lq, b=lq)
+    fb.op('Sub', dst=lr, a=b.field(st, 'posy'), b=2)
+    fb.op('Mul', dst=lr, a=lr, b=lr)
+    fb.op('Add', dst=d, a=lq, b=lr)
+    fb.op('Mov', dst=d, src=b.call('hxd.$Math.sqrt', d))
+    fb.op('JSGte', a=d, b=bd, offset='st')
+    fb.op('Mov', dst=bd, src=d)
+    fb.op('Mov', dst=se, src=st)
+    fb.op('JAlways', offset='st')
+    fb.label('std')
+    fb.op('JNull', reg=se, offset='end')
+    fb.op('JTrue', cond=b.call('ent.Structure.get_isMainBase', b.cast(fb.dyn(se), 'ent.Structure')), offset='end')
+    loc = b.const('f64', LOCAL)
+    fb.op('Call3', dst=h, fun=threat, arg0=0, arg1=se, arg2=loc)
+    fb.op('JSLt', a=h, b=b.const('f64', RALLY_MIN_H), offset='end')
+    na = fb.reg(cx.t('ent.Army'))
+    fb.op('Null', dst=na)
+    fb.op('CallN', dst=m, fun=own, args=[0, se, loc, na])
+    fb.op('Mul', dst=d, a=m, b=_ratio(fb, b, OWN_T))
+    fb.op('JSGte', a=d, b=h, offset='end')  # our side holds there: recruits join a fight we win
+    mb = b.call('ent.Faction.get_mainBase', 0)
+    fb.op('JNull', reg=mb, offset='end')
+    fb.op('Mov', dst=nx, src=b.field(mb, 'originalRecruitPointX'))
+    fb.op('Mov', dst=ny, src=b.field(mb, 'originalRecruitPointY'))
+    fb.op('Mov', dst=why, src=fb.string('danger'))
+    fb.label('log')
+    fac_e = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=fac_e, src=0)
+    _throttle(fb, b, cx, 'rpoint', fac_e, 30, 'end')
+    _log_ev(fb, b, cx, helpers, 'rpoint', [('f', fb.get(0, 'kind')), ('why', why), ('s', se), ('h', h), ('m', m)])
+    fb.label('end')
+    fb.end_try(guard)
+    res = fb.reg(ft.ret.value)
+    fb.op('Call3', dst=res, fun=orig.findex.value, arg0=0, arg1=nx, arg2=ny)
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    new_ids.add(w)
+    for op in sites:
+        op.df['fun'].value = w
+    return {'rpoint': 1}

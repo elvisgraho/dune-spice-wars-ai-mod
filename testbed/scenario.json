@@ -20,10 +20,10 @@
   "constants": {},
   "macros": {
     "O":   ["allFactionsNewGame {humanSlot}"],
-    "P":   ["ai true", "{WAR_ALL}", "speed 2"],
-    "K":   ["speed 2"],
+    "P":   ["ai true", "speed 4"],
+    "K":   ["fog"],
     "L":   ["info"],
-    "F9":  ["speed 1"],
+    "F9":  ["speed 2"],
     "F10": ["speed 4"]
   }
 }
