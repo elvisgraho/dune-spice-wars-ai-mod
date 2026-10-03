@@ -6,7 +6,8 @@ pick from 684 away), while other militia fights at 2-4x lost < 25%. The order ro
 at what health and supply, so no fix can be chosen yet (AI-POLICY §1.1).
 
 aimod_sact(mil, dt), in the tick chain every SACT_CHECK s: each of our Military orders on a structure in Action logs
-`sact` once per target per SACT_T s: tgt, sa (siege action), H = aimod_militia(target), M = sum aimod_pw, and
+`sact` once per target per SACT_T s: tgt, sa (siege action), H = aimod_militia(target), M = sum aimod_pw, hn =
+militia squads, so / sh = their summed offensivePotential / health, ao / ah = ours (square-law check), and
 armies = [{k kind, hp %, sup / ms supply, regen (hasSafeRegen)}]. Fails safe: in a trap."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
 
@@ -53,6 +54,29 @@ def build_sact(cx, helpers, pw, militia):
     fb.op('JNull', reg=s, offset='noh')
     fb.op('Call1', dst=h, fun=militia, arg0=s)
     fb.label('noh')
+    # square-law inputs (Lanchester: a fight goes by total damage x total health, our measure sums dps x hp per
+    # squad): militia squads with health hn, their sum of offensivePotential so / health sh; ours ao / ah below
+    hn, so, sh, ao, ah, q = (fb.reg(cx.t('f64')) for _ in range(6))
+    zero = b.const('f64', 0)
+    for r_ in (hn, so, sh, ao, ah):
+        fb.op('Mov', dst=r_, src=zero)
+    fb.op('JNull', reg=s, offset='sqd')
+    sts = b.call('$HCombatStats.structureCombatStats', s)
+    fb.op('JNull', reg=sts, offset='sqd')
+    si = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=si, src=b.const('i32', 0))
+    b.loop_head('sq')
+    fb.op('JSGte', a=si, b=b.field(sts, 'length'), offset='sqd')
+    st = b.call('hl.types.ArrayObj.getDyn', sts, si)
+    fb.op('Incr', dst=si)
+    fb.op('JNull', reg=st, offset='sq')
+    fb.op('SafeCast', dst=q, src=fb.get(st, 'health'))
+    fb.op('JSLte', a=q, b=zero, offset='sq')  # turrets: no health (aimod_cover's)
+    fb.op('Add', dst=sh, a=sh, b=q)
+    fb.op('Add', dst=so, a=so, b=b.call('$HPowerScore.offensivePotential', fb.dyn(st), zero))
+    fb.op('Add', dst=hn, a=hn, b=b.const('f64', 1))
+    fb.op('JAlways', offset='sq')
+    fb.label('sqd')
     fb.op('Mov', dst=m, src=b.const('f64', 0))
     arr = _new_array(fb, b, cx)
     un = b.field(units, 'length')
@@ -64,6 +88,12 @@ def build_sact(cx, helpers, pw, militia):
     fb.op('JNull', reg=a, offset='u')
     fb.op('Call1', dst=p, fun=pw, arg0=a)
     fb.op('Add', dst=m, a=m, b=p)
+    ust = b.call('$HCombatStats.unitCombatStats', a)
+    fb.op('JNull', reg=ust, offset='usq')
+    fb.op('SafeCast', dst=q, src=fb.get(ust, 'health'))
+    fb.op('Add', dst=ah, a=ah, b=q)
+    fb.op('Add', dst=ao, a=ao, b=b.call('$HPowerScore.offensivePotential', fb.dyn(ust), zero))
+    fb.label('usq')
     e = fb.reg(cx.t('dynobj'))
     fb.op('New', dst=e)
     b.put(e, 'k', fb.get(a, 'kind'))
@@ -78,66 +108,8 @@ def build_sact(cx, helpers, pw, militia):
     fb.label('udone')
     _log_ev(fb, b, cx, helpers, 'sact', [('f', fb.get(fac, 'kind')), ('tgt', tgt),
                                          ('sa', b.cast(fb.get(o, 'siegeAction'), 'String')), ('H', h), ('M', m),
-                                         ('armies', arr)])
+                                         ('hn', hn), ('so', so), ('sh', sh), ('ao', ao), ('ah', ah), ('armies', arr)])
     fb.op('JAlways', offset='o')
-    fb.label('end')
-    fb.end_try(guard)
-    fb.op('Ret', ret=void)
-    return fb.build()
-
-
-SREACH_T = 300   # s: special-reach pass per faction
-
-
-def build_sreach(cx, helpers):
-    """aimod_sreach(mil, dt), in the tick chain every SREACH_T s (diagnostic, no decision): every village in a special
-    region (zone kind in ANNEX_SPECIALS / ANNEX_SPECIALS_EARLY) that isn't ours logs `sreach` (f, s, rk = region id,
-    hops = Zone.getDistanceToPlayerTerritory(us, true): vanilla's siege-scan reach, rec = Structure.isReconnedFaction:
-    a village we never surveyed is never offered by any scan). Why: Smugglers never scored the special village Tadno
-    (no log row at all in 18 min) although it lay near their land past a deep desert. Fails safe: in a trap."""
-    fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
-    b = B(fb)
-    void = fb.reg(cx.t('void'))
-    guard = fb.try_()
-    fac = b.field(b.field(0, 'controller'), 'owner')
-    fb.op('JNull', reg=fac, offset='end')
-    st = _state(fb, b, cx)
-    _tick(fb, b, cx, b.field(st, 'time'), SREACH_T, 'end')
-    vl = b.field(st, 'villages')
-    fb.op('JNull', reg=vl, offset='end')
-    i, hops = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
-    rk = fb.reg(cx.t('String'))
-    t_true = fb.reg(cx.t('bool'))
-    fb.op('Bool', dst=t_true, value=True)
-    gdt = cx.fn('ent.Zone.getDistanceToPlayerTerritory')
-    fb.op('Mov', dst=i, src=b.const('i32', 0))
-    b.loop_head('v')
-    fb.op('JSGte', a=i, b=b.field(vl, 'length'), offset='end')
-    v = b.cast(b.call('hl.types.ArrayObj.getDyn', vl, i), 'ent.Structure')
-    fb.op('Incr', dst=i)
-    fb.op('JNull', reg=v, offset='v')
-    ve = fb.reg(cx.t('ent.Entity'))
-    fb.op('Mov', dst=ve, src=v)
-    fb.op('JEq', a=b.call('ent.Entity.get_owner', ve), b=fac, offset='v')
-    z = b.call('ent.Entity.get_zone', ve)
-    fb.op('JNull', reg=z, offset='v')
-    kd = b.field(z, 'kind')
-    fb.op('JNull', reg=kd, offset='v')
-    ids = sorted(set(ANNEX_SPECIALS) | set(ANNEX_SPECIALS_EARLY))
-    for n_, rid in enumerate(ids):
-        fb.op('JEq', a=b.call('String.__compare', kd, fb.dyn(fb.string(rid))), b=b.const('i32', 0), offset=f'sp{n_}')
-    fb.op('JAlways', offset='v')
-    for n_, rid in enumerate(ids):
-        fb.label(f'sp{n_}')
-        fb.op('JAlways', offset='hit')
-    fb.label('hit')
-    fb.op('Mov', dst=rk, src=kd)
-    fb.op('Call3', dst=hops, fun=gdt.findex.value, arg0=z, arg1=fac, arg2=fb.dyn(t_true))
-    hf = fb.reg(cx.t('f64'))
-    fb.op('ToSFloat', dst=hf, src=hops)
-    _log_ev(fb, b, cx, helpers, 'sreach', [('f', fb.get(fac, 'kind')), ('s', ve), ('rk', rk), ('hops', hf),
-                                           ('rec', b.call('ent.Structure.isReconnedFaction', v, fac))])
-    fb.op('JAlways', offset='v')
     fb.label('end')
     fb.end_try(guard)
     fb.op('Ret', ret=void)

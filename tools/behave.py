@@ -26,6 +26,9 @@ from rules.world import *  # noqa: F401,F403
 from rules.heal import *  # noqa: F401,F403
 from rules.hunt import *  # noqa: F401,F403
 from rules.siege import *  # noqa: F401,F403
+from rules.annex import *  # noqa: F401,F403
+from rules.join import *  # noqa: F401,F403
+from rules.disc import *  # noqa: F401,F403
 from rules.raid import *  # noqa: F401,F403
 from rules.strat import *  # noqa: F401,F403
 from rules.strand import *  # noqa: F401,F403
@@ -109,6 +112,7 @@ def _install(cx, helpers, new_ids):
     mission = build_mission(cx)
     new_ids.add(mission)
     report.update(build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land))
+    report.update(fix_retreat_all(cx))  # rules/heal.py: vanilla retreat checks every fight, not only gathered orders
     report.update(busy)
     helpers['ddclean'] = build_ddclean(cx, threat=threat)  # Fremen ring test: raid / pillage-press exclusion
     helpers['ddhold'] = build_ddclean(cx, strict=True, threat=threat)  # ... strict: Annex hold, launch-gate tries
@@ -135,7 +139,7 @@ def _install(cx, helpers, new_ids):
     react = build_threat(cx, pw, reach=REACT_R)
     helpers['fclaim'] = build_fclaim(cx, own, react)  # free Annex gate (rules/claim.py): scoring
     new_ids.add(helpers['fclaim'])
-    helpers['threat'] = threat  # Annex value: a missing ring village under at-war threat (rules/siege.py)
+    helpers['threat'] = threat  # Annex value: a missing ring village under at-war threat (rules/annex.py)
     report.update(build_scoring(cx, new_ids, helpers))
     hthreat = build_threat(cx, pw, prey=True)
     ttick = build_tension_tick(cx, helpers, threat)
@@ -223,15 +227,14 @@ def _install(cx, helpers, new_ids):
     report.update(build_keep_capture(cx, helpers, new_ids))
     report.update(gather_busy(cx, new_ids))
     sact = build_sact(cx, helpers, pw, militia)  # diagnostics only (rules/sdiag.py)
-    sreach = build_sreach(cx, helpers)  # diagnostics only: special villages' reach / recon per faction
     release = build_release(cx, helpers, relunits, threat, neutral, cover)  # rules/release.py
     sweep = sweep_stub(cx)  # the map sweep: swapped for the real one at the end (every map exists by then)
     new_ids.add(sweep)
     # next Annex choices kept from raid and vanilla's Pillage gauge (rules/raid.py; before raid, which reads them)
     akeep = build_annex_keep(cx, helpers, helpers['scores'])
     new_ids.add(akeep)
-    tick = build_chain(cx, [memory, wormflee, ttick, dmz, strat, hunt, akeep, sdrop, raid, rally, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, sact, sreach, sweep])
-    new_ids.update({sdrop, dmz, sact, sreach, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
+    tick = build_chain(cx, [memory, wormflee, ttick, dmz, strat, hunt, akeep, sdrop, raid, rally, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, sact, sweep])
+    new_ids.update({sdrop, dmz, sact, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
                     memory, tick})
     report['strand'] = 1
     report['worm-flee'] = 1

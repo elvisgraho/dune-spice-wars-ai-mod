@@ -4,7 +4,8 @@ DisbandOnTimerEnd in its data traits). Harkonnen's 12-army Liberate of Marrekh (
 Regroup at 12:49 with no visible death (CP and army count don't show one either): one unit read dead and the attack
 was scrapped.
 
-Wrapper around that removeUnits call: every removed unit logs `odead` (f, a, hp, ph, n = order armies before). For
+Wrapper around that removeUnits call: every removed unit logs `odead` (f, a, tgt = the order's target, hp, ph, n =
+order armies before; `mod log` counts them per order as deaths). For
 our Military order before Action of at least KEEP_MIN armies losing at most 1 / KEEP_SHARE of them, the units are taken out the way removeUnits
 does it (units.remove, unitPaths.remove, removeAbilitiesOfUnit) without the cancel; logs `okeep` (f, n left, ph).
 The rest of the plan re-judges the smaller force (siege-engage needs ENTER at the target, stage gathers first).
@@ -206,7 +207,8 @@ def build_order_keep(cx, helpers, new_ids):
     fb.op('JFalse', cond=b.call('hl.types.ArrayObj.contains', ou, fb.dyn(u)), offset='lg')
     fb.op('Incr', dst=inn)
     fb.op('Mov', dst=ue, src=u)
-    _log_ev(fb, b, cx, helpers, 'odead', [('f', fb.get(ue, 'owner', 'kind')), ('a', ue),
+    _log_ev(fb, b, cx, helpers, 'odead', [('f', fb.get(b.call('ent.Entity.get_owner', ue), 'kind')), ('a', ue),
+                                          ('tgt', b.cast(fb.dyn(b.call('logic.ai.AIOrder.getTarget', 0)), 'ent.Entity')),
                                           ('hp%', b.call('ent.Entity.get_lifeRatio', ue)), ('ph', fb.dyn(ph)),
                                           ('n', fb.dyn(n0))])
     fb.op('JAlways', offset='lg')
@@ -239,7 +241,7 @@ def build_order_keep(cx, helpers, new_ids):
     fb.op('JAlways', offset='rm')
     fb.label('rmd')
     fb.op('Bool', dst=kept, value=True)
-    _log_ev(fb, b, cx, helpers, 'okeep', [('f', fb.get(ue, 'owner', 'kind')), ('n', fb.dyn(left)),
+    _log_ev(fb, b, cx, helpers, 'okeep', [('f', fb.get(b.call('ent.Entity.get_owner', ue), 'kind')), ('n', fb.dyn(left)),
                                           ('ph', fb.dyn(ph))])
     fb.label('orig')
     fb.end_try(guard)
@@ -314,7 +316,7 @@ def build_take_keep(cx, helpers, new_ids):
     fb.op('Bool', dst=kept, value=True)
     ue = fb.reg(cx.t('ent.Entity'))
     fb.op('Mov', dst=ue, src=1)
-    _log_ev(fb, b, cx, helpers, 'tkeep', [('f', fb.get(ue, 'owner', 'kind')), ('a', ue), ('n', fb.dyn(left)),
+    _log_ev(fb, b, cx, helpers, 'tkeep', [('f', fb.get(b.call('ent.Entity.get_owner', ue), 'kind')), ('a', ue), ('n', fb.dyn(left)),
                                           ('ph', fb.dyn(ph))])
     fb.label('orig')
     fb.end_try(guard)

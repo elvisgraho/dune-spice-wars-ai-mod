@@ -361,6 +361,16 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
                                           ('M', bm)])
     fb.op('JAlways', offset='end')
     fb.label('gnew')
+    # a rally back on within RALLY_RESUME s of its last qualifying pass (map `rlyt`) keeps its clock (rly0): Smugglers
+    # at Ashtar went rally / off / rally every 12-24 s for 2.5 min (23:54-26:16) and never reached RALLY_GIVEUP
+    r0v = b.call('haxe.ds.ObjectMap.get', rly0, fb.dyn(fac))
+    fb.op('JNull', reg=r0v, offset='g0set')
+    rtv = b.call('haxe.ds.ObjectMap.get', rlyt, fb.dyn(fac))
+    fb.op('JNull', reg=rtv, offset='g0set')
+    fb.op('SafeCast', dst=gq, src=rtv)
+    fb.op('Sub', dst=gq, a=t, b=gq)
+    fb.op('JSLt', a=gq, b=b.const('f64', RALLY_RESUME), offset='gkeep')
+    fb.label('g0set')
     b.call('haxe.ds.ObjectMap.set', rly0, fb.dyn(fac), fb.dyn(t))
     fb.label('gkeep')
     b.call('haxe.ds.ObjectMap.set', rly, fb.dyn(fac), fb.dyn(dz))
@@ -507,8 +517,36 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
                                           ('H', bh), ('M', bm), ('n', n)])
     fb.op('JAlways', offset='end')
     fb.label('off')  # no danger structure: rally over
-    fb.op('JNull', reg=b.call('haxe.ds.ObjectMap.get', rly, fb.dyn(fac)), offset='end')
-    for mp in (rly, rly0, rlyp):
+    pdv = b.call('haxe.ds.ObjectMap.get', rly, fb.dyn(fac))
+    fb.op('JNull', reg=pdv, offset='end')
+    # ... unless its D missed one pass only: the active test (an at-war army within FLEE_R or heading there) flickers
+    # as a stack shuffles at 70-90 from D, and every `off` restarted RALLY_GIVEUP (map rly0): Atreides' rally on
+    # Yawaz went rally / off every 4-8 s for 30 s (62:06-62:36, H 600k vs M 130k), never committing or conceding.
+    # D keeps the rally for RALLY_OFF_T s since its last qualifying pass while our side there is still short
+    # (same measure as the pick); a gathered force past ENTER x RALLY_HYST ends it at once
+    pd = b.cast(pdv, 'ent.Entity')
+    fb.op('JNull', reg=pd, offset='offgo')
+    ptv = b.call('haxe.ds.ObjectMap.get', rlyt, fb.dyn(fac))
+    fb.op('JNull', reg=ptv, offset='offgo')
+    fb.op('SafeCast', dst=gq, src=ptv)
+    fb.op('Sub', dst=gq, a=t, b=gq)
+    fb.op('JSGte', a=gq, b=b.const('f64', RALLY_OFF_T), offset='offgo')
+    fb.op('Call3', dst=h, fun=react, arg0=fac, arg1=pd, arg2=local)
+    fb.op('JSLt', a=h, b=b.const('f64', RALLY_MIN_H), offset='offgo')
+    fb.op('CallN', dst=cv, fun=cover, args=[fac, pd, pd, t_false, no_arr])
+    fb.op('Add', dst=h, a=h, b=cv)
+    our_power(pd, m, 'og')
+    fb.op('CallN', dst=cv, fun=cover, args=[fac, pd, nul_e, t_true, no_arr])
+    fb.op('Add', dst=m, a=m, b=cv)
+    pz = b.call('ent.Entity.get_zone', pd)
+    fb.op('JNull', reg=pz, offset='offgo')
+    fb.op('Call2', dst=tf, fun=terrain, arg0=fac, arg1=pz)
+    fb.op('Mul', dst=m, a=m, b=tf)
+    fb.op('Mul', dst=p, a=h, b=need)
+    fb.op('JSLt', a=m, b=p, offset='end')  # still short at D: the rally holds through the gap
+    fb.label('offgo')
+    # rly0 (the rally clock) stays: a rally on again within RALLY_RESUME of its last qualifying pass resumes it
+    for mp in (rly, rlyp):
         b.call('haxe.ds.ObjectMap.remove', mp, fb.dyn(fac))
     _log_ev(fb, b, cx, helpers, 'rally', [('f', fb.get(fac, 'kind')), ('act', 'off')])
     fb.label('end')

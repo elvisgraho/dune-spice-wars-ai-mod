@@ -458,7 +458,12 @@ def main():
     lg.add_argument('--around', metavar='MM:SS', help='timeline of all decisions near a game time (e.g. a mark)')
     lg.add_argument('--window', type=int, default=60, help='seconds either side for --around (default 60)')
     sub.add_parser('launch', help='start the game through Steam')
+    m = sub.add_parser('match', help='unattended testbed match: launch, O P Tab F10, run N minutes, close')
+    m.add_argument('minutes', nargs='?', type=float, default=17)
     a = p.parse_args()
+    if a.cmd == 'match':
+        raise SystemExit(subprocess.call(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                                          str(Path(__file__).with_name('match.ps1')), '-Minutes', str(a.minutes)]))
     {'verify': lambda _: verify(), 'build': lambda _: build(False) or print('No AI data changes'),
      'install': cmd_install, 'uninstall': cmd_uninstall, 'testbed': cmd_testbed, 'index': cmd_index,
      'find': cmd_find, 'dec': cmd_dec, 'log': cmd_log, 'launch': lambda _: os.startfile('steam://rungameid/1605220')}[a.cmd](a)

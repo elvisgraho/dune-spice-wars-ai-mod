@@ -35,6 +35,37 @@ def build_mission(cx):
     return fb.build()
 
 
+def fix_retreat_all(cx):
+    """Vanilla fight retreat (unitMicroManagement) runs only when every unit of every order related to the fight
+    stands in that warzone: `for (order in cf.relatedOrders) for (u in order.units) if (!units.contains(u))
+    checkPower = false`. One straggler, a worm-held army on rock or an order army elsewhere switched the retreat off
+    for the whole fight: Harkonnen's 14-army Annex of Yawan lost 13 armies under Mar-iel / Qartnin's batteries (no
+    balance read 29:33-30:57), Smugglers' 5-army harvester hunt (-100%) and Harkonnen's 2-army rebel hunt (-100% at
+    12.9:1) all died with no `wzb` sample. In place, same size: that `Mov checkPower <- false` becomes `Mov x <- x`,
+    so checkPower is vanilla's fight-age test alone (AI_Fight time >= valueCache[1104], 5 s). A lost fight then
+    retreats and cancels its related orders, stragglers included (policy: no trickling in)."""
+    f = cx.fn('logic.ai.AIUnits.unitMicroManagement')
+    cont = cx.fn('hl.types.ArrayObj.contains').findex.value
+    ops = f.ops
+    hits = []
+    for i in range(3, len(ops)):
+        m, bo, jt, ca = ops[i], ops[i - 1], ops[i - 2], ops[i - 3]
+        if (m.op == 'Mov' and bo.op == 'Bool' and bo.df['value'].value is False
+                and bo.df['dst'].value == m.df['src'].value and jt.op == 'JTrue'
+                and ca.op == 'Call2' and ca.df['fun'].value == cont):
+            hits.append(i)
+    if len(hits) != 1:
+        raise ValueError(f'retreat-all: expected 1 contains / Bool false / Mov in unitMicroManagement, found {len(hits)}')
+    i = hits[0]
+    r = ops[i].df['dst'].value
+    # the flag must be the one tested right before the warzone balance read (JFalse r; Bool; Ref; Call3)
+    if not any(ops[k].op == 'JFalse' and ops[k].df['cond'].value == r and ops[k + 3].op == 'Call3'
+               for k in range(i, min(i + 120, len(ops) - 3))):
+        raise ValueError('retreat-all: the cleared flag is not the balance check guard')
+    ops[i].df['dst'].value = ops[i].df['src'].value
+    return {'retreat-all': f'op{i} Mov r{r} <- false -> no-op'}
+
+
 def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     """Fight retreat (unitMicroManagement: retreat when HAI.getWarzonePowerBalance <= RetreatRatio): both calls go
     through a wrapper returning balance * aimod_terrain(faction, zone at the warzone centroid) * supply factor.
@@ -1049,7 +1080,7 @@ def _defense_extras(cx, helpers, idle, new_ids):
              and op.df.get('fun') is not None and ftypes.get(op.df['fun'].value) == pk.type.value]
     if len(sites) != 1:
         raise ValueError(f'pick-life: expected 1 pickUnits call in checkStructures, found {len(sites)}')
-    from rules.siege import _vfield
+
     ft = cx.code.types[pk.type.value].definition
     fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=pk.type.value)
     b = B(fb)
@@ -1200,7 +1231,6 @@ def _pick_life_wrapper(cx, helpers, ft, fun_type, inner, tag):
         # losing supply, below), not vanilla's minSupply 0.9 share: a max-supply rise (Atreides 65 -> 125) left every
         # full-health army at home under 90% and out of the Sandsud Defense. The query args are a fresh object per
         # call (HAI.getDefaultUnitQueryArgs)
-        from rules.siege import _vfield
         g0 = fb.try_()
         msv, msi = _vfield(fb, b, 1, 'minSupply')
         zs = fb.reg(fb.regs[msv])
@@ -1216,7 +1246,6 @@ def _pick_life_wrapper(cx, helpers, ft, fun_type, inner, tag):
     floor = _ratio(fb, b, PICK_LIFE)
     lr = fb.reg(cx.t('f64'))
     if tag == 'defense':
-        from rules.siege import _vfield
         prio = fb.reg(cx.t('i32'))
         fb.op('Mov', dst=prio, src=zi)
         pv, _ = _vfield(fb, b, 1, 'priority')

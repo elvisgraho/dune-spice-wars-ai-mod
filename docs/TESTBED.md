@@ -12,6 +12,12 @@ ai-mod\mod.cmd launch          # or start normally
 2. In game: press **P** once. You become AI too, speed x4. Diplomacy is left to the AIs (no forced war, so truces survive pressing P again after a Tab).
 3. Watch: **L** drop a marker in the AI log (press it right when the AI does something dumb), **F9** / **F10** speed 2 / 4, **K** fog toggle, `/` console. **Tab** / Shift+Tab take control of a faction and switch its AI off (`Player.onConnect` → `set_isAI(false)`; a Landsraad vote as the player can do the same): press **P** again to turn every AI back on. `mod log` prints `!AI OFF: <faction> <from>-<to>` right under its header for every such window (traced `ent.Faction.set_isAI`, `src` = caller); rules judged in that window mean nothing.
 
+### Unattended match (agents)
+
+`ai-mod\mod.cmd match [minutes]` (default 17; `tools/match.ps1`): launches through Steam (or uses the running game), waits 30 s for the menu, then O → 45 s load → P → Tab → F10 (x4), runs the given real minutes, closes the game normally (`CloseMainWindow`, killed after 30 s; prefs.sav is rewritten on exit). At x4, 17 min real ≈ 60-70 min game time. Exit 2 = the game vanished mid-run (crash). Run it in the background and read `mod log` afterwards.
+- Keys: `keybd_event` with scan codes after an Alt tap + `SetForegroundWindow` on the game window, per key. Computer-use tools don't work for this: each screenshot / key call left the desktop in front and minimized the fullscreen game, so keys landed nowhere. No screen capture is needed; `mod log` (HEALTH, game time, AI OFF windows) is the check.
+- Tab after P selected another faction without an `!AI OFF` window in 5 runs (*unverified* why: Tab may only move the view when every faction is AI).
+
 `ai-mod\mod.cmd testbed off` restores vanilla (boot files from `backup/`, pack removed, prefs macros restored).
 
 ## What `testbed on` changes

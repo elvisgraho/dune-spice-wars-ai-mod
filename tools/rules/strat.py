@@ -643,7 +643,7 @@ def strat_levers(cx, new_ids):
     fb.op('JSLt', a=dcn, b=b.const('i32', DMZ_WAR), offset='tens')
     fb.op('JTrue', cond=b.call('logic.state.State.areAtWar', _state(fb, b, cx), owner, 1), offset='lift')
     # contact tension at the cap (rules/tension.py, AI-POLICY §5c): one of our villages rubs a village of this at-war
-    # owner at T >= TEN_GATE: its villages are listed; the target scores keep only the partner ones (siege.py)
+    # owner at T >= TEN_GATE: its villages are listed; the target scores keep only the partner ones (annex.py)
     fb.label('tens')
     st2 = _state(fb, b, cx)
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', st2, owner, 1), offset='end')

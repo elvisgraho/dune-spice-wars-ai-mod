@@ -154,7 +154,7 @@ def build_uhq_cap(cx, helpers, new_ids):
     fb.label('capok')
     fb.op('JSGte', a=n, b=cap, offset='capped')
     # Annex reserve: the next HQ costs UHQ_AUTH x (HQs + 1) Authority; no install that leaves less than our cheapest
-    # Annex candidate (siege.py `acmin`, scored within UHQ_RES_T), but only while we hold >= UHQ_SOFT_PER_VILLAGE x
+    # Annex candidate (annex.py `acmin`, scored within UHQ_RES_T), but only while we hold >= UHQ_SOFT_PER_VILLAGE x
     # villages HQs or the Annex is near (Authority + UHQ_NEAR_AU >= its cost). Smugglers held 11 HQs (cap 18 at 6 villages) and
     # sat at 35-94 Authority for 13 min with a 123-cost Annex queued. No candidate scored lately: no reserve
     # Smugglers only: regularUpdate calls checkUWHeadquarters for every AI faction (vanilla returns at once without

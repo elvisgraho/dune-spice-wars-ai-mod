@@ -16,6 +16,7 @@ Close the game before `testbed on/off`, `install` and `uninstall`.
 | `log --raw` | Raw AIMOD lines |
 | `log --around 12:30` | Timeline of every AI decision within ±60 s of game time 12:30 (`--window 30` to narrow, `--faction F` for one faction) |
 | `launch` | Start the game via Steam |
+| `match [min]` | Unattended match: launch, O, P, Tab, F10, run N real minutes (default 17), close the game (TESTBED "Unattended match") |
 | `verify` | Check game files match the pinned build (fails after a game update) |
 | `build` / `install` | Build / install the AI mod data pack only (release; testbed must be off) |
 | `uninstall` | Remove everything we installed |

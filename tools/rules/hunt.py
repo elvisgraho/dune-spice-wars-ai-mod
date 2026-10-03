@@ -578,6 +578,22 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Add', dst=q, a=rr, b=b.const('f64', RING_IN))
     fb.op('JSLte', a=rd, b=q, offset='ring')  # already inside
     fb.op('JSLte', a=rd, b=zero, offset='ring')
+    # already walking to a point inside the ring: leave it; else re-sent at most every RING_MOVE_T s per army (a Move
+    # every pass, ~0.8 s, against vanilla Engage's own march calls: Atreides' 6 contest armies stood ~213 from Yawan
+    # for 30 s, 47:39-48:12, while the capture ran)
+    fb.op('JFalse', cond=b.call('ent.Unit.isMoving', ur), offset='rgthr')
+    rpe = b.call('ent.MobileEntity.getCurrentPathEnd', ur)
+    fb.op('JNull', reg=rpe, offset='rgthr')
+    rpx, rpy = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Sub', dst=rpx, a=b.field(rpe, 'x'), b=b.field(rv, 'posx'))
+    fb.op('Sub', dst=rpy, a=b.field(rpe, 'y'), b=b.field(rv, 'posy'))
+    fb.op('Mul', dst=rpx, a=rpx, b=rpx)
+    fb.op('Mul', dst=rpy, a=rpy, b=rpy)
+    fb.op('Add', dst=rpx, a=rpx, b=rpy)
+    fb.op('Mul', dst=rpy, a=q, b=q)  # q = rr + RING_IN (inside)
+    fb.op('JSLte', a=rpx, b=rpy, offset='ring')
+    fb.label('rgthr')
+    _throttle(fb, b, cx, 'ringmv', ur, RING_MOVE_T, 'ring')
     # the point rr x RING_K from the village centre towards the army
     fb.op('Mul', dst=q, a=rr, b=_ratio(fb, b, RING_K))
     fb.op('SDiv', dst=q, a=q, b=rd)

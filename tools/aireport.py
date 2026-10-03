@@ -41,7 +41,6 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
   keepcap: f, a, s, v (vanilla micro wanted army a to defend our structure s; kept at village v we capture)
   unstick: f, a, tgt, st, ok (siege army standing still in the village with no siege running moved to the target's safe position; st = s still)
   undeploy: a, ok, nm, sup, air (installed AA turret uninstalled: nothing flying within AA_R, or idle on hostile land; nm = order move blocks removed)
-  sreach: f, s, rk, hops, rec (special-region village not ours: region id, zone hops to our territory, surveyed by us; rules/sdiag.py)
   wlet  : f, a, d, pe (worm-targeted army left to walk out on its own: d worm distance, pe path left; rules/worm.py)
   aagate: f, a (FSpecialInstall refused: no at-war flying army within AA_R; rules/deploy.py)
   opgate: f, s, k, n (siege order on an ownerless target: its n optional operations dropped; rules/ops.py)
@@ -50,9 +49,9 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
   bkeep : f, tgt, n, ph (siege order kept after its last besieger of ours died; rules/orders.py siege-keep)
   tkeep : f, a, n, ph (our Military order kept before Action when another order took army a; rules/orders.py take-keep)
   alone: f, tgt, s, c (sole Annex candidate past the opening with no ring / special / spice value: dropped)
-  ascore: f, tgt, s, c, cmin, vb, v0, vs, n, dd (x100: Fremen deep-desert surround sum of the best), hold (off-ring candidates dropped by the Fremen ring hold), rt / rs / rdd (best ring village, its score, dd x100), ddh (zone hops of the focus deep desert, 999 none) (Annex value: our best target vs vanilla's best; tools/rules/siege.py)
+  ascore: f, tgt, s, c, cmin, vb, v0, vs, n, dd (x100: Fremen deep-desert surround sum of the best), hold (off-ring candidates dropped by the Fremen ring hold), rt / rs / rdd (best ring village, its score, dd x100), ddh (zone hops of the focus deep desert, 999 none) (Annex value: our best target vs vanilla's best; tools/rules/annex.py)
   noregen: f, a, hp (army without safe regen and full supply removed from the checkUnits Resupply query)
-  aring : f, v, v0 (uncontested deep-desert ring village scored for Annex although vanilla's score v0 <= 0; rules/siege.py)
+  aring : f, v, v0 (uncontested deep-desert ring village scored for Annex although vanilla's score v0 <= 0; rules/annex.py)
   pkeep : f, v (ring village dropped from vanilla's Pillage targets)
   tveto : f, s, sc, n, hops (vanilla MissileBattery score sc > 0 at a village no turret rule of ours calls for: dropped; rules/build.py)
   odead : f, a, hp, ph, n (unit checkOrderTerminations removes from an order as dead; rules/orders.py)
@@ -97,7 +96,7 @@ from collections import Counter, defaultdict
 PH = ['Pa', 'W', 'P', 'Rg', 'E', 'A', 'R']
 LEGEND = ('phases Pa=Paused W=Waiting P=Preparation Rg=Regroup E=Engage A=Action R=Retreat | dist = attacking army '
           'to target at order start | est = planned my/enemy power (req = required ratio) | fight = live power '
-          'first->last (me/en change) | end = reason [code path that stopped it] | ! = est<1.25, own loss>30% or failed')
+          'first->last (me/en change; rel@ = armies released alive then, compared up to it; deadK/N = armies removed as dead, the loss flag when logged) | end = reason [code path that stopped it] | ! = est<1.25, own loss>30% (half the armies dead when logged) or failed')
 
 
 def parse_value(s, i):
@@ -422,7 +421,9 @@ def summarize(events, faction=None, all_orders=False):
             if e.get('act') == 'ArmyFight':
                 o['pos'] = ((e.get('tgt') or {}).get('x') or 0, (e.get('tgt') or {}).get('y') or 0)
                 fight_orders[f].append(o)
-        elif k in ('phase', 'fightb', 'end', 'stop'):
+        elif k in ('phase', 'fightb', 'end', 'stop') or (k == 'odead' and e.get('tgt') is not None):
+            if k == 'odead':
+                standoff.append(e)
             live = [o for o in open_orders.get((f, ent_key(e.get('tgt'))), []) if o['end'] is None]
             if not live and e.get('act') == 'ArmyFight':  # a hunt's group target moves: nearest open ArmyFight
                 tg = e.get('tgt') or {}
@@ -447,6 +448,8 @@ def summarize(events, faction=None, all_orders=False):
                 pw = last_fpw or {}
                 o['fight'].append((t, e.get('b'), pw.get('my'), pw.get('en')))
                 last_fpw = None
+            elif k == 'odead':  # one of its armies removed as dead (rules/orders.py): a real loss
+                o['dead'] = o.get('dead', 0) + 1
             elif k == 'end':
                 o['end'] = (t, e.get('why'), e.get('n'))
                 o['src'] = last_stop.pop((f, ent_key(e.get('tgt'))), None)
@@ -474,6 +477,10 @@ def summarize(events, faction=None, all_orders=False):
             strats.append(e)
         elif k in ('raid', 'release'):
             raids.append(e)
+            if k == 'release' or e.get('act') == 'split':  # armies left the order alive: not losses (fight me%)
+                rel = [o for o in open_orders.get((f, ent_key(e.get('tgt'))), []) if o['end'] is None]
+                if rel:
+                    rel[0].setdefault('rel', t)
         elif k == 'peace':
             peaces.append(e)
         elif k == 'rally':
@@ -481,8 +488,8 @@ def summarize(events, faction=None, all_orders=False):
         elif k in ('gather', 'stage'):
             gathers.append(e)
         elif k in ('treaty', 'patrol', 'turret', 'tveto', 'aring', 'pkeep', 'odead', 'okeep', 'fpeace', 'pannex', 'pagate', 'sdrop', 'airpick', 'rejoin', 'dall', 'uhqcap',
-                   'uhqres', 'uhqp', 'uhqx', 'dmz', 'sreach', 'wsteer', 'wveto', 'afield', 'afveto', 'aagate', 'undeploy', 'bkeep', 'tkeep', 'tdem',
-                   'rpoint', 'rfaf', 'bpick'):
+                   'uhqres', 'uhqp', 'uhqx', 'dmz', 'wsteer', 'wveto', 'afield', 'afveto', 'aagate', 'undeploy', 'bkeep', 'tkeep', 'tdem',
+                   'rpoint', 'rfaf', 'bpick', 'trippick'):
             standoff.append(e)
         elif k in ('wflee', 'weaten', 'dstep', 'whold', 'hrun', 'hpick', 'spos', 'unstick', 'keepcap', 'tension', 'hride', 'rride'):
             worms.append(e)
@@ -540,6 +547,11 @@ def summarize(events, faction=None, all_orders=False):
             elif fn == 'AIMilitary.onActionEnd':
                 intents[f][(e.get('a1'), str(e.get('a2')))] += 1
 
+    # odead rows carry the order's target (newer logs): every order's deaths are counted, 0 included
+    if any(e.get('e') == 'odead' and e.get('tgt') is not None for e in events):
+        for o in orders:
+            o['ev']['_odt'] = True
+
     def row(o):
         e, p = o['ev'], o['pick'] or {}
         pw = p.get('_pw') or {}
@@ -550,17 +562,28 @@ def summarize(events, faction=None, all_orders=False):
             pw = {'my': float(M), 'en': float(H)}
             est = M / H if H else None
             p = {'sel': h.get('n'), 'cand': h.get('n'), 'req': 1.5}
+        n0 = o['ev'].get('n') if isinstance(o['ev'].get('n'), float) else None
         fights_ = [x for x in o['fight'] if isinstance(x[2], float)]
+        if o.get('rel') is not None:  # released armies leave the order alive: compare up to the release only
+            fights_ = [x for x in fights_ if x[0] < o['rel']] or fights_[:1]
         own = (fights_[-1][2] - fights_[0][2]) / fights_[0][2] if fights_ and fights_[0][2] else 0
         fight = (f'{big(fights_[0][2])}/{big(fights_[0][3])}->{big(fights_[-1][2])}/{big(fights_[-1][3])} '
                  f'(me{change(fights_[0][2], fights_[-1][2])} en{change(fights_[0][3], fights_[-1][3])})') if fights_ else '-'
+        if o.get('rel') is not None:
+            fight += f" rel@{clock(o['rel'])}"
+        if o['ev'].get('_odt'):
+            fight += f" dead{o.get('dead', 0)}/{num(n0, 0)}"
         why = str(o['end'][1]) if o['end'] else 'open'
         dur = f"+{o['end'][0] - o['t']:.0f}s" if o['end'] else ''
         src = f"[{o['src']}]" if o['src'] and why != 'Success' else ''
         if o.get('abort'):
             src += f"[hunt abort: {o['abort'].get('why')}]"
         ok_end = ('Success', 'open', 'None') if o['ev'].get('act') == 'ArmyFight' else ('Success', 'open')  # a hunt ends None
-        bad = (isinstance(est, float) and est < 1.25) or own < -0.3 or why not in ok_end
+        if o.get('dead') is not None or (n0 and o['ev'].get('_odt')):
+            lost = 2 * o.get('dead', 0) >= (n0 or 1)  # deaths logged (odead with tgt): count them, not the power drop
+        else:
+            lost = own < -0.3
+        bad = (isinstance(est, float) and est < 1.25) or lost or why not in ok_end
         flags = (' 3rdIgnored' if p.get('ign3rd') else '') + (' allIn' if p.get('allIn') else '')
         return (f"{'!' if bad else ' '}{clock(o['t'])} {str(e.get('f'))[:10]:<10} {str(e.get('sa') or e.get('act'))[:13]:<13} "
                 f"{ent((o.get('hunt') or e).get('tgt'))[:22]:<22} {num(p.get('sel'), 0)}/{num(p.get('cand'), 0):<3} dist{num(o['dist'], 0):<5} "
@@ -729,8 +752,6 @@ def summarize(events, faction=None, all_orders=False):
             elif e['e'] in ('wsteer', 'wveto'):
                 out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {e['e']:<6} {ent(e.get('s'))[:22]:<22} {e.get('k')} "
                            f"{e.get('why') or ''} sc{e.get('sc')} m{e.get('m', '')} disc{e.get('disc', '')}")
-            elif e['e'] == 'sreach':
-                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} sreach {ent(e.get('s'))[:22]:<22} {e.get('rk')} hops{e.get('hops')} rec{e.get('rec')}")
             elif e['e'] in ('bkeep', 'tkeep'):
                 out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {e['e']} {ent(e.get('tgt') or e.get('a'))[:22]:<22} n{e.get('n')} ph{e.get('ph')}")
             elif e['e'] == 'tdem':
@@ -743,7 +764,7 @@ def summarize(events, faction=None, all_orders=False):
                            f"h{kpw(e.get('h'))} sc{e.get('sc')}")
 
     if ascores:
-        out.append('\n## Annex value (tools/rules/siege.py): our best Annex target (s = score after special / '
+        out.append('\n## Annex value (tools/rules/annex.py): our best Annex target (s = score after special / '
                    'compactness / cost ratio / first spice) vs vanilla\'s best (v0 its vanilla score, vs now); '
                    'c / cmin = its Authority cost / cheapest candidate (once per faction per 30 s)')
         for e in ascores[-16:]:
@@ -756,7 +777,7 @@ def summarize(events, faction=None, all_orders=False):
                        + (f" ring {ent(e.get('rt'))[:18]} s{e.get('rs')} dd{e.get('rdd')} h{e.get('ddh')}" if e.get('rt') and ent(e.get('rt')) != ent(e.get('tgt')) else ''))
 
     if acands:
-        out.append('\n## Annex candidates (tools/rules/siege.py `acand`, every candidate of one scoring per faction per 30 s): '
+        out.append('\n## Annex candidates (tools/rules/annex.py `acand`, every candidate of one scoring per faction per 30 s): '
                    'v0 vanilla score, hops = zones from our main base (vanilla -10 each, capped at 3), sp special bonus, '
                    'cf compactness x100, cen centre factor x100, dd Fremen ring x100, c / cmin cost, s final; n candidates')
         for e in acands[-40:]:

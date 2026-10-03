@@ -690,6 +690,34 @@ def build_wonder(cx, helpers, new_ids, inner):
     return w
 
 
+def _af_can(fb, b, cx, up, airfield):
+    """Bool register: Upgrades.checkAddUpgrade(up, Airfield) is Success or MissingResources (can go up now or once
+    paid; not full, occupied, in combat, ...)."""
+    ca = cx.fn('logic.Upgrades.checkAddUpgrade')
+    cat = [a.value for a in cx.code.types[ca.type.value].definition.args]
+    cret = cx.code.types[ca.type.value].definition.ret.value
+    rnames = [c_.name.resolve(cx.code) for c_ in cx.code.types[cret].definition.constructs]
+    dref = fb.reg(cat[2])
+    fb.op('Ref', dst=dref, src=b.const('i32', 0))
+    cnul = []
+    for t_ in cat[3:]:
+        r_ = fb.reg(t_)
+        fb.op('Null', dst=r_)
+        cnul.append(r_)
+    rr = fb.reg(cret)
+    fb.op('CallN', dst=rr, fun=ca.findex.value, args=[up, airfield, dref] + cnul)
+    ri = fb.reg(cx.t('i32'))
+    fb.op('EnumIndex', dst=ri, value=rr)
+    ok = fb.reg(cx.t('bool'))
+    u = _uid('afc')
+    fb.op('Bool', dst=ok, value=True)
+    fb.op('JEq', a=ri, b=b.const('i32', rnames.index('Success')), offset=u)
+    fb.op('JEq', a=ri, b=b.const('i32', rnames.index('MissingResources')), offset=u)
+    fb.op('Bool', dst=ok, value=False)
+    fb.label(u)
+    return ok
+
+
 def build_airfield(cx, helpers, threat, new_ids, inner):
     """Airfield steering (user: remote villages get an Airfield to aid travel, then their battery; airfields spaced;
     none in a corner behind our base). Score wrapper for getBuildingStructureScore (pair {s, k}, f, context,
@@ -781,6 +809,11 @@ def build_airfield(cx, helpers, threat, new_ids, inner):
     _log_ev(fb, b, cx, helpers, 'afveto', [('f', fb.get(1, 'kind')), ('s', se), ('why', why), ('sc', vs), ('d', db)])
     fb.op('JAlways', offset='end')
     fb.label('boost')
+    # only while s has no Airfield (built or going up) and one can go up now or once paid: the boost ran on with the
+    # Airfield standing (Atreides' Zadak: `afield` rows 17:00-66:00, Airfield picked at 17:00)
+    fb.op('CallN', dst=ku, fun=gk.findex.value, args=[up, airfield] + gkn)
+    fb.op('JNotNull', reg=ku, offset='end')
+    fb.op('JFalse', cond=_af_can(fb, b, cx, up, airfield), offset='end')
     v0 = fb.reg(cx.t('f64'))
     fb.op('Mov', dst=v0, src=res)
     fb.op('JSGte', a=res, b=b.const('f64', 0), offset='pos')
@@ -807,24 +840,7 @@ def build_airfield(cx, helpers, threat, new_ids, inner):
     fb.label('notres')
     fb.op('CallN', dst=ku, fun=gk.findex.value, args=[up, airfield] + gkn)
     fb.op('JNotNull', reg=ku, offset='end')  # has its Airfield (built or going up): the battery's turn
-    ca = cx.fn('logic.Upgrades.checkAddUpgrade')
-    cat = [a.value for a in cx.code.types[ca.type.value].definition.args]
-    cret = cx.code.types[ca.type.value].definition.ret.value
-    rnames = [c_.name.resolve(cx.code) for c_ in cx.code.types[cret].definition.constructs]
-    dref = fb.reg(cat[2])
-    fb.op('Ref', dst=dref, src=b.const('i32', 0))
-    cnul = []
-    for t_ in cat[3:]:
-        r_ = fb.reg(t_)
-        fb.op('Null', dst=r_)
-        cnul.append(r_)
-    rr = fb.reg(cret)
-    fb.op('CallN', dst=rr, fun=ca.findex.value, args=[up, airfield, dref] + cnul)
-    ri = fb.reg(cx.t('i32'))
-    fb.op('EnumIndex', dst=ri, value=rr)
-    fb.op('JEq', a=ri, b=b.const('i32', rnames.index('Success')), offset='afcan')
-    fb.op('JNotEq', a=ri, b=b.const('i32', rnames.index('MissingResources')), offset='end')
-    fb.label('afcan')
+    fb.op('JFalse', cond=_af_can(fb, b, cx, up, airfield), offset='end')  # no Airfield possible: battery
     h = fb.reg(cx.t('f64'))
     fb.op('Call3', dst=h, fun=threat, arg0=1, arg1=se, arg2=b.const('f64', STAND_R))
     fb.op('JSGte', a=h, b=b.const('f64', STAND_MIN_H), offset='end')  # a standoff: the battery goes first

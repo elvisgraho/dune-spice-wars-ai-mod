@@ -229,6 +229,7 @@ CONTEST_SLACK = 10 # s: a contest still starts when it arrives this late (the ca
 RING_IN = 10       # contest ring step: an army farther than village radius + this walks in (code: contenders stand within
                    # radius + Siege_Occupation_Distance 20; edge or centre distance *unverified*: 10 keeps a margin)
 RING_K = 0.5       # ... to the point radius x this from the village centre, on its own side
+RING_MOVE_T = 5    # s: a ring move is re-sent to one army at most this often (a walk needs time to progress)
 ASWAP_WAIT = 120   # s: Annex value: nothing affordable in the top 3 this long -> the best affordable candidate anywhere
 RES_INFLUENCE = 10  # resource sheet index of Influence (ent.Faction.getResource)
 RES_AUTHORITY = 6   # resource sheet index of Authority
@@ -275,7 +276,7 @@ UHQ_PER_VILLAGE = 3
 UHQ_AUTH = 5       # Annex reserve: next HQ's Authority = this x (HQs + 1) (data: InstallUWHeadquarter 5 + 5 per existing)
 UHQ_SOFT_PER_VILLAGE = 2  # Annex reserve only from this x our villages HQs on (below: HQs go up while the Annex is far)
 UHQ_NEAR_AU = 60  # ... or while Authority is within this of the cheapest Annex (~4 min of Smugglers income: about to launch)
-UHQ_RES_T = 120    # ... the cheapest Annex cost (siege.py `acmin`) counts this long after its last scoring
+UHQ_RES_T = 120    # ... the cheapest Annex cost (annex.py `acmin`) counts this long after its last scoring
 UHQ_MB_R = 500     # placement: a host village within this of its owner's main base scores up to ...
 UHQ_MB_W = 1.0     # ... x (1 + this) at the base (falls linearly to x 1 at UHQ_MB_R): hardly ever recaptured there
 UHQ_PLACE_W = 1.0  # placement: + this x the best production-extension gain at the village (vanilla score ~20-60)
@@ -318,6 +319,8 @@ RALLY_AT = 60      # a defender this close to the rally point has arrived (no mo
 RALLY_MOVE_T = 5   # s: a defender is re-sent at most this often
 RALLY_HOLD = 5     # s: a rallying army stays out of vanilla's picks this long after the last pass saw it walking
 RALLY_HYST = 1.15  # a running rally ends only at ENTER x this (no on / off flicker at the threshold)
+RALLY_OFF_T = 10   # s: a running rally whose D misses a pass (active test flicker) holds this long while still short there
+RALLY_RESUME = 30  # s: a rally back on this soon after its last qualifying pass keeps its RALLY_GIVEUP clock
 RALLY_GIVEUP = 60  # s: a rally on the same danger structure still short after this concedes it ...
 RALLY_COOL = 90    # s: ... for this long (not a danger structure; vanilla Defense of it gets no armies, aimod_defend skips it)
 RALLY_HERE = LOCAL # defenders this close to the danger structure are already there: if they (+ turrets, x terrain) are
@@ -388,6 +391,9 @@ UNREACH_T = 300    # s: a target whose last order died in Waiting (vanilla's pat
                    # supply, so the path itself costs > 0.7 x max supply (Fremen's ring village Alifgah across deep
                    # desert, 3 launches 0:35-0:58 each cancelled at +0.06 s, 50 s of cycling instead of expanding);
                    # not while we hold a free Supply Drop (sdrop-trip lifts that check)
+LOST_T = 900       # s: a siege target whose last order of ours reached Engage and lost >= 1 / LOST_SHARE_DEN of
+LOST_SHARE_DEN = 2 # ... its armies is out of our target scores this long (lost-siege memory: no second assault the same way)
+LOST_WIN = 600     # s: ... judged only within this of that launch (a capture that succeeded and was lost later stays a target)
 FAIL_N = 3         # stuck: this many vanilla launches on one target ending without an order (ArmyNotStrongEnough,
 FAIL_WIN = 120     # NotEnoughArmies, ...) within this many s drop it from the target scores for FAIL_BLOCK s, doubled
 FAIL_BLOCK = 120   # up to FAIL_MAX while it keeps coming back (a thinking loop: the armies idle at a patrol meanwhile)
@@ -621,16 +627,25 @@ def _order_of(fb, b, cx, fac, a, dst, none):
     fb.op('JNull', reg=dst, offset=none)
 
 
-def _unreach(fb, b, cx, s_e, t, yes):
+def _unreach(fb, b, cx, s_e, t, yes, fac=None):
     """Jump to `yes` when siege target s_e is out of supply reach: our last order on it (map `aord`, set by the
-    launch gate) died in Waiting (phase < REGROUP, units emptied by stop: vanilla's path supply check or a refused
+    launch gate; fac given: only an order of fac's, the maps are keyed by target and another faction's launch must not
+    block us) died in Waiting (phase < REGROUP, units emptied by stop: vanilla's path supply check or a refused
     Shuttle step), launched (map `alaunch`) less than UNREACH_T before t, and its faction holds no free Supply Drop
-    (map `sdfree` within SD_FRESH: sdrop-trip lifts the check)."""
+    (map `sdfree` within SD_FRESH: sdrop-trip lifts the check) or that launch already ran with one (map `asd`)."""
     no = _uid('unr')
     ov = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'aord'), fb.dyn(s_e))
     fb.op('JNull', reg=ov, offset=no)
     po = b.cast(ov, 'logic.ai.AIOrder')
     fb.op('JNull', reg=po, offset=no)
+    pos = b.field(po, 'orders')
+    fb.op('JNull', reg=pos, offset=no)
+    pct = b.field(pos, 'controller')
+    fb.op('JNull', reg=pct, offset=no)
+    pfac = b.field(pct, 'owner')
+    fb.op('JNull', reg=pfac, offset=no)
+    if fac is not None:
+        fb.op('JNotEq', a=pfac, b=fac, offset=no)
     fb.op('JSGte', a=b.field(po, 'phase'), b=b.const('i32', REGROUP), offset=no)
     pu = b.field(po, 'units')
     fb.op('JNull', reg=pu, offset=no + 'd')
@@ -642,12 +657,9 @@ def _unreach(fb, b, cx, s_e, t, yes):
     fb.op('SafeCast', dst=lq, src=lv)
     fb.op('Sub', dst=lq, a=t, b=lq)
     fb.op('JSGte', a=lq, b=b.const('f64', UNREACH_T), offset=no)
-    pos = b.field(po, 'orders')
-    fb.op('JNull', reg=pos, offset=yes)
-    pct = b.field(pos, 'controller')
-    fb.op('JNull', reg=pct, offset=yes)
-    pfac = b.field(pct, 'owner')
-    fb.op('JNull', reg=pfac, offset=yes)
+    # that launch already had a free drop's lift (map `asd`, siege.py launch record) and still died: the drop can't
+    # make this trip, no waiver
+    fb.op('JNotNull', reg=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'asd'), fb.dyn(s_e)), offset=yes)
     sv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'sdfree'), fb.dyn(pfac))
     fb.op('JNull', reg=sv, offset=yes)
     sq = fb.reg(cx.t('f64'))
@@ -1230,6 +1242,113 @@ def _af_spaced(fb, b, cx, s, se, fac, airfield, gk, gkn, ku):
     fb.op('Bool', dst=spaced, value=True)
     fb.label(lo + 'd')
     return spaced
+
+
+def _recent_launch(fb, b, cx, s_e, t, recent, fac=None, helpers=None):
+    """Jump to `recent` if vanilla launched a siege on s_e less than its block ago (map 'alaunch', set by the
+    tryArmyAction wrapper; block = map 'ablk', RETRY doubling up to RETRY_MAX for a target relaunched right after
+    its block ran out; at least UNREACH_T when its last order died in Waiting: out of supply reach).
+    fac given: the records (keyed by target) count only when the last order on s_e (map `aord`) is fac's: another
+    faction's failed launch on a village blocked ours too. Lost siege (fac given): that order reached Engage and
+    ended with at least 1 / LOST_SHARE_DEN of the armies it launched with (map `aunits`, copied at launch) dead ->
+    s_e is out for LOST_T s from when this is first seen within LOST_WIN of that launch, never on a village of
+    ours (maps `slost` / `slostf`; log `slost`): Harkonnen lost 10
+    armies under Mar-iel / Qartnin's batteries at Atreides' Yawan (28:16) and sent 14 more the same way at 43:47."""
+    old = _uid('old')
+    if fac is not None:
+        ao = b.cast(b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'aord'), fb.dyn(s_e)), 'logic.ai.AIOrder')
+        fb.op('JNull', reg=ao, offset=old + 'own')
+        aos = b.field(ao, 'orders')
+        fb.op('JNull', reg=aos, offset=old + 'own')
+        fb.op('JNotEq', a=b.field(b.field(aos, 'controller'), 'owner'), b=fac, offset=old)
+        fb.label(old + 'own')
+        # lost siege memory
+        slm, slf = _global_map(fb, b, cx, 'slost'), _global_map(fb, b, cx, 'slostf')
+        lsv = b.call('haxe.ds.ObjectMap.get', slm, fb.dyn(s_e))
+        fb.op('JNull', reg=lsv, offset=old + 'det')
+        fb.op('JNotEq', a=b.call('haxe.ds.ObjectMap.get', slf, fb.dyn(s_e)), b=fb.dyn(fac), offset=old + 'det')
+        lsq = fb.reg(cx.t('f64'))
+        fb.op('SafeCast', dst=lsq, src=lsv)
+        fb.op('Sub', dst=lsq, a=t, b=lsq)
+        fb.op('JSLt', a=lsq, b=b.const('f64', LOST_T), offset=recent)
+        fb.label(old + 'det')
+        aum = _global_map(fb, b, cx, 'aunits')
+        au = b.cast(b.call('haxe.ds.ObjectMap.get', aum, fb.dyn(s_e)), 'hl.types.ArrayObj')
+        fb.op('JNull', reg=au, offset=old + 'n')
+        fb.op('JNull', reg=ao, offset=old + 'n')
+        aou = b.field(ao, 'units')
+        fb.op('JNull', reg=aou, offset=old + 'nd')
+        fb.op('JSGt', a=b.field(aou, 'length'), b=b.const('i32', 0), offset=old + 'n')  # still running
+        fb.label(old + 'nd')
+        fb.op('JSLte', a=b.field(ao, 'phase'), b=b.const('i32', REGROUP), offset=old + 'n')  # never fought there
+        # judged only soon after it (LOST_WIN from its launch) and not on a village of ours: a costly capture that
+        # succeeded and was lost much later must stay a target (the bunker retake)
+        fb.op('JEq', a=b.call('ent.Entity.get_owner', s_e), b=fac, offset=old + 'n')
+        alv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'alaunch'), fb.dyn(s_e))
+        fb.op('JNull', reg=alv, offset=old + 'n')
+        alq = fb.reg(cx.t('f64'))
+        fb.op('SafeCast', dst=alq, src=alv)
+        fb.op('Sub', dst=alq, a=t, b=alq)
+        fb.op('JSGt', a=alq, b=b.const('f64', LOST_WIN), offset=old + 'n')
+        an, ad, ai = fb.reg(cx.t('i32')), fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+        fb.op('Mov', dst=an, src=b.field(au, 'length'))
+        fb.op('Mov', dst=ad, src=b.const('i32', 0))
+        fb.op('Mov', dst=ai, src=b.const('i32', 0))
+        b.loop_head(old + 'l')
+        fb.op('JSGte', a=ai, b=an, offset=old + 'ld')
+        ae = b.cast(b.call('hl.types.ArrayObj.getDyn', au, ai), 'ent.Entity')
+        fb.op('Incr', dst=ai)
+        fb.op('JNull', reg=ae, offset=old + 'l')
+        fb.op('JFalse', cond=b.call('ent.Entity.isDead', ae), offset=old + 'l')
+        fb.op('Incr', dst=ad)
+        fb.op('JAlways', offset=old + 'l')
+        fb.label(old + 'ld')
+        b.call('haxe.ds.ObjectMap.remove', aum, fb.dyn(s_e))  # judged once
+        aq = fb.reg(cx.t('i32'))
+        fb.op('Mul', dst=aq, a=ad, b=b.const('i32', LOST_SHARE_DEN))
+        fb.op('JSLt', a=aq, b=an, offset=old + 'n')
+        b.call('haxe.ds.ObjectMap.set', slm, fb.dyn(s_e), fb.dyn(t))
+        b.call('haxe.ds.ObjectMap.set', slf, fb.dyn(s_e), fb.dyn(fac))
+        if helpers is not None:
+            anf, adf = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+            fb.op('ToSFloat', dst=anf, src=an)
+            fb.op('ToSFloat', dst=adf, src=ad)
+            _log_ev(fb, b, cx, helpers, 'slost', [('f', fb.get(fac, 'kind')), ('tgt', s_e), ('n', anf), ('dead', adf),
+                                                  ('ph', fb.dyn(b.field(ao, 'phase')))])
+        fb.op('JAlways', offset=recent)
+        fb.label(old + 'n')
+    last = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'alaunch'), fb.dyn(s_e))
+    fb.op('JNull', reg=last, offset=old)
+    lf, bl = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=lf, src=last)
+    fb.op('Sub', dst=lf, a=t, b=lf)
+    fb.op('Mov', dst=bl, src=b.const('f64', RETRY))
+    bv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'ablk'), fb.dyn(s_e))
+    fb.op('JNull', reg=bv, offset=old + 'b')
+    fb.op('SafeCast', dst=bl, src=bv)
+    fb.label(old + 'b')
+    # out of reach (common._unreach): at least UNREACH_T from that launch
+    chk = old + 'c'
+    _unreach(fb, b, cx, s_e, t, old + 'u', fac)
+    fb.op('JAlways', offset=chk)
+    fb.label(old + 'u')
+    fb.op('JSGte', a=bl, b=b.const('f64', UNREACH_T), offset=chk)
+    fb.op('Mov', dst=bl, src=b.const('f64', UNREACH_T))
+    fb.label(chk)
+    fb.op('JSLt', a=lf, b=bl, offset=recent)
+    fb.label(old)
+
+
+def _vfield(fb, b, obj, name):
+    """Field of a virtual (anonymous struct) register by name -> (register of the field's type, field index)."""
+    cx = fb.cx
+    fields = cx.code.types[fb.regs[obj]].definition.fields
+    idx = [i for i, f in enumerate(fields) if f.name.resolve(cx.code) == name]
+    if len(idx) != 1:
+        raise ValueError(f'siege-join: field {name} not found')
+    dst = fb.reg(fields[idx[0]].type.value)
+    fb.op('Field', dst=dst, obj=obj, field=idx[0])
+    return dst, idx[0]
 
 
 __all__ = [n for n in dir() if not n.startswith('__')]
