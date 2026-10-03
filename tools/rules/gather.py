@@ -88,6 +88,19 @@ def build_gather(cx, helpers):
     fb.op('JAlways', offset='m')
     fb.label('mdone')
     fb.op('JSLte', a=cnt, b=b.const('i32', 1), offset='o')
+    # a contest (hunt map `hcon` order -> village) holds only while the capture leaves time for it: the farthest
+    # army's walk (CONTEST_SPD) + a full GATHER_MAX hold must end before the occupation does (_cap_rem, the contest
+    # start's clock; a capture making no progress has none). Smugglers' 8 leaders at Tabdalus waited 17:15-17:34,
+    # contact 4 s before the capture ended
+    cvv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'hcon'), fb.dyn(o))
+    fb.op('JNull', reg=cvv, offset='gclk')
+    cvs = b.cast(cvv, 'ent.Structure')
+    fb.op('JNull', reg=cvs, offset='gclk')
+    rem, _ = _cap_rem(fb, b, cx, cvs, t, 'gclk')
+    fb.op('SDiv', dst=q, a=dmax, b=b.const('f64', CONTEST_SPD))
+    fb.op('Add', dst=q, a=q, b=b.const('f64', GATHER_MAX))
+    fb.op('JSGt', a=q, b=rem, offset='o')
+    fb.label('gclk')
     # hold the leaders
     a2 = _army_loop(fb, b, units, un, j, 'h', 'o')
     fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', a2, tgt))

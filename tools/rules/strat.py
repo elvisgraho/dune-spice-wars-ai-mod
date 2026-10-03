@@ -724,6 +724,29 @@ def strat_levers(cx, new_ids):
     fb.op('JNotEq', a=asq, b=b.field(_state(fb, b, cx), 'time'), offset='noann')
     fb.op('Add', dst=ext, a=ext, b=b.const('i32', ANNEX_ZONES))
     fb.label('noann')
+    # a free Supply Drop (rules/sdrop.py map `sdfree`, refreshed every SD_CHECK s while held and unlocked): + SD_ZONES
+    # for every siege kind, in military target scans only (vanilla's pickers: `mscan` / Annex `ascan` == now; raid's
+    # own scan: `rscan`); the first far order locks it (sdrop-trip) and the reach shrinks back
+    now_t = b.field(_state(fb, b, cx), 'time')
+    fb.op('JNotNull', reg=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rscan'), fb.dyn(owner)), offset='sdmil')
+    for mp in ('mscan', 'ascan'):
+        mv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, mp), fb.dyn(owner))
+        nx = mp + '_no'
+        fb.op('JNull', reg=mv, offset=nx)
+        mq = fb.reg(cx.t('f64'))
+        fb.op('SafeCast', dst=mq, src=mv)
+        fb.op('JEq', a=mq, b=now_t, offset='sdmil')
+        fb.label(nx)
+    fb.op('JAlways', offset='nosd')
+    fb.label('sdmil')
+    sdv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'sdfree'), fb.dyn(owner))
+    fb.op('JNull', reg=sdv, offset='nosd')
+    sdq = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=sdq, src=sdv)
+    fb.op('Sub', dst=sdq, a=b.field(_state(fb, b, cx), 'time'), b=sdq)
+    fb.op('JSGt', a=sdq, b=b.const('f64', SD_FRESH), offset='nosd')
+    fb.op('Add', dst=ext, a=ext, b=b.const('i32', SD_ZONES))
+    fb.label('nosd')
     fb.op('JSLte', a=ext, b=b.const('i32', 0), offset='end')
     z = b.call('ent.Entity.get_zone', 1)
     fb.op('JNull', reg=z, offset='end')
@@ -758,6 +781,9 @@ def strat_levers(cx, new_ids):
     g0 = fb.try_()
     fb.op('JNull', reg=1, offset='mk')
     fb.op('JNull', reg=2, offset='mk')
+    # any siege kind from these callers: map `mscan` (a military target scan: the Supply Drop reach applies, not to
+    # Underworld HQ placement or building scores, which call getSiegeableVillages too)
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'mscan'), fb.dyn(2), fb.dyn(b.field(_state(fb, b, cx), 'time')))
     fb.op('JNotEq', a=b.call('String.__compare', 1, fb.dyn(fb.string('Annex'))), b=b.const('i32', 0), offset='mk')
     b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'ascan'), fb.dyn(2), fb.dyn(b.field(_state(fb, b, cx), 'time')))
     fb.label('mk')
@@ -768,6 +794,7 @@ def strat_levers(cx, new_ids):
     nd = fb.reg(cx.t('dyn'))
     fb.op('Null', dst=nd)
     b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'ascan'), fb.dyn(2), nd)
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'mscan'), fb.dyn(2), nd)
     fb.label('um')
     fb.end_try(g1)
     fb.op('Ret', ret=res)

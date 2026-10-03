@@ -275,7 +275,7 @@ def build_own(cx, pw):
 def build_free(cx, pw, min_life=MIN_LIFE, min_supply=MIN_SUPPLY, resupply_ok=False, patrol_ok=True):
     """aimod_free(a, orders): may join a hunt (alive, controllable, combat army (not a harvester: Fremen harvesters
     are armies with power, moved by direct commands, not orders), life and supply >= 90%, and in no order except
-    Patrol). Busy = in any non-Patrol order of `orders` (Army.aiOrder is not set for hunt orders),
+    Patrol). Busy = in any non-Patrol order of `orders` (scanned: Unit.aiOrder is never maintained),
     so Resupply/Discovery/hunts/sieges keep their armies (healing comes first, policy §5).
     Variant (raid): other life / supply floors, and a Resupply order doesn't count as busy (a raid that refills
     supply beats walking home, when the supply budget allows it: aimod_raidsup).
@@ -316,16 +316,9 @@ def build_free(cx, pw, min_life=MIN_LIFE, min_supply=MIN_SUPPLY, resupply_ok=Fal
     idx = fb.reg(cx.t('i32'))
     patrol = b.const('i32', PATROL)
     resupply = b.const('i32', RESUPPLY) if resupply_ok else None
-    o = b.field(0, 'aiOrder')
-    fb.op('JNull', reg=o, offset='orders')
-    fb.op('EnumIndex', dst=idx, value=b.field(o, 'type'))
-    if resupply_ok:
-        fb.op('JEq', a=idx, b=resupply, offset='orders')
-    if patrol_ok:
-        fb.op('JNotEq', a=idx, b=patrol, offset='no')
-    else:
-        fb.op('JAlways', offset='no')
-    fb.label('orders')
+    # busy = in an order of `orders` (never Unit.aiOrder: written only on controller start / save load, so null all
+    # match and stale after a load, where it kept every army of a saved order busy for good); null orders = the
+    # caller's own order units (hunt objective check): no order test
     fb.op('JNull', reg=1, offset='yes')
     n = b.field(1, 'length')
     i = b.const('i32', 0)
@@ -522,7 +515,8 @@ def build_supok(cx):
 
 
 def build_raidsup(cx):
-    """aimod_raidsup(a, d_to, d_home) -> a can raid a village d_to away that lies d_home from our land: it arrives
+    """aimod_raidsup(a, d_to, d_home) -> a can raid a village d_to away that lies d_home from our land (a free Supply
+    Drop, rules/sdrop.py: non-mech armies need only SUP_RESERVE on arrival and get SD_REFILL more): it arrives
     with >= RAID_ARRIVE supply (supply - SUP_U x d_to; fighting the militia drains too), occupying doesn't
     drain (Army.isInHostileZone is false in occupation range), a finished pillage refills OCC_REFILL x max
     (data Army_Supply_Resupply_OccupationRatio), and then it still has the budget home (SUP_U x d_home +
@@ -540,9 +534,30 @@ def build_raidsup(cx):
     fb.op('Mul', dst=q, a=1, b=su)
     fb.op('Sub', dst=arrive, a=b.call('ent.Army.get_supply', 0), b=q)
     fb.op('Mov', dst=q, src=_ratio(fb, b, RAID_ARRIVE))
+    # a free Supply Drop (rules/sdrop.py map `sdfree`, seen within SD_FRESH s) covers the militia fight of a non-mech
+    # army: it only needs the reserve on arrival; sdrop then locks the drop to this raid
+    sdok = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=sdok, value=False)
+    fb.op('JTrue', cond=b.call('ent.Unit.isMechanical', 0), offset='sdno')
+    ae = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=ae, src=0)
+    own = b.call('ent.Entity.get_owner', ae)
+    fb.op('JNull', reg=own, offset='sdno')
+    seen = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'sdfree'), fb.dyn(own))
+    fb.op('JNull', reg=seen, offset='sdno')
+    ts = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=ts, src=seen)
+    fb.op('Sub', dst=ts, a=b.field(_state(fb, b, cx), 'time'), b=ts)
+    fb.op('JSGt', a=ts, b=b.const('f64', SD_FRESH), offset='sdno')
+    fb.op('Mov', dst=q, src=_ratio(fb, b, SUP_RESERVE))
+    fb.op('Bool', dst=sdok, value=True)
+    fb.label('sdno')
     fb.op('JSLt', a=arrive, b=q, offset='end')
     fb.op('Mul', dst=q, a=ms, b=_ratio(fb, b, OCC_REFILL))
     fb.op('Add', dst=arrive, a=arrive, b=q)
+    fb.op('JFalse', cond=sdok, offset='sdnr')
+    fb.op('Add', dst=arrive, a=arrive, b=b.const('f64', SD_REFILL))  # the drop refills during the pillage
+    fb.label('sdnr')
     fb.op('JSLte', a=arrive, b=ms, offset='capped')
     fb.op('Mov', dst=arrive, src=ms)
     fb.label('capped')
@@ -920,6 +935,15 @@ def build_defend(cx, sieged, helpers, threat, neutral, own, cover, terrain):
         fb.op('Call2', dst=hq, fun=terrain, arg0=0, arg1=b.call('ent.Entity.get_zone', he))
         fb.op('Mul', dst=hm, a=hm, b=hq)
         fb.op('Mov', dst=hl, src=_ratio(fb, b, DEF_HOPE_IN))
+        # committed by the rally within RALLY_COOL: hold the plan down to DEF_HOPE_COMMIT (policy §1.5)
+        cmv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rlyc'), fb.dyn(he))
+        cmn = _uid('cmn')
+        fb.op('JNull', reg=cmv, offset=cmn)
+        fb.op('SafeCast', dst=hq, src=cmv)
+        fb.op('Sub', dst=hq, a=b.field(_state(fb, b, cx), 'time'), b=hq)
+        fb.op('JSGt', a=hq, b=b.const('f64', RALLY_COOL), offset=cmn)
+        fb.op('Mov', dst=hl, src=_ratio(fb, b, DEF_HOPE_COMMIT))
+        fb.label(cmn)
         dv = b.call('haxe.ds.ObjectMap.get', dhl, fb.dyn(he))  # hopeless at this time, kept while re-judged
         fb.op('JNull', reg=dv, offset=lin)
         fb.op('SafeCast', dst=hq, src=dv)

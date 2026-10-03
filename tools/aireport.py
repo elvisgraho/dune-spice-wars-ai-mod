@@ -477,7 +477,7 @@ def summarize(events, faction=None, all_orders=False):
             rallies.append(e)
         elif k in ('gather', 'stage'):
             gathers.append(e)
-        elif k in ('treaty', 'patrol', 'turret', 'tveto', 'aring', 'pkeep', 'odead', 'okeep', 'fpeace', 'pannex', 'uhqcap',
+        elif k in ('treaty', 'patrol', 'turret', 'tveto', 'aring', 'pkeep', 'odead', 'okeep', 'fpeace', 'pannex', 'pagate', 'sdrop', 'airpick', 'rejoin', 'dall', 'uhqcap',
                    'uhqres', 'uhqp', 'uhqx', 'dmz', 'sreach', 'wsteer', 'wveto', 'afield', 'afveto', 'aagate', 'undeploy', 'bkeep', 'tkeep', 'tdem'):
             standoff.append(e)
         elif k in ('wflee', 'weaten', 'dstep', 'whold', 'hrun', 'spos', 'unstick', 'keepcap', 'tension', 'hride', 'rride'):
@@ -686,6 +686,18 @@ def summarize(events, faction=None, all_orders=False):
                            + (f" cap{e.get('cap')} r{e.get('r')} M{kpw(e.get('M'))} E{kpw(e.get('E'))}" if e.get('act') == 'war' else ''))
             elif e['e'] == 'pannex':
                 out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} pannex {ent(e.get('tgt'))[:22]} inf{num(e.get('inf'), 0)} r{e.get('r')}")
+            elif e['e'] == 'dall':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} dall {ent(e.get('s'))[:22]} n{e.get('n')} (committed: Defense all-in)")
+            elif e['e'] == 'rejoin':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} rejoin {ent(e.get('tgt'))[:22]} {ent(e.get('a'))[:18]} d{e.get('d')} pr{e.get('pr')} n{e.get('n')} (nobody occupied: ArmySiege re-sent)")
+            elif e['e'] == 'airpick':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} airpick {ent(e.get('tgt'))[:22]} n{e.get('n')} sim{e.get('sim')} (flyers-only pick emptied)")
+            elif e['e'] == 'pagate':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} pagate {ent(e.get('tgt'))[:22]} (vanilla peaceful annex refused)")
+            elif e['e'] == 'sdrop':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} sdrop {e.get('act')} {e.get('why') or ''} "
+                           f"{ent(e.get('tgt') or e.get('a'))[:22]} sa{e.get('sa')} arr{e.get('arr')} n{e.get('n')} "
+                           f"sup{e.get('sup')} land{e.get('land')} pw{kpw(e.get('pw'))}")
             elif e['e'] == 'patrol':
                 out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} patrol {ent(e.get('s'))[:22]:<22} "
                            f"{ent(e.get('a'))[:20]} n{e.get('n')} h{kpw(e.get('h'))} m{kpw(e.get('m'))}")

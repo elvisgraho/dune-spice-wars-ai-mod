@@ -124,7 +124,7 @@ Repeater Node makes the army fight tethered away from nodes (D: always tethered,
 
 ## Operation priorities
 
-Slots: 3 by default (W). "V" = vanilla can launch it (hand-written targeting), "O" = only inside our own siege orders, "N" = no AI launch path (needs our code, C17). Supply Drop (V) is the universal first pick for non-mech armies; vanilla weights it only for the Military AI type (D aiWeight 5), so it isn't guaranteed.
+Slots: 3 by default (W). "V" = vanilla can launch it (hand-written targeting), "O" = only inside our own siege orders, "N" = no AI launch path (needs our code, C17). Supply Drop is the universal first pick for non-mech armies; data now weights it 5 for every AI type, and only our `sdrop` rule launches it (vanilla's targeting wasted it: REVERSING "Supply Drop").
 
 | Faction | 1st | 2nd | 3rd | Siege / catch-up swap | Hold swap |
 |---|---|---|---|---|---|

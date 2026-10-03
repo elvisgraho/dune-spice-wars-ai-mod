@@ -2,6 +2,7 @@
 (Army.raid: they raid our villages, and armies next to them ignored them) near our land or in contact of our armies
 (Military ArmyFight orders on an AIEntityGroup). Start pass every START s, abort / engage pass every CHECK s."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
+from rules.worm import _move_to
 
 
 def _log_hunt(fb, b, cx, helpers, fac, act, why, tgt, h, m, extra):
@@ -510,6 +511,13 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('JNull', reg=kz, offset='kdone')
     fb.op('JNotEq', a=b.field(kz, 'owner'), b=pf, offset='kdone')
     fb.op('JFalse', cond=b.call('ent.Unit.isMoving', core), offset='kdone')  # standing and fighting: finish it
+    # on it (within CATCH_R) at ENTER x (threat + cover) / terrain: a fight, not a run home (Smugglers' 365k vs 133k
+    # in contact at Tabdalus, which Fremen had just annexed: its zone turned theirs mid-fight, aborted `chase` at dn 9)
+    fb.op('JSGt', a=need, b=b.const('f64', CATCH_R), offset='krun')
+    fb.op('Mul', dst=q, a=h, b=enter)
+    fb.op('SDiv', dst=q, a=q, b=tf)
+    fb.op('JSGte', a=m, b=q, offset='kdone')
+    fb.label('krun')
     kn, kj = b.field(mem, 'length'), fb.reg(cx.t('i32'))
     fb.op('Mov', dst=kj, src=zi)
     b.loop_head('kill')
@@ -549,10 +557,49 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     # LOCAL of the core (+ our cover) pass the entry test there (ENTER x threat / terrain), the order moves on to
     # Engage: everyone attacks now, the stragglers walk straight in (vanilla's own stall path does the same)
     fb.label('go')
+    # ring: a contest stops the capture only from inside the village radius + Siege_Occupation_Distance 20 (code:
+    # updateOccupationContenders); fighting the besiegers from weapon range outside it leaves the progress running.
+    # While the occupation advances uncontested, every order army within LOCAL of the village and not fighting
+    # steps to RING_IN inside its radius, on its own side; vanilla / micro take it from there
+    fb.op('JNull', reg=cv, offset='noring')
+    fb.op('JSLte', a=b.field(o, 'phase'), b=b.const('i32', REGROUP), offset='noring')
+    rv = b.cast(cv, 'ent.Structure')
+    fb.op('JNull', reg=rv, offset='noring')
+    rsg = b.field(rv, 'siege')
+    fb.op('JNull', reg=rsg, offset='noring')
+    fb.op('JTrue', cond=b.call('ent.comp.SiegeComponent.isOccupationContested', rsg), offset='noring')
+    fb.op('JSLte', a=b.call('ent.comp.SiegeComponent.getOccupationActionProgress', rsg), b=zero, offset='noring')
+    rr, rd, rx, ry = (fb.reg(cx.t('f64')) for _ in range(4))
+    fb.op('Mov', dst=rr, src=b.call('ent.Entity.get_radius', rv))
+    ur = _army_loop(fb, b, units, un, j, 'ring', 'noring')
+    fb.op('JTrue', cond=b.call('ent.Entity.isFighting', ur), offset='ring')
+    fb.op('Mov', dst=rd, src=b.call('ent.Entity.getDistTo', ur, rv))
+    fb.op('JSGt', a=rd, b=local, offset='ring')
+    fb.op('Add', dst=q, a=rr, b=b.const('f64', RING_IN))
+    fb.op('JSLte', a=rd, b=q, offset='ring')  # already inside
+    fb.op('JSLte', a=rd, b=zero, offset='ring')
+    # the point rr x RING_K from the village centre towards the army
+    fb.op('Mul', dst=q, a=rr, b=_ratio(fb, b, RING_K))
+    fb.op('SDiv', dst=q, a=q, b=rd)
+    fb.op('Sub', dst=rx, a=b.field(ur, 'posx'), b=b.field(rv, 'posx'))
+    fb.op('Mul', dst=rx, a=rx, b=q)
+    fb.op('Add', dst=rx, a=rx, b=b.field(rv, 'posx'))
+    fb.op('Sub', dst=ry, a=b.field(ur, 'posy'), b=b.field(rv, 'posy'))
+    fb.op('Mul', dst=ry, a=ry, b=q)
+    fb.op('Add', dst=ry, a=ry, b=b.field(rv, 'posy'))
+    _move_to(fb, b, cx, ur, rx, ry, fac)
+    _log_hunt(fb, b, cx, helpers, fac, 'ring', None, ur, h, m, {'d': rd, 'r': rr})
+    fb.op('JAlways', offset='ring')
+    fb.label('noring')
     fb.op('JNotEq', a=b.field(o, 'phase'), b=b.const('i32', REGROUP), offset='ord')
     fb.op('Mov', dst=q, src=tm)
     ug = _army_loop(fb, b, units, un, j, 'gu', 'gudone')
+    # a contest (map `hcon`) counts its whole force, sized for it at start: the capture runs while vanilla Regroup
+    # gathers in place (Smugglers' 11 armies at Tabdalus 16:52-17:15, nearest still 227 away; contact 4 s before
+    # the capture ended)
+    fb.op('JNotNull', reg=cv, offset='gall')
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', ug, core), b=local, offset='gu')
+    fb.label('gall')
     fb.op('Call1', dst=p, fun=pw, arg0=ug)
     fb.op('Add', dst=q, a=q, b=p)
     fb.op('JAlways', offset='gu')

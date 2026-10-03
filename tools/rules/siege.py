@@ -97,7 +97,7 @@ def build_turret_stats(cx, cover, silence, threat_stats, new_ids):
 def _recent_launch(fb, b, cx, s_e, t, recent):
     """Jump to `recent` if vanilla launched a siege on s_e less than its block ago (map 'alaunch', set by the
     tryArmyAction wrapper; block = map 'ablk', RETRY doubling up to RETRY_MAX for a target relaunched right after
-    its block ran out)."""
+    its block ran out; at least UNREACH_T when its last order died in Waiting: out of supply reach)."""
     last = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'alaunch'), fb.dyn(s_e))
     old = _uid('old')
     fb.op('JNull', reg=last, offset=old)
@@ -109,15 +109,25 @@ def _recent_launch(fb, b, cx, s_e, t, recent):
     fb.op('JNull', reg=bv, offset=old + 'b')
     fb.op('SafeCast', dst=bl, src=bv)
     fb.label(old + 'b')
+    # out of reach (common._unreach): at least UNREACH_T from that launch
+    chk = old + 'c'
+    _unreach(fb, b, cx, s_e, t, old + 'u')
+    fb.op('JAlways', offset=chk)
+    fb.label(old + 'u')
+    fb.op('JSGte', a=bl, b=b.const('f64', UNREACH_T), offset=chk)
+    fb.op('Mov', dst=bl, src=b.const('f64', UNREACH_T))
+    fb.label(chk)
     fb.op('JSLt', a=lf, b=bl, offset=recent)
     fb.label(old)
 
 
-def build_ddclean(cx, strict=False):
+def build_ddclean(cx, strict=False, threat=None):
     """aimod_ddclean(fac, zone) -> true when fac can gain deep deserts by surrounding them (attribute DD_ATB, or kind
     Fremen before it) and the zone borders an unowned deep desert that is an uncontested ring in progress: one of its
     neighbours is already ours, no other faction's main-base zone borders it, and every neighbour with a village
-    still missing (the zone itself excluded) is neutral and farther than DD_BASE_R from other factions' main bases.
+    still missing (the zone itself excluded) is neutral and farther than DD_BASE_R from other factions' main bases,
+    within supply reach (common._unreach) and without an at-war stack at it (aimod_threat within LOCAL, when built
+    with threat): an unfavourable ring is dropped, not pursued at all costs (user).
     Used by raid / the pillage press (never pillage such a village: Devastated, cost doubled).
     strict=True: aimod_ddhold, the Annex hold's test: the attribute itself (before it a ring yields nothing) and at
     most DD_HOLD_MISS villages missing besides the zone (a far-off ring doesn't freeze every other Annex)."""
@@ -184,6 +194,15 @@ def build_ddclean(cx, strict=False):
     mv = b.call('ent.Zone.getVillage', mz)
     fb.op('JNull', reg=mv, offset='e')  # no village: not counted by updateOwner
     fb.op('JNotNull', reg=mo, offset='d')  # another faction holds a missing neighbour: contested
+    # not favourable: a missing neighbour out of supply reach (our last order on it died in Waiting) or with an at-war
+    # stack at / heading to it -> no ring in progress there (the hold releases, raids may take it)
+    mvu = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=mvu, src=mv)
+    _unreach(fb, b, cx, mvu, b.field(_state(fb, b, cx), 'time'), 'd')
+    if threat is not None:
+        thq = fb.reg(cx.t('f64'))
+        fb.op('Call3', dst=thq, fun=threat, arg0=0, arg1=mvu, arg2=b.const('f64', LOCAL))
+        fb.op('JSGt', a=thq, b=b.const('f64', 0), offset='d')
     fb.op('JNull', reg=facs, offset='miss')
     mve = fb.reg(cx.t('ent.Entity'))
     fb.op('Mov', dst=mve, src=mv)
@@ -238,8 +257,9 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     per one within DD_BASE_R of another faction's main base; 0 when another faction's main base zone borders it;
     x DD_LINK when the candidate borders none of our non-deep-desert zones (reaching it means crossing desert);
     then + DD_ADD x best chance x w (x DD_LINK, x cmin / cost): a flat bonus like ANNEX_SPECIAL. floor ANNEX_FLOOR.
-    Focus ring: fewest villages missing (a missing one within DD_BASE_R of another faction's main base counts twice),
-    then fewest hops. Logs `acand` per candidate (v0, hops, sp, cf, cen, dd, c, cmin, s) once per ASCORE_T per faction.
+    Focus ring: lowest rank = villages missing (one within DD_BASE_R of another faction's main base or with an at-war
+    stack at it, aimod_threat within LOCAL, counts twice) + hops from our main base; the nearer on a tie. A missing
+    village under at-war threat also halves the ring's chance (DD_ENEMY), like one held by another faction. Logs `acand` per candidate (v0, hops, sp, cf, cen, dd, c, cmin, s) once per ASCORE_T per faction.
     Top 3: when the best scored is unaffordable now (AIController.getMissingResources of its cost at priority 3 non-empty)
     and the 2nd or 3rd is affordable, the unaffordable ones above it get 0.99 / 0.98 x its score (log `aswap` from, to,
     s); none affordable: vanilla reserves Authority and waits on the best, for ASWAP_WAIT s at most (map `aswt` faction
@@ -325,7 +345,7 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JNotEq', a=b.call('String.__compare', kd, fb.dyn(fb.string('Fremen'))), b=zi, offset='an_dw')
     fb.op('Mov', dst=ddw, src=_ratio(fb, b, DD_W_PRE))
     fb.label('an_dw')
-    # the ring we work on (fewest villages missing, then fewest hops: see an_hok) among unowned deep deserts next to a village that no
+    # the ring we work on (lowest rank = villages missing + hops: see an_hok) among unowned deep deserts next to a village that no
     # other faction's main base borders and whose missing villages are all neutral (a held one stalls the ring: it
     # must not halve a clean one); tie: fewest villages missing; the others count x DD_FAR (one ring at a time, not
     # two half-done). No such desert: no focus penalty (hmin 999)
@@ -334,7 +354,10 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('Null', dst=gnull)
     hmin, hz = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
     fb.op('Mov', dst=hmin, src=b.const('i32', 999))
-    mmin, hmis = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))  # tie on hops: fewest villages still missing
+    mmin, hmis = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))  # mmin = the focus ring's rank (an_hok)
+    hthr = fb.reg(cx.t('f64'))
+    threat = helpers['threat']
+    local_r = b.const('f64', LOCAL)
     fb.op('Mov', dst=mmin, src=big)
     fb.op('JSLte', a=ddw, b=zero, offset='an_hm')
     facs0 = b.cast(fb.get(_state(fb, b, cx), 'factions', 'array'), 'hl.types.ArrayObj')
@@ -361,7 +384,6 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JFalse', cond=b.call('ent.Zone.isDeepDesert', hdz), offset='an_hw')
     fb.op('JEq', a=b.field(hdz, 'owner'), b=fac, offset='an_hw')
     fb.op('Call3', dst=hz, fun=gdb.findex.value, arg0=hdz, arg1=fac, arg2=gnull)
-    fb.op('JSGt', a=hz, b=hmin, offset='an_hw')
     hdn = b.field(hdz, 'neighbors')
     fb.op('JNull', reg=hdn, offset='an_hw')
     fb.op('Mov', dst=hmis, src=zero)
@@ -382,6 +404,13 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JNull', reg=facs0, offset='an_hx')
     fb.op('Mov', dst=hvv, src=b.cast(b.call('ent.Zone.getVillage', hmz), 'ent.Entity'))
     fb.op('JNull', reg=hvv, offset='an_hx')
+    _unreach(fb, b, cx, hvv, now, 'an_hw')  # a missing village out of supply reach: this ring can't close, no focus
+    # contested: an at-war stack at (or heading to) it counts one more (Fremen's near ring stalled on Aish-Al'nit, 100
+    # from Tabr, while Smugglers' 9 armies stood 216-360 from it; vanilla wanted 12 armies there)
+    fb.op('Call3', dst=hthr, fun=threat, arg0=fac, arg1=hvv, arg2=local_r)
+    fb.op('JSLte', a=hthr, b=zero, offset='an_hnc')
+    fb.op('Add', dst=hmis, a=hmis, b=one_f)
+    fb.label('an_hnc')
     fb.op('Mov', dst=k5, src=zi)
     b.loop_head('an_hf')
     fb.op('JSGte', a=k5, b=b.field(facs0, 'length'), offset='an_hx')
@@ -401,14 +430,19 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('Add', dst=hmis, a=hmis, b=one_f)
     fb.op('JAlways', offset='an_hx')
     fb.label('an_hok')
-    # the most complete ring first (fewest villages missing), then the nearest: a ring two villages from done across
-    # the map beats an empty one next door
-    fb.op('JSLt', a=hmis, b=mmin, offset='an_hset')
-    fb.op('JSGt', a=hmis, b=mmin, offset='an_hw')
+    # rank = villages missing (one near another faction's main base or under at-war threat counts twice) + hops from
+    # our main base: overall the cheapest ring to close, the nearer one on a tie (user: Fremen worked on a ring whose
+    # far end was contested while a nearer desert was the better choice). Every desert is ranked (no order-dependent
+    # pruning by hops)
+    hzf = fb.reg(cx.t('f64'))
+    fb.op('ToSFloat', dst=hzf, src=hz)
+    fb.op('Add', dst=hzf, a=hzf, b=hmis)
+    fb.op('JSLt', a=hzf, b=mmin, offset='an_hset')
+    fb.op('JSGt', a=hzf, b=mmin, offset='an_hw')
     fb.op('JSGte', a=hz, b=hmin, offset='an_hw')
     fb.label('an_hset')
     fb.op('Mov', dst=hmin, src=hz)
-    fb.op('Mov', dst=mmin, src=hmis)
+    fb.op('Mov', dst=mmin, src=hzf)
     fb.op('JAlways', offset='an_hw')
     fb.label('an_hm')
     facs = b.cast(fb.get(_state(fb, b, cx), 'factions', 'array'), 'hl.types.ArrayObj')
@@ -777,6 +811,16 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JNull', reg=mo, offset='an_nown')
     fb.op('Mul', dst=con, a=con, b=den)
     fb.label('an_nown')
+    # an at-war stack at (or heading to) the missing village: chance x DD_ENEMY, counts twice in the focus measure
+    mvt = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=mvt, src=mv)
+    _unreach(fb, b, cx, mvt, now, 'an_d')  # a missing village out of supply reach: the ring adds nothing (user: no
+    # deep desert at all costs; Fremen cycled on Alifgah across the desert instead of expanding)
+    fb.op('Call3', dst=hthr, fun=threat, arg0=fac, arg1=mvt, arg2=local_r)
+    fb.op('JSLte', a=hthr, b=zero, offset='an_ncon')
+    fb.op('Mul', dst=con, a=con, b=den)
+    fb.op('Add', dst=mx2, a=mx2, b=one_f)
+    fb.label('an_ncon')
     # within DD_BASE_R of another faction's main base
     fb.op('JNull', reg=facs, offset='an_e')
     fb.op('Mov', dst=k3, src=zi)
@@ -802,8 +846,36 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JAlways', offset='an_e')  # once per missing neighbour
     fb.label('an_ed')
     fb.op('Add', dst=miss, a=miss, b=one_f)
+    # the candidate's own extras, as the focus measure counts them for every missing village (the loop above skips
+    # its zone): an at-war stack at it, and within DD_BASE_R of another faction's main base (once)
+    fb.op('Call3', dst=hthr, fun=threat, arg0=fac, arg1=se, arg2=local_r)
+    fb.op('JSLte', a=hthr, b=zero, offset='an_scn')
+    fb.op('Add', dst=mx2, a=mx2, b=one_f)
+    fb.label('an_scn')
+    fb.op('JNull', reg=facs, offset='an_sbd')
+    fb.op('Mov', dst=k3, src=zi)
+    b.loop_head('an_sf')
+    fb.op('JSGte', a=k3, b=b.field(facs, 'length'), offset='an_sbd')
+    sof = b.cast(b.call('hl.types.ArrayObj.getDyn', facs, k3), 'ent.Faction')
+    fb.op('Incr', dst=k3)
+    fb.op('JNull', reg=sof, offset='an_sf')
+    fb.op('JEq', a=sof, b=fac, offset='an_sf')
+    smbs = b.field(sof, 'mainBases')
+    fb.op('JNull', reg=smbs, offset='an_sf')
+    fb.op('Mov', dst=k4, src=zi)
+    b.loop_head('an_sg')
+    fb.op('JSGte', a=k4, b=b.field(smbs, 'length'), offset='an_sf')
+    smb = b.cast(b.call('hl.types.ArrayObj.getDyn', smbs, k4), 'ent.Entity')
+    fb.op('Incr', dst=k4)
+    fb.op('JNull', reg=smb, offset='an_sg')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', se, smb), b=b.const('f64', DD_BASE_R), offset='an_sg')
+    fb.op('Add', dst=mx2, a=mx2, b=one_f)
+    fb.label('an_sbd')
     # not the focus ring (more villages missing, or as many but more hops; the focus measure: near-base ones twice)
     fb.op('Add', dst=mx2, a=mx2, b=miss)
+    hzc = fb.reg(cx.t('f64'))
+    fb.op('ToSFloat', dst=hzc, src=hz)
+    fb.op('Add', dst=mx2, a=mx2, b=hzc)  # the focus rank (an_hok): missing + hops
     fb.op('JSLt', a=mx2, b=mmin, offset='an_dnear')
     fb.op('JSGt', a=mx2, b=mmin, offset='an_dfar')
     fb.op('JSLte', a=hz, b=hmin, offset='an_dnear')
@@ -932,8 +1004,8 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JTrue', cond=hold, offset='an_hold')
     arms, an = _my_armies(fb, b, fac, 'an_h3')
     ar = _army_loop(fb, b, arms, an, j, 'an_o', 'an_h3')
-    ao = b.field(ar, 'aiOrder')
-    fb.op('JNull', reg=ao, offset='an_o')
+    ao = fb.reg(cx.t('logic.ai.AIOrder'))
+    _order_of(fb, b, cx, fac, ar, ao, 'an_o')  # its live order (Unit.aiOrder is never maintained)
     att = b.field(ao, 'targetType')
     fb.op('JNull', reg=att, offset='an_o')
     aix = fb.reg(cx.t('i32'))
@@ -1130,7 +1202,7 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     _log_ev(fb, b, cx, helpers, 'ascore', [('f', fb.get(fac, 'kind')), ('tgt', best), ('s', bs), ('c', bc),
                                            ('cmin', cmin), ('vb', vb), ('v0', v0), ('vs', vs), ('n', n),
                                            ('dd%', bdd), ('hold', nh), ('rt', brest), ('rs', brs),
-                                           ('rdd%', brdd), ('ddh', hmin)])
+                                           ('rdd%', brdd), ('ddh', hmin), ('ddr', mmin)])
 
 
 def build_scoring(cx, new_ids, helpers):
@@ -1722,7 +1794,8 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     # 4. peaceful annex fallback (Atreides' PeacefullyAnnex ability): an Annex whose army launch above created no order
     # on the target (NoAvailableArmy / NotEnoughArmies / ArmyNotStrongEnough: Atreides' affordable Annexes ended
     # NoAvailableArmy x25 / stuck x21 while its armies held the Nundad standoff) is done by the ability when it can be
-    # used on the target, we own >= PANNEX_MIN_VILLAGES villages and Influence >= PANNEX_INF. Armies first: they
+    # used on the target and `_pannex_ok` passes (>= PANNEX_MIN_VILLAGES villages, Influence >= PANNEX_INF, target
+    # >= PANNEX_HOPS zones from our main base). Armies first: they
     # annex for free, and peaceful-first spent the opening's scarce Influence while armies idled. Vanilla's own
     # peaceful check (ResourceManager) rarely fires. Log `pannex`. The gauge gets Success after vanilla's failure
     # result (Annex has no onFailure blocks); the Ret comes after the trap (a jump out of it leaves it installed).
@@ -1732,13 +1805,11 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     fb.op('JNotEq', a=b.call('String.__compare', 1, fb.dyn(fb.string('Annex'))), b=b.const('i32', 0), offset='pa_no')
     pfac = b.field(b.field(0, 'controller'), 'owner')
     fb.op('JNull', reg=pfac, offset='pa_no')
-    fb.op('JSLt', a=b.field(b.call('ent.Faction.getVillages', pfac), 'length'), b=b.const('i32', PANNEX_MIN_VILLAGES),
-          offset='pa_no')
-    pinf = fb.reg(cx.t('f64'))
-    fb.op('Call2', dst=pinf, fun=cx.fn('ent.Faction.getResource').findex.value, arg0=pfac, arg1=b.const('i32', RES_INFLUENCE))
-    fb.op('JSLt', a=pinf, b=b.const('f64', PANNEX_INF), offset='pa_no')
     pse = fb.reg(cx.t('ent.Entity'))
     fb.op('Mov', dst=pse, src=tgt)
+    _pannex_ok(fb, b, cx, pfac, pse, 'pa_no')  # villages, Influence, not next to our main base
+    pinf = fb.reg(cx.t('f64'))
+    fb.op('Call2', dst=pinf, fun=cx.fn('ent.Faction.getResource').findex.value, arg0=pfac, arg1=b.const('i32', RES_INFLUENCE))
     pords = b.field(b.field(b.field(0, 'controller'), 'aiOrders'), 'orders')
     fb.op('JNull', reg=pords, offset='pa_no')
     pk, pix = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
@@ -2346,6 +2417,67 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
     _log_ev(fb, b, cx, helpers, 'sfloor', [('f', fb.get(ffac, 'kind')), ('tgt', fst), ('n', fn), ('min', fmin)])
     fb.label('fl_done')
     fb.end_try(guard3)
+    # 5. no ground army in the pick (real or simulated): flyers (Unit.isFlying) can't occupy, a ship-only siege stands at
+    # the village for good (Harkonnen's H_Ship at Tab-Al'lon, 8+ min): the nearest ground army of consideredUnits is
+    # added, else the pick is emptied (vanilla waits / recruits), log `airpick`
+    guard5 = fb.try_()
+    fb.op('JNull', reg=res, offset='ap_done')
+    apn, api = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=apn, src=b.field(res, 'length'))
+    fb.op('JSLte', a=apn, b=b.const('i32', 0), offset='ap_done')
+    apa = _army_loop(fb, b, res, apn, api, 'ap_l', 'ap_air')
+    fb.op('JFalse', cond=b.call('ent.Unit.isFlying', apa), offset='ap_done')  # a ground army: fine
+    fb.op('JAlways', offset='ap_l')
+    fb.label('ap_air')
+    # vanilla adds the nearest idle armies first, so a strong ship alone is picked every time: add the nearest ground
+    # army of its own candidates (consideredUnits) instead; empty only when it has none
+    gcu, _ = _vfield(fb, b, 1, 'consideredUnits')
+    fb.op('JNull', reg=gcu, offset='ap_pop0')
+    gca = fb.reg(cx.t('hl.types.ArrayObj'))
+    fb.op('SafeCast', dst=gca, src=fb.dyn(gcu))
+    fb.op('JNull', reg=gca, offset='ap_pop0')
+    ges, _ = _vfield(fb, b, 1, 'enemyStructure')
+    fb.op('JNull', reg=ges, offset='ap_pop0')
+    gst = fb.reg(cx.t('ent.Entity'))
+    fb.op('SafeCast', dst=gst, src=fb.dyn(ges))
+    fb.op('JNull', reg=gst, offset='ap_pop0')
+    gbest, gd = fb.reg(cx.t('ent.Army')), fb.reg(cx.t('f64'))
+    gbd = fb.reg(cx.t('f64'))
+    fb.op('Null', dst=gbest)
+    fb.op('Mov', dst=gbd, src=b.const('f64', 1 << 30))
+    gi = fb.reg(cx.t('i32'))
+    ga = _army_loop(fb, b, gca, b.field(gca, 'length'), gi, 'ap_g', 'ap_gd')
+    fb.op('JNotNull', reg=b.field(ga, 'harvestComponent'), offset='ap_g')
+    fb.op('JTrue', cond=b.call('ent.Unit.isFlying', ga), offset='ap_g')
+    fb.op('JTrue', cond=b.call('hl.types.ArrayObj.contains', res, fb.dyn(ga)), offset='ap_g')
+    fb.op('JSLte', a=b.call('ent.Army.get_maxSupply', ga), b=b.const('f64', 0), offset='ap_gs')
+    fb.op('JSLt', a=b.call('ent.Army.get_supply', ga), b=_ratio(fb, b, SUP_RESERVE), offset='ap_g')
+    fb.label('ap_gs')
+    fb.op('Mov', dst=gd, src=b.call('ent.Entity.getDistTo', ga, gst))
+    fb.op('JSGte', a=gd, b=gbd, offset='ap_g')
+    fb.op('Mov', dst=gbd, src=gd)
+    fb.op('Mov', dst=gbest, src=ga)
+    fb.op('JAlways', offset='ap_g')
+    fb.label('ap_gd')
+    fb.op('JNull', reg=gbest, offset='ap_pop0')
+    b.call('hl.types.ArrayObj.push', res, fb.dyn(gbest))
+    fb.op('JAlways', offset='ap_done')
+    fb.label('ap_pop0')
+    b.loop_head('ap_pop')
+    fb.op('JSLte', a=b.field(res, 'length'), b=b.const('i32', 0), offset='ap_log')
+    b.call('hl.types.ArrayObj.pop', res)
+    fb.op('JAlways', offset='ap_pop')
+    fb.label('ap_log')
+    afac = b.field(b.field(0, 'controller'), 'owner')
+    fb.op('JNull', reg=afac, offset='ap_done')
+    aes, _ = _vfield(fb, b, 1, 'enemyStructure')
+    fb.op('JNull', reg=aes, offset='ap_done')
+    ast = b.cast(fb.dyn(aes), 'ent.Structure')
+    fb.op('JNull', reg=ast, offset='ap_done')
+    _throttle(fb, b, cx, 'airpick', ast, PICK_LOG_T, 'ap_done')
+    _log_ev(fb, b, cx, helpers, 'airpick', [('f', fb.get(afac, 'kind')), ('tgt', ast), ('n', apn), ('sim', fb.dyn(sim))])
+    fb.label('ap_done')
+    fb.end_try(guard5)
     fb.op('Ret', ret=res)
     w = fb.build()
     new_ids.add(w)

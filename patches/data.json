@@ -228,6 +228,25 @@
       "expected": 1,
       "value": -1,
       "why": "Vanilla's siege scan (getSiegeableVillages, closure f40784) drops every village within this many zones of a sandstorm (const >= zone distance). Storms barely touch ground armies (Storm_Army: speed x0.7, armor -3, regen -0.05, cloaked, no worm vibration; Fremen's Reduced variant only cloaks), so Annex / Pillage / Liberate targets vanished for no reason. -1: never excluded."
+    },
+    {
+      "sheet": "mission",
+      "id": "MSupplyDrop",
+      "path": [
+        "aiWeights"
+      ],
+      "expected": [
+        {
+          "value": 5,
+          "aiType": "Military"
+        }
+      ],
+      "value": [
+        {
+          "value": 5
+        }
+      ],
+      "why": "Supply Drop is the universal first operation (strategy ARMORY-OPS) but only the Military AI type weighted it. Weight 5 for every AI type (no aiType = all in HAI.getAiWeight). Vanilla never launches it (rules/sdrop.py sdrop-block); our rule casts it for a far siege / raid or a stranded army."
     }
   ]
 }

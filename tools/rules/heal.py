@@ -55,6 +55,10 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     Stranded: a short army whose supply can't pay the walk to our land (< SUP_WALK x aimod_land) counts as not short
     (no supply penalty, no recall): fleeing would starve it on the way and get it shot in the back, so the plain
     terrain-adjusted balance decides and a fight it is winning is finished (log act `stranded` when that held it).
+    Doomed: a stranded army whose dry stretch home (aimod_land - supply / SUP_WALK) >= DRY_DEATH_D x its health ratio
+    would die walking (0 supply costs up to its whole health per day); when doomed armies hold DOOM_SHARE of our power
+    in the fight, the balance is at least DOOM_HOLD: they fight it out (log act `doomed`; user: a far task whose drop
+    ran out must not turn back into death). Trivial / pursuit still end a fight with nothing to win.
     Pursuit: the at-war power within CONTACT of the centroid lost less than PROGRESS in PURSUIT_T s (per warzone,
     measured all the time), none of our armies there is on a Military order and the fight is off our zone: balance
     0. Micro follows a fleeing army at our own speed forever.
@@ -88,8 +92,11 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     zero = b.const('f64', 0)
     fb.op('Mov', dst=tot, src=zero)
     fb.op('Mov', dst=st, src=zero)
-    dm = fb.reg(cx.t('f64'))
+    dm, dd, dry, dlim = (fb.reg(cx.t('f64')) for _ in range(4))
     fb.op('Mov', dst=dm, src=zero)
+    fb.op('Mov', dst=dd, src=zero)
+    doom = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=doom, value=False)
     ent_r, need = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('f64'))
     walk = _ratio(fb, b, SUP_WALK)
     r2 = b.const('f64', FLEE_R * FLEE_R)
@@ -110,8 +117,15 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     fb.op('Mov', dst=ent_r, src=a)
     fb.op('Call2', dst=need, fun=land, arg0=1, arg1=ent_r)
     fb.op('Mul', dst=need, a=need, b=walk)
-    fb.op('JSGte', a=b.call('ent.Army.get_supply', a), b=need, offset='notstr')
+    fb.op('Mov', dst=dry, src=b.call('ent.Army.get_supply', a))
+    fb.op('JSGte', a=dry, b=need, offset='notstr')
     fb.op('Add', dst=dm, a=dm, b=p)
+    # doomed: the stretch it would walk at 0 supply kills it (DRY_DEATH_D x its health ratio)
+    fb.op('Sub', dst=dry, a=need, b=dry)
+    fb.op('SDiv', dst=dry, a=dry, b=walk)
+    fb.op('Mul', dst=dlim, a=b.call('ent.Entity.get_lifeRatio', a), b=b.const('f64', DRY_DEATH_D))
+    fb.op('JSLt', a=dry, b=dlim, offset='sfl')
+    fb.op('Add', dst=dd, a=dd, b=p)
     fb.op('JAlways', offset='sfl')
     fb.label('notstr')
     fb.op('Add', dst=st, a=st, b=p)
@@ -142,6 +156,16 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     fb.op('Sub', dst=sf, a=sf, b=p)
     fb.op('Mul', dst=bal, a=bal, b=sf)
     fb.label('sfend')
+    # doomed armies hold DOOM_SHARE of our power here: no retreat (fleeing starves them on the way); trivial / pursuit
+    # below still end a fight with nothing left to win
+    fb.op('JSLte', a=dd, b=zero, offset='ndoom')
+    fb.op('Mul', dst=p, a=tot, b=_ratio(fb, b, DOOM_SHARE))
+    fb.op('JSLt', a=dd, b=p, offset='ndoom')
+    fb.op('Bool', dst=doom, value=True)
+    hold = _ratio(fb, b, DOOM_HOLD)
+    fb.op('JSGte', a=bal, b=hold, offset='ndoom')
+    fb.op('Mov', dst=bal, src=hold)
+    fb.label('ndoom')
     r = _ratio(fb, b, RETREAT)
     # pursuit: the enemy within CONTACT of the fight loses less than PROGRESS of its power in PURSUIT_T s = we chase an
     # army as fast as we are. Measured per warzone all the time (so the clock keeps running when a hunt ends); acted
@@ -260,6 +284,8 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     fb.op('Mov', dst=act, src=fb.string('hold'))
     fb.op('JSLte', a=dm, b=zero, offset='hold')
     fb.op('Mov', dst=act, src=fb.string('stranded'))
+    fb.op('JFalse', cond=doom, offset='hold')
+    fb.op('Mov', dst=act, src=fb.string('doomed'))  # held in the fight: the way home kills them
     fb.label('hold')
     fb.op('JSGt', a=bal, b=r, offset='act')
     fb.op('Mov', dst=act, src=fb.string('trivial'))  # no mission, nothing worth fighting
@@ -299,9 +325,8 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     fb.op('JSGt', a=ex, b=b.const('f64', FLEE_R * FLEE_R), offset='npl')
     fb.op('Call2', dst=ok, fun=mission, arg0=1, arg1=a5)
     fb.op('JTrue', cond=ok, offset='end')  # a hunt / siege / raid there: its own rules decide
-    o5 = b.field(a5, 'aiOrder')
-    fb.op('JNull', reg=o5, offset='npl')
-    # Army.aiOrder can still hold an ended order (stop() empties its units): only a live one counts
+    o5 = fb.reg(cx.t('logic.ai.AIOrder'))
+    _order_of(fb, b, cx, 1, a5, o5, 'npl')  # the live order holding it (Unit.aiOrder is never maintained)
     u5 = b.field(o5, 'units')
     fb.op('JNull', reg=u5, offset='npl')
     fb.op('JSLte', a=b.field(u5, 'length'), b=b.const('i32', 0), offset='npl')
@@ -896,8 +921,9 @@ def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
             fb.op('Int', dst=lvl, ptr=cx.code.add_i32(0).value)
             if args[0] == army_t:
                 fb.op('Mov', dst=me, src=0)
-                o = b.field(0, 'aiOrder')
-                fb.op('JNull', reg=o, offset='ask')
+                mfac = b.call('ent.Entity.get_owner', me)
+                o = fb.reg(cx.t('logic.ai.AIOrder'))
+                _order_of(fb, b, cx, mfac, me, o, 'ask')  # its live order (Unit.aiOrder is never maintained)
                 idx = fb.reg(cx.t('i32'))
                 fb.op('EnumIndex', dst=idx, value=b.field(o, 'type'))
                 fb.op('JNotEq', a=idx, b=b.const('i32', RESUPPLY), offset='ask')
@@ -1056,6 +1082,39 @@ def _defense_extras(cx, helpers, idle, new_ids):
     b.call('hl.types.ArrayObj.splice', cand, b.const('i32', 0), b.field(cand, 'length'))
     fb.op('JAlways', offset='rk_done')
     fb.label('rk_live')
+    # committed by the rally (map `rlyc` within RALLY_COOL): the whole army goes (vanilla's allIn: every considered
+    # army, not just enough for its own estimate: Harkonnen's Eydak commit counted 11 armies, the Defense took 7, the
+    # other 4 were walked back to Rabnih by a Patrol and the defense read even and was conceded 10 s later)
+    cmv2 = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rlyc'), fb.dyn(ale))
+    fb.op('JNull', reg=cmv2, offset='rk_nc')
+    fb.op('SafeCast', dst=rgq, src=cmv2)
+    fb.op('Sub', dst=rgq, a=b.field(_state(fb, b, cx), 'time'), b=rgq)
+    fb.op('JSGt', a=rgq, b=b.const('f64', RALLY_COOL), offset='rk_nc')
+    # ... the army the commit counted: vanilla's idle list has no distance limit (getUnits by life / supply /
+    # priority, pickUnits takes the nearest first and stops at its estimate), all-in would pull every idle army of
+    # the map off other fronts; keep those within RALLY_R of D (the rally's measure)
+    ci = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=ci, src=b.field(cand, 'length'))
+    b.loop_head('rk_cut')
+    fb.op('JSLte', a=ci, b=b.const('i32', 0), offset='rk_cutd')
+    fb.op('Sub', dst=ci, a=ci, b=b.const('i32', 1))
+    cu = b.cast(b.call('hl.types.ArrayObj.getDyn', cand, ci), 'ent.Entity')
+    fb.op('JNull', reg=cu, offset='rk_cut')
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', cu, ale), b=b.const('f64', RALLY_R), offset='rk_cut')
+    b.call('hl.types.ArrayObj.splice', cand, ci, b.const('i32', 1))
+    fb.op('JAlways', offset='rk_cut')
+    fb.label('rk_cutd')
+    aiv, aii = _vfield(fb, b, 1, 'allIn')
+    tb = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=tb, value=True)
+    nb = fb.reg(fb.regs[aiv])
+    fb.op('ToDyn', dst=nb, src=tb)  # Null<Bool>, the way the compiler boxes it
+    fb.op('SetField', obj=1, field=aii, src=nb)
+    owf = b.field(b.field(0, 'controller'), 'owner')
+    fb.op('JNull', reg=owf, offset='rk_nc')
+    _throttle(fb, b, cx, 'dall', ale, 10, 'rk_nc')
+    _log_ev(fb, b, cx, helpers, 'dall', [('f', fb.get(owf, 'kind')), ('s', ale), ('n', b.field(cand, 'length'))])
+    fb.label('rk_nc')
     rdz = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rly'), fb.dyn(b.field(b.field(0, 'controller'), 'owner')))
     fb.op('JNull', reg=rdz, offset='rk_done')
     fb.op('SafeCast', dst=rde, src=rdz)

@@ -7,9 +7,11 @@ danger, and when a structure of ours needs them (raid.py `defend` / `home` split
 
 aimod_relunits(order, annex, keep) -> armies released. Who stays: an army below RELEASE_SUP supply (the pillage refill /
 the captured village resupplies it there), on an Annex also one below RELEASE_LIFE health (it heals at the new
-village), and always the keeper: the weakest permanent ground army (aimod_pw, hasSafeRegen: a temporary one disbands
-and the emptied order is cancelled; the weakest ground one if none is permanent; never a flyer: Unit.isFlying armies
-can't occupy, nothing is released from an order of flyers only). Everyone else is removed from the order
+village), and always the keeper: the weakest permanent ground army occupying the target (Army.occupiedStructure ==
+the order's target: only an army in occupation range holds the capture, and vanilla doesn't re-send an idle order
+army into a village already under our siege; aimod_pw, hasSafeRegen: a temporary one disbands and the emptied order
+is cancelled; the weakest occupying ground one if none is permanent; never a flyer: Unit.isFlying armies can't
+occupy). No occupying ground army found: nothing is released. Everyone else is removed from the order
 (idle: vanilla's Defense / our hunts / raid pick them up). Nothing is released from an order of one army or when all
 need the refill. keep: power (aimod_pw) the staying armies must still hold; an army leaves only while the rest keep at
 least that much (release: 0; raid split: ENTER x the enemy side at the target / terrain: Fremen's Liberate of Arknit,
@@ -22,11 +24,18 @@ orders on a structure in Action with progress > 0 and 2+ armies, when no danger 
 the occupation ends: aimod_threat within max(REACT_R, remaining time (_cap_rem) x CONTEST_SPD) (user: captures take
 long, worth keeping the armies while an enemy army could come; busy armies count at their discounted weight, so any
 enemy army in reach locks the order), neutral raiders there (aimod_neutral) and enemy turret cover (aimod_cover) all
-0; a stalled occupation is never released. Logs `release` (tgt, sa, n released, of). The keeper is protected from
+0; a stalled occupation is never released. Logs `release` (tgt, sa, n released, of).
+Rejoin (same pass, any army count): an occupation under way (progress > 0, or one started in this siege with no
+militia alive and the siege still ours: a frozen capture may lose its progress) where no order army occupies the target
+and none fights: the nearest ground order army gets doAction("ArmySiege", EEntity(target)) (vanilla Action's own
+call; vanilla re-sends it only while the village isn't under our siege, so a capture whose occupier walked off
+froze), at most once per order per REJOIN_T s; logs `rejoin` (tgt, a, d, pr, n). The keeper is protected from
 vanilla picks (heal.py pick-life: the last army of an order in Action). Fails safe: in a trap."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
+from rules.worm import _do_on
 
 RELEASE_CHECK = 5   # s: scan period
+REJOIN_T = 10       # s: at most one rejoin per order this often (the walk in takes a few seconds)
 RELEASE_KINDS = ('Annex', 'Pillage', 'Liberate')  # not sietch / renegade-base strikes: the sietch deploys its
 # harass units mid-strike (SITE_REQ), a thinned force loses to them
 
@@ -43,6 +52,8 @@ def build_relunits(cx, pw):
     fb.op('JNull', reg=units, offset='end')
     un = b.field(units, 'length')
     fb.op('JSLte', a=un, b=one, offset='end')
+    occ_s = b.cast(b.call('logic.ai.AIOrder.getTarget', 0), 'ent.Structure')
+    fb.op('JNull', reg=occ_s, offset='end')
     j = fb.reg(cx.t('i32'))
     p, best, q = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     needy = fb.reg(cx.t('bool'))
@@ -79,6 +90,10 @@ def build_relunits(cx, pw):
     # the keeper must walk: flying armies (ships) can't occupy, a ship left alone stalls the occupation (Harkonnen's
     # Pillage of Tab-Al'lon kept its H_Ship, released the H_Elite at 23%: stuck 8+ min)
     fb.op('JTrue', cond=b.call('ent.Unit.isFlying', a), offset='p1')
+    # ... and it must be the one occupying: only an army in occupation range holds the capture, vanilla re-sends
+    # ArmySiege to idle order armies only while the village isn't under our siege (Smugglers' Annex of Aynno kept an
+    # S_Sneak standing 53 out and released the occupying S_Trooper at 1%: nobody occupied, the capture froze)
+    fb.op('JNotEq', a=b.field(a, 'occupiedStructure'), b=occ_s, offset='p1')
     fb.op('JSGte', a=p, b=best, offset='p1r')
     fb.op('Mov', dst=best, src=p)
     fb.op('Mov', dst=weak, src=a)
@@ -94,7 +109,7 @@ def build_relunits(cx, pw):
     fb.op('JNull', reg=weakr, offset='p1k')
     fb.op('Mov', dst=weak, src=weakr)
     fb.label('p1k')
-    fb.op('JNull', reg=weak, offset='end')  # only flyers: nobody could finish it alone, release none
+    fb.op('JNull', reg=weak, offset='end')  # no ground army occupying it: nobody could finish it alone, release none
     # pass 2, backwards (removeUnit shrinks the list): the keeper and the needy stay, the others go
     fb.op('Mov', dst=j, src=b.field(units, 'length'))
     b.loop_head('p2')
@@ -146,6 +161,7 @@ def build_release(cx, helpers, relunits, threat, neutral, cover):
     no_arr = fb.reg(cx.t('hl.types.ArrayObj'))
     fb.op('Null', dst=no_arr)
     kinds = [(kd, fb.dyn(fb.string(kd))) for kd in RELEASE_KINDS]
+    unf0 = fb.reg(cx.t('f64'))
     fb.op('Mov', dst=k, src=b.field(orders, 'length'))
     b.loop_head('o')
     fb.op('JSLte', a=k, b=b.const('i32', 0), offset='end')
@@ -162,7 +178,8 @@ def build_release(cx, helpers, relunits, threat, neutral, cover):
     units = b.field(o, 'units')
     fb.op('JNull', reg=units, offset='o')
     fb.op('Mov', dst=un, src=b.field(units, 'length'))
-    fb.op('JSLt', a=un, b=b.const('i32', 2), offset='o')
+    fb.op('JSLte', a=un, b=b.const('i32', 0), offset='o')
+    fb.op('ToSFloat', dst=unf0, src=un)
     sa = b.cast(fb.get(o, 'siegeAction'), 'String')
     fb.op('JNull', reg=sa, offset='o')
     fb.op('Bool', dst=anx, value=False)
@@ -181,7 +198,42 @@ def build_release(cx, helpers, relunits, threat, neutral, cover):
     sg = b.field(s, 'siege')
     fb.op('JNull', reg=sg, offset='o')
     fb.op('Mov', dst=pr, src=b.call('ent.comp.SiegeComponent.getOccupationActionProgress', sg))
-    fb.op('JSLte', a=pr, b=zero, offset='o')  # militia fight still on
+    # rejoin also when the progress went back to 0 without an occupier: an occupation started in this siege
+    # (occupationStartTime > 0), no militia alive and the siege is still ours
+    fb.op('JSGt', a=pr, b=zero, offset='rj_go')
+    fb.op('JSLte', a=b.field(sg, 'occupationStartTime'), b=zero, offset='o')  # militia fight still on
+    fb.op('JTrue', cond=b.call('ent.comp.SiegeComponent.hasActiveMilitia', sg), offset='o')
+    fb.op('JNotEq', a=b.field(sg, 'besiegingFaction'), b=fac, offset='o')
+    fb.label('rj_go')
+    # rejoin: nobody of the order occupies the target and nobody fights -> the nearest ground army gets vanilla's
+    # ArmySiege again (vanilla re-sends it only while the village isn't under our siege, so a capture whose occupier
+    # left freezes for good: Aynno 1% with an idle S_Sneak 53 out; Atreides' Gurlon with an A_Elite 35 out)
+    rj, rjd, rjq = fb.reg(cx.t('ent.Army')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Null', dst=rj)
+    fb.op('Mov', dst=rjd, src=b.const('f64', 1 << 30))
+    rji = fb.reg(cx.t('i32'))
+    ra = _army_loop(fb, b, units, un, rji, 'rjl', 'rjd')
+    fb.op('JEq', a=b.field(ra, 'occupiedStructure'), b=s, offset='rj_ok')  # held: carry on with release
+    fb.op('JTrue', cond=b.call('ent.Entity.isFighting', ra), offset='rj_ok')  # a fight there: micro decides
+    fb.op('JTrue', cond=b.call('ent.Unit.isFlying', ra), offset='rjl')
+    fb.op('JNotNull', reg=b.field(ra, 'harvestComponent'), offset='rjl')
+    fb.op('Mov', dst=rjq, src=b.call('ent.Entity.getDistTo', ra, ve))
+    fb.op('JSGte', a=rjq, b=rjd, offset='rjl')
+    fb.op('Mov', dst=rjd, src=rjq)
+    fb.op('Mov', dst=rj, src=ra)
+    fb.op('JAlways', offset='rjl')
+    fb.label('rjd')
+    fb.op('JNull', reg=rj, offset='o')  # nobody can occupy (flyers only): leave it to vanilla
+    _throttle(fb, b, cx, 'rejoin', o, REJOIN_T, 'o')
+    rje = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=rje, src=rj)
+    _do_on(fb, b, cx, rje, 'ArmySiege', ve, fac)
+    _log_ev(fb, b, cx, helpers, 'rejoin', [('f', fb.get(fac, 'kind')), ('tgt', ve), ('a', rje), ('d', rjd), ('pr%', pr),
+                                           ('n', unf0)])
+    fb.op('JAlways', offset='o')
+    fb.label('rj_ok')
+    fb.op('JSLte', a=pr, b=zero, offset='o')  # release: only once the occupation runs
+    fb.op('JSLt', a=un, b=b.const('i32', 2), offset='o')
     # danger: hostile armies that can walk in before the occupation ends (radius = its remaining time x CONTEST_SPD,
     # at least REACT_R: user, captures take long, worth keeping the armies while an enemy army could come; capture
     # speed doesn't depend on the army count), raiders there, enemy guns over it. A stalled occupation keeps all.

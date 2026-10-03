@@ -39,7 +39,7 @@ Hard to beat on its own land; beaten early (poor, few red techs) or by sustained
 - Keep its vetted army: trading it early costs more than for others (worn-army rules; no new rule).
 
 **Overrides / edge cases:**
-- Peaceful annex fails on devastated or hostile-flagged villages and on occupied ones; Influence can run dry in Landsraad-heavy phases. Built: armies first, peaceful only when the army launch fails and from 4 villages owned (Influence scarce in the opening).
+- Peaceful annex fails on devastated or hostile-flagged villages and on occupied ones; Influence can run dry in Landsraad-heavy phases. Built: armies first, peaceful only when the army launch fails, from 4 villages owned (Influence scarce in the opening) and never on a village bordering our main base; vanilla's own peaceful check is held to the same (`pannex-gate`).
 - A neutral village pillaged by anyone is closed to peaceful annex for 20 days (D Devastated): enemies can deny it that way, and so can our own raids (exclude neutral villages for Atreides anyway).
 - Treaty economy has an Authority price: each Research / Trade / Political Agreement costs 10 Authority to propose and -10% Authority production (D `TreatyUpkeep`) unless Jessica is the councillor; an Atreides AI with many treaties and no Jessica is Authority-starved (check against the 28-minute Annex gap).
 - Arrakis Diplomacy disbands rebellions / raids: relevant if R1 lands (a cheap fix for raider sieges near Atreides land).

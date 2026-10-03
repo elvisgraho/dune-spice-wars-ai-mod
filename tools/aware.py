@@ -222,8 +222,9 @@ def build_aware(cx, helpers):
     b.put(e, 'da', b.to_int(best_a))
     fb.op('JNull', reg=near_a, offset='nomine')
     b.put(e, 'na', fb.get(near_a, 'kind'))
-    my_order = b.field(near_a, 'aiOrder')
-    fb.op('JNull', reg=my_order, offset='nomine')
+    from rules.common import _order_of  # local: rules.common imports this module
+    my_order = fb.reg(cx.t('logic.ai.AIOrder'))
+    _order_of(fb, b, cx, fac, near_a, my_order, 'nomine')  # Unit.aiOrder is never maintained
     b.put(e, 'nsa', fb.get(my_order, 'siegeAction'))
     b.put(e, 'nty', fb.get(my_order, 'type'))
     fb.op('JNull', reg=fb.get(my_order, 'targetType'), offset='nomine')
@@ -235,8 +236,8 @@ def build_aware(cx, helpers):
     b.put(e, 'worm', b.call('ent.Zone.getCurrentWormActivity', z))
     b.put(e, 'wt', b.call('ent.Unit.isWormTarget', a))  # a worm has targeted it
     fb.label('nozone')
-    order = b.field(a, 'aiOrder')
-    fb.op('JNull', reg=order, offset='noorder')
+    order = fb.reg(cx.t('logic.ai.AIOrder'))
+    _order_of(fb, b, cx, owner, a, order, 'noorder')
     b.put(e, 'sa', fb.get(order, 'siegeAction'))
     b.put(e, 'ty', fb.get(order, 'type'))
     fb.op('JNull', reg=fb.get(order, 'targetType'), offset='noorder')

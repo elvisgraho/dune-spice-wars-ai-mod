@@ -107,6 +107,9 @@ HOME_RING_R = 250  # a neutral village this close to our active main base, besie
 RENEGADE_R = 150   # aimod_defend: a Renegade_Drop raid army this close to a raider-besieged village = a Takeover
 DEF_HOPE_IN = 1.0  # aimod_defend: skip a defense whose gathered force (all ours within GATHER_R + cover, x terrain) is
 DEF_HOPE_OUT = 1.2 # ... below this x their side there; it counts again at this (hysteresis)
+DEF_HOPE_COMMIT = 0.7  # ... and within RALLY_COOL of a rally commit (map `rlyc`), below this only: the commit decided
+                   # at >= even, a hopeless flip at even 10 s later dropped it (Harkonnen Eydak 8:55 commit 380k vs 312k,
+                   # 9:05 dstop at 362k vs 363k: all armies fled, the 6 freed ones left for an Annex)
 BUNKER_MB = 1.5    # Annex score x this for a neutral village within BUNKER_R of our main base (was a hard redirect:
                    # Fremen took 3 such villages before any deep-desert ring village); lost ones are still redirected
 BUNKER_R = 110     # villages this close to our main base are its bunker (guns reach 80, + a 30 margin; 200 counted
@@ -214,6 +217,9 @@ CAP_EST = 90       # s: hunt contest: an occupation's full length before its pro
 CAP_STALE = 300    # s: a progress record older than this is restarted
 CONTEST_SPD = 6    # units/s: army speed for a contest's arrival time (aw spd 6-8.4)
 CONTEST_SLACK = 10 # s: a contest still starts when it arrives this late (the capture may stall in the fight)
+RING_IN = 10       # contest ring step: an army farther than village radius + this walks in (code: contenders stand within
+                   # radius + Siege_Occupation_Distance 20; edge or centre distance *unverified*: 10 keeps a margin)
+RING_K = 0.5       # ... to the point radius x this from the village centre, on its own side
 ASWAP_WAIT = 120   # s: Annex value: nothing affordable in the top 3 this long -> the best affordable candidate anywhere
 RES_INFLUENCE = 10  # resource sheet index of Influence (ent.Faction.getResource)
 RES_AUTHORITY = 6   # resource sheet index of Authority
@@ -223,6 +229,34 @@ PANNEX_INF = 100   # peaceful annex (siege.py launch gate): Atreides use Peacefu
                    # this much Influence, so force peace / diplomacy keep a reserve
 PANNEX_MIN_VILLAGES = 4  # ... and only once we own this many villages: the opening's idle armies annex for free
                    # while Influence is scarce (user: early peaceful annexes wasted it)
+SD_OP = 'MSupplyDrop'  # Supply Drop operation (rules/sdrop.py): ability SupplyDrop, zone effect TSupplyDrop: allied
+                   # non-mech units in the zone +80 supply / day and no supply loss, 3 days
+SD_DUR = 90        # s: its duration (3 days x 30 s)
+SD_CHECK = 3       # s: sdrop pass period
+SD_CAST_R = 150    # a locked task's drop is cast once an order army is this close to the target (Engage: the armies
+                   # are entering the target zone; the militia fight follows)
+SD_EMERG = SUP_DRAIN_S * 20  # emergency drop: an army off our land with less supply than ~20 s of drain ...
+SD_EMERG_LAND = 150  # ... at least this far from our land (and short for the walk home), staying in its zone
+SD_FRESH = SD_CHECK * 2 + 1  # s: raid supply budget counts on a free (unlocked) drop seen this recently
+SD_VAN_K = 0.7     # vanilla siege supply check (AIOrders.hx:1943): InsufficientSupply when the path cost > 0.7 x the
+                   # lowest army supply (30% kept for the target fight and the way home: a drop at the target covers
+                   # both, so with one the trip may use all but SUP_RESERVE; never more: at 0 supply an army loses up to
+                   # 100% max health per day, data Army_Supply_NoSupplies_MaxHealthDamageRatio)
+SD_REFILL = 80 * 2  # supply a drop refills during a 2-day pillage (TSupplyDrop_Armies +80 / day): the raid budget
+                   # counts it toward the walk home
+SD_ZONES = 1      # extra zones of siege-target reach while we hold a free (unlocked) drop: vanilla lists targets within
+                   # ~1 zone of our land; the drop is what makes a far Annex / Liberation / pillage affordable (a leader's
+                   # land, Smugglers' far Annexes). Locked or used: back to normal reach (`sdfree` stops)
+DRY_DEATH_D = 180  # map units an army can walk at 0 supply before it has lost its whole health: up to 100% max health per
+                   # day dry (Army_Supply_NoSupplies_MaxHealthDamageRatio) x 30 s per day x ~6 units / s (drain 50 / 30 s
+                   # over SUP_WALK 0.28 per unit)
+DOOM_SHARE = 0.5   # fight retreat: when doomed armies (the walk home's dry stretch >= DRY_DEATH_D x their health ratio:
+DOOM_HOLD = 1.0    # ... fleeing kills them) hold this share of our power in the fight, its balance is at least DOOM_HOLD:
+                   # they fight it out instead of dying on the way back (user: no turning back into death)
+SD_WIN = 1.0       # emergency drop for a fighting army: our power within LOCAL >= this x the threat there (a lost fight
+                   # retreats anyway: a drop there is wasted)
+PANNEX_HOPS = 2   # ... and only on a village this many zones or more from our main base (Zone.getDistanceToPlayerBase:
+                   # 1 = bordering it): one touching the base is an army's free walk (user: don't waste it there)
 # Underworld HQs (rules/uhq.py; Smugglers). Vanilla installs whenever <= 1 HQ has an empty extension list (no cap: all
 # Authority went into HQs) and scores regular extensions only by cdb aiWeights (Whisperers Lair on no-Intel villages).
 UHQ_MIN = 3        # HQ cap = max(UHQ_MIN, UHQ_PER_VILLAGE x our villages); built ones are never removed
@@ -338,6 +372,11 @@ RETRY = 30         # s: a vanilla siege target launched again this soon after it
                    # (e.g. InsufficientSupply at +0 s) is dropped from the target scores until then
 RETRY_MAX = 240    # s: ... doubled per relaunch that came right after the block ran out (failing at once again), up
                    # to this; reset to RETRY once a launch lasted
+UNREACH_T = 300    # s: a target whose last order died in Waiting (vanilla's path supply check: InsufficientSupply, or a
+                   # refused Shuttle step) is out of reach this long from that launch: vanilla picks armies at >= 90%
+                   # supply, so the path itself costs > 0.7 x max supply (Fremen's ring village Alifgah across deep
+                   # desert, 3 launches 0:35-0:58 each cancelled at +0.06 s, 50 s of cycling instead of expanding);
+                   # not while we hold a free Supply Drop (sdrop-trip lifts that check)
 FAIL_N = 3         # stuck: this many vanilla launches on one target ending without an order (ArmyNotStrongEnough,
 FAIL_WIN = 120     # NotEnoughArmies, ...) within this many s drop it from the target scores for FAIL_BLOCK s, doubled
 FAIL_BLOCK = 120   # up to FAIL_MAX while it keeps coming back (a thinking loop: the armies idle at a patrol meanwhile)
@@ -535,6 +574,75 @@ def _defends(fb, b, cx, fac, a, ds, none):
     fb.op('EnumField', dst=st, value=ot, construct=DEFENSE, field=0)
     fb.op('JNull', reg=st, offset=none)
     fb.op('Mov', dst=ds, src=st)
+
+
+def _order_of(fb, b, cx, fac, a, dst, none):
+    """dst = the live order of fac holding army a (highest priority, the newest on a tie: vanilla's hasOrder scan);
+    jump to `none` when it is in none. Never read `Unit.aiOrder`: only AIOrders.init (controller start / save load)
+    writes it, so it is null all match long and stale after a load."""
+    fb.op('Null', dst=dst)
+    fb.op('JNull', reg=fac, offset=none)
+    ctl = b.field(fac, 'aiController')  # null for a human player
+    fb.op('JNull', reg=ctl, offset=none)
+    aio = b.field(ctl, 'aiOrders')
+    fb.op('JNull', reg=aio, offset=none)
+    ords = b.field(aio, 'orders')
+    fb.op('JNull', reg=ords, offset=none)
+    k, bp = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=bp, src=b.const('i32', -1))
+    lo, dn = _uid('oof'), _uid('oofd')
+    fb.op('Mov', dst=k, src=b.field(ords, 'length'))
+    b.loop_head(lo)
+    fb.op('JSLte', a=k, b=b.const('i32', 0), offset=dn)
+    fb.op('Sub', dst=k, a=k, b=b.const('i32', 1))
+    o = b.cast(b.call('hl.types.ArrayObj.getDyn', ords, k), 'logic.ai.AIOrder')
+    fb.op('JNull', reg=o, offset=lo)
+    ou = b.field(o, 'units')
+    fb.op('JNull', reg=ou, offset=lo)
+    fb.op('JFalse', cond=b.call('hl.types.ArrayObj.contains', ou, fb.dyn(a)), offset=lo)
+    pr = b.field(o, 'priority')
+    fb.op('JSLte', a=pr, b=bp, offset=lo)  # newest first (backwards): a tie keeps the newer one
+    fb.op('Mov', dst=bp, src=pr)
+    fb.op('Mov', dst=dst, src=o)
+    fb.op('JAlways', offset=lo)
+    fb.label(dn)
+    fb.op('JNull', reg=dst, offset=none)
+
+
+def _unreach(fb, b, cx, s_e, t, yes):
+    """Jump to `yes` when siege target s_e is out of supply reach: our last order on it (map `aord`, set by the
+    launch gate) died in Waiting (phase < REGROUP, units emptied by stop: vanilla's path supply check or a refused
+    Shuttle step), launched (map `alaunch`) less than UNREACH_T before t, and its faction holds no free Supply Drop
+    (map `sdfree` within SD_FRESH: sdrop-trip lifts the check)."""
+    no = _uid('unr')
+    ov = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'aord'), fb.dyn(s_e))
+    fb.op('JNull', reg=ov, offset=no)
+    po = b.cast(ov, 'logic.ai.AIOrder')
+    fb.op('JNull', reg=po, offset=no)
+    fb.op('JSGte', a=b.field(po, 'phase'), b=b.const('i32', REGROUP), offset=no)
+    pu = b.field(po, 'units')
+    fb.op('JNull', reg=pu, offset=no + 'd')
+    fb.op('JSGt', a=b.field(pu, 'length'), b=b.const('i32', 0), offset=no)  # still waiting, alive
+    fb.label(no + 'd')
+    lv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'alaunch'), fb.dyn(s_e))
+    fb.op('JNull', reg=lv, offset=no)
+    lq = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=lq, src=lv)
+    fb.op('Sub', dst=lq, a=t, b=lq)
+    fb.op('JSGte', a=lq, b=b.const('f64', UNREACH_T), offset=no)
+    pos = b.field(po, 'orders')
+    fb.op('JNull', reg=pos, offset=yes)
+    pct = b.field(pos, 'controller')
+    fb.op('JNull', reg=pct, offset=yes)
+    pfac = b.field(pct, 'owner')
+    fb.op('JNull', reg=pfac, offset=yes)
+    sv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'sdfree'), fb.dyn(pfac))
+    fb.op('JNull', reg=sv, offset=yes)
+    sq = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=sq, src=sv)
+    fb.op('Sub', dst=sq, a=t, b=sq)
+    fb.op('JSGt', a=sq, b=b.const('f64', SD_FRESH), offset=yes)
+    fb.label(no)
 
 
 def _my_armies(fb, b, fac, fail):
@@ -919,6 +1027,26 @@ def make_trap_hook(helpers):
         fb.op('EndTrap', exc=iexc)
         fb.label(ih)
     return hook
+
+
+def _pannex_ok(fb, b, cx, fac, s, no):
+    """Jump to `no` unless fac may spend PeacefullyAnnex on structure s (pannex fallback and vanilla's
+    checkPeacefulAnnexation, rules/pannex.py): we own >= PANNEX_MIN_VILLAGES villages, hold >= PANNEX_INF Influence
+    and s's zone lies >= PANNEX_HOPS zones from our main base (no main base: any distance)."""
+    fb.op('JSLt', a=b.field(b.call('ent.Faction.getVillages', fac), 'length'), b=b.const('i32', PANNEX_MIN_VILLAGES),
+          offset=no)
+    inf = fb.reg(cx.t('f64'))
+    fb.op('Call2', dst=inf, fun=cx.fn('ent.Faction.getResource').findex.value, arg0=fac,
+          arg1=b.const('i32', RES_INFLUENCE))
+    fb.op('JSLt', a=inf, b=b.const('f64', PANNEX_INF), offset=no)
+    z = b.call('ent.Entity.get_zone', s)
+    fb.op('JNull', reg=z, offset=no)
+    gdb = cx.fn('ent.Zone.getDistanceToPlayerBase')
+    gnull = fb.reg(cx.code.types[gdb.type.value].definition.args[2].value)
+    fb.op('Null', dst=gnull)
+    hops = fb.reg(cx.t('i32'))
+    fb.op('Call3', dst=hops, fun=gdb.findex.value, arg0=z, arg1=fac, arg2=gnull)
+    fb.op('JSLt', a=hops, b=b.const('i32', PANNEX_HOPS), offset=no)
 
 
 __all__ = [n for n in dir() if not n.startswith('__')]

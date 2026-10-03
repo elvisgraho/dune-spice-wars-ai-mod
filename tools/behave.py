@@ -43,6 +43,8 @@ from rules.build import *  # noqa: F401,F403
 from rules.uhq import *  # noqa: F401,F403
 from rules.sdiag import *  # noqa: F401,F403
 from rules.release import *  # noqa: F401,F403
+from rules.pannex import *  # noqa: F401,F403
+from rules.sdrop import *  # noqa: F401,F403
 from rules.dmz import *  # noqa: F401,F403
 from rules.claim import *  # noqa: F401,F403
 from rules.strike import *  # noqa: F401,F403
@@ -105,8 +107,8 @@ def _install(cx, helpers, new_ids):
     new_ids.add(mission)
     report.update(build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land))
     report.update(busy)
-    helpers['ddclean'] = build_ddclean(cx)  # Fremen ring test: raid / pillage-press exclusion
-    helpers['ddhold'] = build_ddclean(cx, strict=True)  # ... strict: Annex hold, launch-gate tries
+    helpers['ddclean'] = build_ddclean(cx, threat=threat)  # Fremen ring test: raid / pillage-press exclusion
+    helpers['ddhold'] = build_ddclean(cx, strict=True, threat=threat)  # ... strict: Annex hold, launch-gate tries
     new_ids.update({helpers['ddclean'], helpers['ddhold']})
     home = build_home(cx, pw, land)
     homeown = build_home(cx, pw, land, own=True)
@@ -128,6 +130,7 @@ def _install(cx, helpers, new_ids):
     react = build_threat(cx, pw, reach=REACT_R)
     helpers['fclaim'] = build_fclaim(cx, own, react)  # free Annex gate (rules/claim.py): scoring
     new_ids.add(helpers['fclaim'])
+    helpers['threat'] = threat  # Annex value: a missing ring village under at-war threat (rules/siege.py)
     report.update(build_scoring(cx, new_ids, helpers))
     hthreat = build_threat(cx, pw, prey=True)
     ttick = build_tension_tick(cx, helpers, threat)
@@ -185,6 +188,11 @@ def _install(cx, helpers, new_ids):
     undeploy = build_undeploy(cx, helpers, air)
     report.update(build_ability_gate(cx, new_ids))
     report.update(build_aa_gate(cx, helpers, air, new_ids))
+    report.update(build_pannex_gate(cx, helpers, new_ids))  # rules/pannex.py: vanilla's PeacefullyAnnex gated
+    report.update(build_sdrop_block(cx, helpers, new_ids))  # rules/sdrop.py: vanilla never launches Supply Drop
+    sdrop = build_sdrop(cx, helpers, pw, land, supok, own, threat)  # rules/sdrop.py: our Supply Drop use (task lock, emergency)
+    report.update(build_sdrop_buy(cx, helpers, new_ids))  # rules/sdrop.py: no second unlocked drop bought
+    report.update(build_sdrop_trip(cx, helpers, new_ids))  # rules/sdrop.py: a locked drop lifts vanilla's InsufficientSupply cancel
     danger = build_danger(cx)
     memory = build_memory(cx, helpers, danger, threat, own)
     report.update(harvest_fields(cx, danger, helpers, new_ids))
@@ -213,8 +221,8 @@ def _install(cx, helpers, new_ids):
     # next Annex choices kept from raid and vanilla's Pillage gauge (rules/raid.py; before raid, which reads them)
     akeep = build_annex_keep(cx, helpers, helpers['scores'])
     new_ids.add(akeep)
-    tick = build_chain(cx, [memory, wormflee, ttick, dmz, strat, hunt, akeep, raid, rally, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, sact, sreach, sweep])
-    new_ids.update({dmz, sact, sreach, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
+    tick = build_chain(cx, [memory, wormflee, ttick, dmz, strat, hunt, akeep, sdrop, raid, rally, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, sact, sreach, sweep])
+    new_ids.update({sdrop, dmz, sact, sreach, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
                     memory, tick})
     report['strand'] = 1
     report['worm-flee'] = 1
