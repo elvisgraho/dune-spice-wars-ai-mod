@@ -874,7 +874,16 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Mov', dst=mode, src=two)
     e = _army_loop(fb, b, armies, alen, i, 'ncand', 'chosen')
     fb.op('JNotNull', reg=b.call('ent.Entity.get_owner', e), offset='ncand')
-    fb.op('JNull', reg=b.field(e, 'raid'), offset='ncand')
+    nrd = b.field(e, 'raid')
+    fb.op('JNull', reg=nrd, offset='ncand')
+    # raiders on a faction we're at war with do our work (they are hostile only to their target): never help it
+    # (user; Smugglers hunted Raiders raiding Harkonnen's Odlab at 93:00 / 104:40, Harkonnen those on Atreides'
+    # Mar-riyah at 30:40, all rt false). Raiders on us, on nobody or on a faction at peace with us stay candidates
+    ntf = b.field(nrd, 'targetFaction')
+    fb.op('JNull', reg=ntf, offset='ntf_ok')
+    fb.op('JEq', a=ntf, b=fac, offset='ntf_ok')
+    fb.op('JTrue', cond=b.call('logic.state.State.areAtWar', state, fac, ntf), offset='ncand')
+    fb.label('ntf_ok')
     fb.op('JFalse', cond=b.call('ent.Entity.isVisibleForFaction', e, fac), offset='ncand')
     given_up(e, 'ncand')
     fb.op('Mov', dst=ent_r, src=e)

@@ -4,7 +4,8 @@ village, gets a MissileBattery first.
 Front village: our village (on our land, not a main base) whose zone borders >= TURRET_EXPOSED zones held by
 factions at war with us, or that lies >= TURRET_REMOTE zones from our main base (Zone.getDistanceToPlayerBase: too
 far for a relief to come in time), or that borders our main base's zone and >= TURRET_BASE_GATE zones of any other faction
-(at war or not: the way into our base), or that is the map's centre zone or borders it (zone at the mean village
+(at war or not: the way into our base), or that lies >= REMOTE_D from our nearest active main base in a straight line (big zones: Harkonnen's Odlab, 386
+from Carthag, 2 hops), or that is the map's centre zone or borders it (zone at the mean village
 position, World.getZoneAt: every way across the map passes there), without a battery: MissileBattery scores max(vanilla, 0) + STAND_BONUS when it can be built
 now or once paid. Full (VillageUpgradesLimitReached) and the battery affordable now (AIController.getMissingResources
 at priority 3 empty): the first of TURRET_DEMOLISH present (Marketplace, MaintenanceCenter, ResearchHub) is removed
@@ -129,6 +130,11 @@ def build_turret_steer(cx, helpers, threat, cover, new_ids, inner=None):
         fb.op('JAlways', offset=u + 'l')
         fb.label(u + 'c')
         fb.op('JSGte', a=ne_n, b=b.const('i32', TURRET_EXPOSED), offset=u + 'y')
+        # far in a straight line from our main base (big zones: Harkonnen's Odlab, 386 from Carthag, 2 hops)
+        bdist = _base_dist(fb, b, s, 1)
+        fb.op('JSGte', a=bdist, b=b.const('f64', 1 << 29), offset=u + 'nb')  # no main base of ours
+        fb.op('JSGte', a=bdist, b=b.const('f64', REMOTE_D), offset=u + 'y')
+        fb.label(u + 'nb')
         fb.op('Call3', dst=hops, fun=gdb.findex.value, arg0=z, arg1=1, arg2=gnull)
         fb.op('JSGte', a=hops, b=b.const('i32', 99), offset=u + 'm')  # no main base: no measure
         fb.op('JSGte', a=hops, b=b.const('i32', TURRET_REMOTE), offset=u + 'y')
@@ -444,6 +450,473 @@ def build_spice_first(cx, helpers, new_ids, inner):
     fb.op('Mov', dst=se, src=s)
     _throttle(fb, b, cx, 'rfirst', se, 60, 'end')
     _log_ev(fb, b, cx, helpers, 'rfirst', [('f', fb.get(1, 'kind')), ('s', se), ('sc', v0)])
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    new_ids.add(w)
+    return w
+
+
+def _base_dist(fb, b, s, fac):
+    """Distance from structure s to fac's nearest active main base (1 << 30: none)."""
+    cx = fb.cx
+    d, bd = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    k = fb.reg(cx.t('i32'))
+    se = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=se, src=s)
+    fb.op('Mov', dst=bd, src=b.const('f64', 1 << 30))
+    lo = _uid('bdl')
+    mbs = b.field(fac, 'mainBases')
+    fb.op('JNull', reg=mbs, offset=lo + 'd')
+    fb.op('Mov', dst=k, src=b.const('i32', 0))
+    b.loop_head(lo)
+    fb.op('JSGte', a=k, b=b.field(mbs, 'length'), offset=lo + 'd')
+    mb = b.cast(b.call('hl.types.ArrayObj.getDyn', mbs, k), 'ent.Structure')
+    fb.op('Incr', dst=k)
+    fb.op('JNull', reg=mb, offset=lo)
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', mb), offset=lo)
+    me = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=me, src=mb)
+    fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', se, me))
+    fb.op('JSGte', a=d, b=bd, offset=lo)
+    fb.op('Mov', dst=bd, src=d)
+    fb.op('JAlways', offset=lo)
+    fb.label(lo + 'd')
+    return bd
+
+
+def build_wonder(cx, helpers, new_ids, inner):
+    """Wonder steering (user: the Spacing Guild Branch went up in easily contested villages near the map's middle).
+    Score wrapper for getBuildingStructureScore (pair {s, k}, f, context, noStocks), called by the next wrapper up
+    instead of `inner`. For k a wonder (WONDER_COST: cdb props.isWonder, one per faction) on a village s of ours on our
+    land (not a main base):
+    - never in the map's centre zone (zone at the mean village position) or a zone bordering it, nor in a front village
+      (zone bordering >= TURRET_EXPOSED zones of at-war factions): NaN (dropped; log `wveto` why centre / front);
+    - else score = max(score, 0) x (0.5 + near) x (0.5 + edge) x (1 + WONDER_DISC_W x disc) x boost, near = 1 - d(our
+      nearest active main base) / WONDER_BASE_R (>= 0), edge = d(map centre) / farthest village's d(centre), disc = 1 -
+      real cost at s (Upgrades.getCost: village traits Handymen -40% / Megalopolis -10%) / WONDER_COST (>= 0), boost =
+      WONDER_BOOST_W where s's zone kind starts with WONDER_BOOST[k] (Space Wreck), else 1. Logs `wsteer` (s, k, sc
+      vanilla, m multiplier x100, disc x100) once per village per 60 s.
+    Every other pair: unchanged. Fails safe: inner's score on error."""
+    orig = cx.fn('logic.ai.$HScoring.getBuildingStructureScore')
+    ft = cx.code.types[orig.type.value].definition
+    fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=orig.type.value)
+    b = B(fb)
+    res = fb.reg(cx.t('f64'))
+    fb.op('Call4', dst=res, fun=inner, arg0=0, arg1=1, arg2=2, arg3=3)  # outside the trap
+    guard = fb.try_()
+    fb.op('JSGte', a=res, b=b.const('f64', -(1 << 30)), offset='real')  # NaN = not buildable: keep it
+    fb.op('JAlways', offset='end')
+    fb.label('real')
+    fb.op('JNull', reg=1, offset='end')
+    k = fb.get(0, 'k')
+    fb.op('JNull', reg=k, offset='end')
+    ks = b.cast(k, 'String')
+    zi = b.const('i32', 0)
+    base, boost = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    bpre = fb.reg(cx.t('String'))
+    names = sorted(WONDER_COST)
+    for n_, wid in enumerate(names):
+        fb.op('JEq', a=b.call('String.__compare', ks, fb.dyn(fb.string(wid))), b=zi, offset=f'w{n_}')
+    fb.op('JAlways', offset='end')
+    for n_, wid in enumerate(names):
+        fb.label(f'w{n_}')
+        fb.op('Mov', dst=base, src=b.const('f64', WONDER_COST[wid]))
+        if wid in WONDER_BOOST:
+            fb.op('Mov', dst=bpre, src=fb.string(WONDER_BOOST[wid]))
+        else:
+            fb.op('Null', dst=bpre)
+        fb.op('JAlways', offset='isw')
+    fb.label('isw')
+    so = fb.get(0, 's')
+    fb.op('JNull', reg=so, offset='end')
+    s = b.cast(so, 'ent.Structure')
+    fb.op('JNull', reg=s, offset='end')
+    fb.op('JTrue', cond=b.call('ent.Structure.get_isMainBase', s), offset='end')
+    z = b.call('ent.Entity.get_zone', s)
+    fb.op('JNull', reg=z, offset='end')
+    fb.op('JNotEq', a=b.field(z, 'owner'), b=1, offset='end')  # our land
+    se = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=se, src=s)
+    why = fb.reg(cx.t('String'))
+    st = _state(fb, b, cx)
+    # front: >= TURRET_EXPOSED at-war neighbour zones
+    nb = b.field(z, 'neighbors')
+    ne, i = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=ne, src=zi)
+    fb.op('JNull', reg=nb, offset='nbd')
+    fb.op('Mov', dst=i, src=zi)
+    b.loop_head('nb')
+    fb.op('JSGte', a=i, b=b.field(nb, 'length'), offset='nbd')
+    nz = b.cast(b.call('hl.types.ArrayObj.getDyn', nb, i), 'ent.Zone')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=nz, offset='nb')
+    no_ = b.field(nz, 'owner')
+    fb.op('JNull', reg=no_, offset='nb')
+    fb.op('JEq', a=no_, b=1, offset='nb')
+    fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', st, 1, no_), offset='nb')
+    fb.op('Incr', dst=ne)
+    fb.op('JAlways', offset='nb')
+    fb.label('nbd')
+    fb.op('Mov', dst=why, src=fb.string('front'))
+    fb.op('JSGte', a=ne, b=b.const('i32', TURRET_EXPOSED), offset='veto')
+    # map centre = mean village position; farthest village's distance to it
+    vl = b.field(st, 'villages')
+    fb.op('JNull', reg=vl, offset='end')
+    vn = b.field(vl, 'length')
+    fb.op('JSLte', a=vn, b=zi, offset='end')
+    cxs, cys, dx, dy, dmx, q = (fb.reg(cx.t('f64')) for _ in range(6))
+    fb.op('Mov', dst=cxs, src=b.const('f64', 0))
+    fb.op('Mov', dst=cys, src=b.const('f64', 0))
+    fb.op('Mov', dst=i, src=zi)
+    b.loop_head('vc')
+    fb.op('JSGte', a=i, b=vn, offset='vcd')
+    vv = b.cast(b.call('hl.types.ArrayObj.getDyn', vl, i), 'ent.Entity')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=vv, offset='vc')
+    fb.op('Add', dst=cxs, a=cxs, b=b.field(vv, 'posx'))
+    fb.op('Add', dst=cys, a=cys, b=b.field(vv, 'posy'))
+    fb.op('JAlways', offset='vc')
+    fb.label('vcd')
+    vnf = fb.reg(cx.t('f64'))
+    fb.op('ToSFloat', dst=vnf, src=vn)
+    fb.op('SDiv', dst=cxs, a=cxs, b=vnf)
+    fb.op('SDiv', dst=cys, a=cys, b=vnf)
+
+    def dcen(dst, e):
+        fb.op('Sub', dst=dx, a=b.field(e, 'posx'), b=cxs)
+        fb.op('Sub', dst=dy, a=b.field(e, 'posy'), b=cys)
+        fb.op('Mul', dst=dx, a=dx, b=dx)
+        fb.op('Mul', dst=dy, a=dy, b=dy)
+        fb.op('Add', dst=dst, a=dx, b=dy)
+        fb.op('Mov', dst=dst, src=b.call('hxd.$Math.sqrt', dst))
+    fb.op('Mov', dst=dmx, src=b.const('f64', 1))
+    fb.op('Mov', dst=i, src=zi)
+    b.loop_head('vm')
+    fb.op('JSGte', a=i, b=vn, offset='vmd')
+    vv2 = b.cast(b.call('hl.types.ArrayObj.getDyn', vl, i), 'ent.Entity')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=vv2, offset='vm')
+    dcen(q, vv2)
+    fb.op('JSLte', a=q, b=dmx, offset='vm')
+    fb.op('Mov', dst=dmx, src=q)
+    fb.op('JAlways', offset='vm')
+    fb.label('vmd')
+    # centre zone or bordering it
+    gm = fb.reg(cx.t('$Game'))
+    fb.op('GetGlobal', dst=gm, **{'global': cx.global_of('$Game')})
+    wd = b.field(b.field(gm, 'inst'), 'world')
+    fb.op('JNull', reg=wd, offset='end')
+    cz = b.call('world.World.getZoneAt', wd, cxs, cys)
+    fb.op('JNull', reg=cz, offset='nocen')
+    fb.op('Mov', dst=why, src=fb.string('centre'))
+    fb.op('JEq', a=cz, b=z, offset='veto')
+    fb.op('JNull', reg=nb, offset='nocen')
+    fb.op('JTrue', cond=b.call('hl.types.ArrayObj.contains', nb, fb.dyn(cz)), offset='veto')
+    fb.label('nocen')
+    m, t2 = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    one = b.const('f64', 1)
+    half = _ratio(fb, b, 0.5)
+    # near our base
+    fb.op('SDiv', dst=t2, a=_base_dist(fb, b, s, 1), b=b.const('f64', WONDER_BASE_R))
+    fb.op('Sub', dst=t2, a=one, b=t2)
+    fb.op('JSGte', a=t2, b=b.const('f64', 0), offset='nr')
+    fb.op('Mov', dst=t2, src=b.const('f64', 0))
+    fb.label('nr')
+    fb.op('Add', dst=m, a=t2, b=half)
+    # far from the centre
+    dcen(q, se)
+    fb.op('SDiv', dst=t2, a=q, b=dmx)
+    fb.op('Add', dst=t2, a=t2, b=half)
+    fb.op('Mul', dst=m, a=m, b=t2)
+    # building discount at this village (real cost / base)
+    disc = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=disc, src=b.const('f64', 0))
+    up = b.field(s, 'upgrades')
+    fb.op('JNull', reg=up, offset='dd')
+    gc = cx.fn('logic.Upgrades.getCost')
+    gct = [a.value for a in cx.code.types[gc.type.value].definition.args]
+    gcn = []
+    for t_ in gct[2:]:
+        r_ = fb.reg(t_)
+        fb.op('Null', dst=r_)
+        gcn.append(r_)
+    cost = fb.reg(cx.code.types[gc.type.value].definition.ret.value)
+    fb.op('CallN', dst=cost, fun=gc.findex.value, args=[up, ks] + gcn)
+    fb.op('JNull', reg=cost, offset='dd')
+    tot, qv = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=tot, src=b.const('f64', 0))
+    fb.op('Mov', dst=i, src=zi)
+    b.loop_head('cs')
+    fb.op('JSGte', a=i, b=b.field(cost, 'length'), offset='csd')
+    qd = fb.get(b.call('hl.types.ArrayObj.getDyn', cost, i), 'qty')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=qd, offset='cs')
+    fb.op('SafeCast', dst=qv, src=qd)
+    fb.op('Add', dst=tot, a=tot, b=qv)
+    fb.op('JAlways', offset='cs')
+    fb.label('csd')
+    fb.op('JSLte', a=tot, b=b.const('f64', 0), offset='dd')
+    fb.op('SDiv', dst=disc, a=tot, b=base)
+    fb.op('Sub', dst=disc, a=one, b=disc)
+    fb.op('JSGte', a=disc, b=b.const('f64', 0), offset='dd')
+    fb.op('Mov', dst=disc, src=b.const('f64', 0))
+    fb.label('dd')
+    fb.op('Mul', dst=t2, a=disc, b=_ratio(fb, b, WONDER_DISC_W))
+    fb.op('Add', dst=t2, a=t2, b=one)
+    fb.op('Mul', dst=m, a=m, b=t2)
+    # production boost (Space Wreck for the Guild Branch / Recycling Plant)
+    fb.op('JNull', reg=bpre, offset='nob')
+    kd = b.field(z, 'kind')
+    fb.op('JNull', reg=kd, offset='nob')
+    fb.op('JFalse', cond=b.call('$StringTools.startsWith', kd, bpre), offset='nob')
+    fb.op('Mul', dst=m, a=m, b=_ratio(fb, b, WONDER_BOOST_W))
+    fb.label('nob')
+    v0 = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=v0, src=res)
+    fb.op('JSGte', a=res, b=b.const('f64', 0), offset='pos')
+    fb.op('Mov', dst=res, src=b.const('f64', 0))
+    fb.label('pos')
+    fb.op('Mul', dst=res, a=res, b=m)
+    _throttle(fb, b, cx, 'wsteer', se, 60, 'end')
+    _log_ev(fb, b, cx, helpers, 'wsteer', [('f', fb.get(1, 'kind')), ('s', se), ('k', ks), ('sc', v0), ('m%', m),
+                                           ('disc%', disc)])
+    fb.op('JAlways', offset='end')
+    fb.label('veto')
+    fb.op('Mov', dst=v0, src=res)
+    fb.op('Mov', dst=res, src=_nan_f(fb, b, cx))
+    _throttle(fb, b, cx, 'wveto', se, 60, 'end')
+    _log_ev(fb, b, cx, helpers, 'wveto', [('f', fb.get(1, 'kind')), ('s', se), ('k', ks), ('why', why), ('sc', v0)])
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    new_ids.add(w)
+    return w
+
+
+def build_airfield(cx, helpers, threat, new_ids, inner):
+    """Airfield steering (user: remote villages get an Airfield to aid travel, then their battery; airfields spaced;
+    none in a corner behind our base). Score wrapper for getBuildingStructureScore (pair {s, k}, f, context,
+    noStocks), called by turret-steer instead of `inner`. For a village s of ours on our land (not a main base):
+    - remote: >= TURRET_REMOTE zones from our main base (Zone.getDistanceToPlayerBase) or >= REMOTE_D in a straight
+      line from our nearest active main base B;
+    - behind: for every other faction's active main base M, d(s, M) >= d(B, M) (s lies between us and the map border:
+      Harkonnen's Harur, 309 west of Carthag at the map's edge, got a vanilla Airfield no army ever used);
+    - spaced: another Airfield of ours (Upgrades.getKind: built or going up) within AF_SPACING of s.
+    want = remote, not behind, not spaced, no Airfield at s, and an Airfield can go up there now or once paid
+    (checkAddUpgrade Success / MissingResources; Fremen: notForFactions, never).
+    k = Airfield: want -> max(score, 0) + AF_BONUS (log `afield` s, sc, d, hops once per village per 60 s); behind or
+    spaced -> NaN, vanilla's own airfield pick dropped (log `afveto` s, why, d once per village per 60 s); else vanilla.
+    k = MissileBattery while want: NaN (the Airfield first; turret-steer's boost / demolition wait for the next
+    scoring), unless at-war power >= STAND_MIN_H stands within STAND_R (a standoff: the battery goes first) or
+    turret-steer freed a slot there for the battery within TRES_T (map `tres`: that slot is the battery's). A full
+    village (no Airfield possible) builds its battery first.
+    Every other pair: unchanged. Fails safe: inner's score on error."""
+    orig = cx.fn('logic.ai.$HScoring.getBuildingStructureScore')
+    ft = cx.code.types[orig.type.value].definition
+    fb = FB(cx, [a.value for a in ft.args], ft.ret.value, fun_type=orig.type.value)
+    b = B(fb)
+    res = fb.reg(cx.t('f64'))
+    fb.op('Call4', dst=res, fun=inner, arg0=0, arg1=1, arg2=2, arg3=3)  # outside the trap
+    guard = fb.try_()
+    fb.op('JSGte', a=res, b=b.const('f64', -(1 << 30)), offset='real')  # NaN = not buildable: keep it
+    fb.op('JAlways', offset='end')
+    fb.label('real')
+    fb.op('JNull', reg=1, offset='end')
+    k = fb.get(0, 'k')
+    fb.op('JNull', reg=k, offset='end')
+    ks = b.cast(k, 'String')
+    zi = b.const('i32', 0)
+    airfield, battery = fb.string('Airfield'), fb.string('MissileBattery')
+    isaf = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=isaf, value=True)
+    fb.op('JEq', a=b.call('String.__compare', ks, fb.dyn(airfield)), b=zi, offset='kind')
+    fb.op('Bool', dst=isaf, value=False)
+    fb.op('JNotEq', a=b.call('String.__compare', ks, fb.dyn(battery)), b=zi, offset='end')
+    fb.label('kind')
+    so = fb.get(0, 's')
+    fb.op('JNull', reg=so, offset='end')
+    s = b.cast(so, 'ent.Structure')
+    fb.op('JNull', reg=s, offset='end')
+    fb.op('JTrue', cond=b.call('ent.Structure.get_isMainBase', s), offset='end')
+    z = b.call('ent.Entity.get_zone', s)
+    fb.op('JNull', reg=z, offset='end')
+    fb.op('JNotEq', a=b.field(z, 'owner'), b=1, offset='end')  # our land (not an Underworld HQ in theirs)
+    se = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=se, src=s)
+    up = b.field(s, 'upgrades')
+    fb.op('JNull', reg=up, offset='end')
+    gk = cx.fn('logic.Upgrades.getKind')
+    gkt = [a.value for a in cx.code.types[gk.type.value].definition.args]
+    gkn = []
+    for t_ in gkt[2:]:
+        r_ = fb.reg(t_)
+        fb.op('Null', dst=r_)
+        gkn.append(r_)
+    ku = fb.reg(cx.code.types[gk.type.value].definition.ret.value)
+    why = fb.reg(cx.t('String'))
+    # remote?
+    db = _base_dist(fb, b, s, 1)
+    hops = fb.reg(cx.t('i32'))
+    gdb = cx.fn('ent.Zone.getDistanceToPlayerBase')
+    gnull = fb.reg(cx.code.types[gdb.type.value].definition.args[2].value)
+    fb.op('Null', dst=gnull)
+    fb.op('Call3', dst=hops, fun=gdb.findex.value, arg0=z, arg1=1, arg2=gnull)
+    fb.op('JSGte', a=db, b=b.const('f64', 1 << 29), offset='end')  # no main base of ours: no measure
+    fb.op('JSGte', a=db, b=b.const('f64', REMOTE_D), offset='remote')
+    fb.op('JSGte', a=hops, b=b.const('i32', 99), offset='near')
+    fb.op('JSGte', a=hops, b=b.const('i32', TURRET_REMOTE), offset='remote')
+    fb.label('near')
+    # not remote: an Airfield pick stands only where it isn't behind us / next to another (checks below), a battery
+    # is turret-steer's
+    fb.op('JFalse', cond=isaf, offset='end')
+    fb.label('remote')
+    # behind our base: every other faction's active main base is at least as far from s as from our base
+    bm = fb.reg(cx.t('ent.Entity'))  # our nearest active main base
+    fb.op('Null', dst=bm)
+    d, bd = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=bd, src=b.const('f64', 1 << 30))
+    i, j = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    me = fb.reg(cx.t('ent.Entity'))
+    mbs = b.field(1, 'mainBases')
+    fb.op('JNull', reg=mbs, offset='end')
+    fb.op('Mov', dst=i, src=zi)
+    b.loop_head('mb')
+    fb.op('JSGte', a=i, b=b.field(mbs, 'length'), offset='mbd')
+    mb = b.cast(b.call('hl.types.ArrayObj.getDyn', mbs, i), 'ent.Structure')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=mb, offset='mb')
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', mb), offset='mb')
+    fb.op('Mov', dst=me, src=mb)
+    fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', se, me))
+    fb.op('JSGte', a=d, b=bd, offset='mb')
+    fb.op('Mov', dst=bd, src=d)
+    fb.op('Mov', dst=bm, src=me)
+    fb.op('JAlways', offset='mb')
+    fb.label('mbd')
+    fb.op('JNull', reg=bm, offset='end')
+    behind = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=behind, value=False)
+    facs = b.cast(fb.get(_state(fb, b, cx), 'factions', 'array'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=facs, offset='bhd')
+    nb = fb.reg(cx.t('i32'))  # other active main bases seen
+    fb.op('Mov', dst=nb, src=zi)
+    fb.op('Mov', dst=i, src=zi)
+    b.loop_head('of')
+    fb.op('JSGte', a=i, b=b.field(facs, 'length'), offset='ofd')
+    of = b.cast(b.call('hl.types.ArrayObj.getDyn', facs, i), 'ent.Faction')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=of, offset='of')
+    fb.op('JEq', a=of, b=1, offset='of')
+    ombs = b.field(of, 'mainBases')
+    fb.op('JNull', reg=ombs, offset='of')
+    fb.op('Mov', dst=j, src=zi)
+    b.loop_head('om')
+    fb.op('JSGte', a=j, b=b.field(ombs, 'length'), offset='of')
+    om = b.cast(b.call('hl.types.ArrayObj.getDyn', ombs, j), 'ent.Structure')
+    fb.op('Incr', dst=j)
+    fb.op('JNull', reg=om, offset='om')
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', om), offset='om')
+    fb.op('Mov', dst=me, src=om)
+    fb.op('Incr', dst=nb)
+    # s nearer to this base than our base is: s is on the way somewhere, not behind us
+    fb.op('JSLt', a=b.call('ent.Entity.getDistTo', se, me), b=b.call('ent.Entity.getDistTo', bm, me), offset='bhd')
+    fb.op('JAlways', offset='om')
+    fb.label('ofd')
+    fb.op('JSLte', a=nb, b=zi, offset='bhd')  # nobody else: no "behind"
+    fb.op('Bool', dst=behind, value=True)
+    fb.label('bhd')
+    # spaced: another Airfield of ours within AF_SPACING
+    spaced = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=spaced, value=False)
+    mine = b.cast(fb.get(1, 'structures', 'array'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=mine, offset='spd')
+    fb.op('Mov', dst=i, src=zi)
+    b.loop_head('sp')
+    fb.op('JSGte', a=i, b=b.field(mine, 'length'), offset='spd')
+    st = b.cast(b.call('hl.types.ArrayObj.getDyn', mine, i), 'ent.Structure')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=st, offset='sp')
+    fb.op('JEq', a=st, b=s, offset='sp')
+    fb.op('Mov', dst=me, src=st)
+    fb.op('JSGte', a=b.call('ent.Entity.getDistTo', se, me), b=b.const('f64', AF_SPACING), offset='sp')
+    sup = b.field(st, 'upgrades')
+    fb.op('JNull', reg=sup, offset='sp')
+    fb.op('CallN', dst=ku, fun=gk.findex.value, args=[sup, airfield] + gkn)
+    fb.op('JNull', reg=ku, offset='sp')
+    fb.op('Bool', dst=spaced, value=True)
+    fb.label('spd')
+    fb.op('JFalse', cond=isaf, offset='bat')
+    # --- Airfield pair
+    fb.op('JTrue', cond=behind, offset='veto_b')
+    fb.op('JTrue', cond=spaced, offset='veto_s')
+    fb.op('JSGte', a=db, b=b.const('f64', REMOTE_D), offset='boost')
+    fb.op('JSGte', a=hops, b=b.const('i32', 99), offset='end')
+    fb.op('JSGte', a=hops, b=b.const('i32', TURRET_REMOTE), offset='boost')
+    fb.op('JAlways', offset='end')  # not remote: vanilla's own pick, spaced and not behind
+    fb.label('veto_b')
+    fb.op('Mov', dst=why, src=fb.string('behind'))
+    fb.op('JAlways', offset='veto')
+    fb.label('veto_s')
+    fb.op('Mov', dst=why, src=fb.string('spaced'))
+    fb.label('veto')
+    vs = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=vs, src=res)
+    fb.op('Mov', dst=res, src=_nan_f(fb, b, cx))
+    _throttle(fb, b, cx, 'afveto', se, 60, 'end')
+    _log_ev(fb, b, cx, helpers, 'afveto', [('f', fb.get(1, 'kind')), ('s', se), ('why', why), ('sc', vs), ('d', db)])
+    fb.op('JAlways', offset='end')
+    fb.label('boost')
+    v0 = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=v0, src=res)
+    fb.op('JSGte', a=res, b=b.const('f64', 0), offset='pos')
+    fb.op('Mov', dst=res, src=b.const('f64', 0))
+    fb.label('pos')
+    fb.op('Add', dst=res, a=res, b=b.const('f64', AF_BONUS))
+    _throttle(fb, b, cx, 'afield', se, 60, 'end')
+    hf = fb.reg(cx.t('f64'))
+    fb.op('ToSFloat', dst=hf, src=hops)
+    _log_ev(fb, b, cx, helpers, 'afield', [('f', fb.get(1, 'kind')), ('s', se), ('sc', v0), ('d', db), ('hops', hf)])
+    fb.op('JAlways', offset='end')
+    # --- MissileBattery pair on a remote village: the Airfield first while one is wanted and can go up
+    fb.label('bat')
+    fb.op('JTrue', cond=behind, offset='end')
+    fb.op('JTrue', cond=spaced, offset='end')
+    # a slot turret-steer freed for the battery (map `tres`, within TRES_T) is the battery's: deferring it would leave
+    # the slot empty (turret-steer drops every other pair there meanwhile) and then hand it to the Airfield
+    trv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'tres'), fb.dyn(s))
+    fb.op('JNull', reg=trv, offset='notres')
+    tq = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=tq, src=trv)
+    fb.op('Sub', dst=tq, a=b.field(_state(fb, b, cx), 'time'), b=tq)
+    fb.op('JSLte', a=tq, b=b.const('f64', TRES_T), offset='end')
+    fb.label('notres')
+    fb.op('CallN', dst=ku, fun=gk.findex.value, args=[up, airfield] + gkn)
+    fb.op('JNotNull', reg=ku, offset='end')  # has its Airfield (built or going up): the battery's turn
+    ca = cx.fn('logic.Upgrades.checkAddUpgrade')
+    cat = [a.value for a in cx.code.types[ca.type.value].definition.args]
+    cret = cx.code.types[ca.type.value].definition.ret.value
+    rnames = [c_.name.resolve(cx.code) for c_ in cx.code.types[cret].definition.constructs]
+    dref = fb.reg(cat[2])
+    fb.op('Ref', dst=dref, src=b.const('i32', 0))
+    cnul = []
+    for t_ in cat[3:]:
+        r_ = fb.reg(t_)
+        fb.op('Null', dst=r_)
+        cnul.append(r_)
+    rr = fb.reg(cret)
+    fb.op('CallN', dst=rr, fun=ca.findex.value, args=[up, airfield, dref] + cnul)
+    ri = fb.reg(cx.t('i32'))
+    fb.op('EnumIndex', dst=ri, value=rr)
+    fb.op('JEq', a=ri, b=b.const('i32', rnames.index('Success')), offset='afcan')
+    fb.op('JNotEq', a=ri, b=b.const('i32', rnames.index('MissingResources')), offset='end')
+    fb.label('afcan')
+    h = fb.reg(cx.t('f64'))
+    fb.op('Call3', dst=h, fun=threat, arg0=1, arg1=se, arg2=b.const('f64', STAND_R))
+    fb.op('JSGte', a=h, b=b.const('f64', STAND_MIN_H), offset='end')  # a standoff: the battery goes first
+    fb.op('Mov', dst=res, src=_nan_f(fb, b, cx))
     fb.label('end')
     fb.end_try(guard)
     fb.op('Ret', ret=res)

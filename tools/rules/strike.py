@@ -280,7 +280,7 @@ def build_strike(cx, helpers, pw, threat, cover, striking):
     fb.label('gd')
     nf = fb.reg(cx.t('f64'))
     fb.op('ToSFloat', dst=nf, src=n)
-    _log_ev(fb, b, cx, helpers, 'strike', [('f', fb.get(fac, 'kind')), ('act', 'start'), ('a', a2), ('e', e),
+    _log_ev(fb, b, cx, helpers, 'strike', [('f', fb.get(fac, 'kind')), ('act', 'start'), ('a', a2), ('en', e),
                                            ('M', m), ('H', h), ('d', dn), ('n', nf)])
     fb.op('JAlways', offset='u')
     fb.label('end')

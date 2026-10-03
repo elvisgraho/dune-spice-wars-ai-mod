@@ -220,21 +220,32 @@ def build_neutral(cx, pw):
 
 
 def build_terrain(cx):
-    """aimod_terrain(fac, zone) -> OWN_T on our zone, ENEMY_T on the zone of a faction at war with us, else 1.
-    Multiplies a power ratio (ours / theirs) before comparing it with ENTER / ABORT / RETREAT."""
+    """aimod_terrain(fac, zone) -> OWN_T on our zone, ENEMY_T on the zone of a faction at war with us, else 1;
+    off our zone also x max(DECAY_FLOOR, 1 - rate x DECAY_DAYS) in a region that drains ground life (DECAY_ZONES by
+    Zone.kind: Acid Lakes, The Desolation; on our zone we heal at our structures). Multiplies a power ratio (ours /
+    theirs) before comparing it with ENTER / ABORT / RETREAT."""
     fb = FB(cx, [cx.t('ent.Faction'), cx.t('ent.Zone')], cx.t('f64'))
     b = B(fb)
     res = b.const('f64', 1)
     fb.op('JNull', reg=0, offset='end')
     fb.op('JNull', reg=1, offset='end')
     o = b.field(1, 'owner')
-    fb.op('JNull', reg=o, offset='end')
+    fb.op('JNull', reg=o, offset='decay')
     fb.op('JNotEq', a=o, b=0, offset='other')
     fb.op('Mov', dst=res, src=_ratio(fb, b, OWN_T))
     fb.op('JAlways', offset='end')
     fb.label('other')
-    fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', _state(fb, b, cx), 0, o), offset='end')
+    fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', _state(fb, b, cx), 0, o), offset='decay')
     fb.op('Mov', dst=res, src=_ratio(fb, b, ENEMY_T))
+    fb.label('decay')
+    kd = b.field(1, 'kind')
+    fb.op('JNull', reg=kd, offset='end')
+    for i, (name, rate) in enumerate(sorted(DECAY_ZONES.items())):
+        fb.op('JNotEq', a=b.call('String.__compare', kd, fb.dyn(fb.string(name))), b=b.const('i32', 0),
+              offset=f'dz{i}')
+        fb.op('Mul', dst=res, a=res, b=_ratio(fb, b, max(DECAY_FLOOR, 1 - rate * DECAY_DAYS)))
+        fb.op('JAlways', offset='end')
+        fb.label(f'dz{i}')
     fb.label('end')
     fb.op('Ret', ret=res)
     return fb.build()

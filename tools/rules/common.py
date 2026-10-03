@@ -53,6 +53,12 @@ DIST0 = 100        # start score = H / (distance of our nearest free army + DIST
 ENTER = 1.5        # policy enter ratio
 ABORT = 0.7        # policy abort ratio (buffer: an even-ish open-field fight, 1-2 armies down, is kept)
 OWN_T = 1.3        # terrain factor on our own zone: we heal and resupply there, they drain (defender advantage)
+DECAY_ZONES = {'AcidLake': 0.1, 'AcidLake_Red': 0.1, 'AcidLake_Volcanic': 0.1, 'TheDesolation': 0.4}
+                   # Zone.kind (region id) -> ground life lost per day there (cdb traits R_AcidLake / R_TheDesolation,
+                   # Unit_Ground_LifeDecay_Flat): off our zone the terrain factor x max(DECAY_FLOOR, 1 - rate x DECAY_DAYS)
+DECAY_DAYS = 2.5   # ... days (30 s) a fight / capture keeps us there (Fremen chased Smugglers through Acid Lakes past
+                   # Aradah 24:12-25:09: balance 129 -> 0.06, retreat)
+DECAY_FLOOR = 0.4  # ... never below this (The Desolation: 40% / day)
 ENEMY_T = 0.8      # terrain factor on an at-war faction's zone: they heal, we drain (attack there needs 1.5/0.8)
 RETREAT = 0.65     # = data AI_WarzonePowerEstimation_RetreatRatio (patches/data.json); balance x terrain is compared
 FLEE_ETA = 3       # s: 'imminent' = hostiles in contact range or able to get there within this
@@ -143,6 +149,10 @@ DSTEP_R = 250      # desert step: our siege / raid armies in the deep desert wit
 DSTEP_IN = 40      # ... move to this far from the target on their side (the village's zone, still in the fight)
 DSTEP_T = 8        # ... at most this often per army (micro re-engages; no move spam)
 WORM_T = 1         # s: worm-flee pass (a targeted army has seconds before the worm arrives)
+WORM_ESC_D = 60    # worm flee: an army walking whose path ends this much farther from the worm than it is now is left
+                   # alone (it outruns it: aggro 30-60, strike <= 40 away, pre-attack 5-10 s; user: don't choke a move
+                   # that makes it in time) ...
+WORM_SAFE_REACH = 30  # ... as is one whose path ends off the sand / in a worm-free zone within this (~5 s walk)
 WFLEE_T = 3        # s: a worm-targeted army on sand is re-sent to rock at most this often (vanilla orders move it back)
 WORM_HOLD = 20     # s: an army sent off the sand isn't free for hunts / raids / strand (no relaunch onto the same sand)
 WORM_NEAR = 150    # an army moved off the sand waits there (out of vanilla's Resupply / mission picks) while a worm is
@@ -164,6 +174,9 @@ STRIKE_RATIO = 1.0  # ... and fight it when the order's armies within LOCAL are 
                     # even or better starts the fight (user), the vanilla fight retreat still judges it after 5 s
 STRIKE_MAX = 30     # s: ... a strike ends after this, then the march goes on
 STRIKE_LEASH = 120  # ... or once the army is this far from where it started (a running enemy isn't chased; user)
+AA_R = 120          # Fremen F_Special_2 is an anti-air turret (trait: can only attack flying units, attack plane 2,
+                    # range 80): installed only with an at-war flying army within this (80 + 40), and undeployed
+                    # when none is (rules/deploy.py; 3 installed at Arkwaz held an Annex at balance 0 for 15 min)
 STAND_R = 200      # turret steering (rules/build.py): at-war power within this of our village (turret range 80 +
                    # an idle stack at the next village, Gun-dah 115 from Annarekh) ...
 STAND_MIN_H = RALLY_MIN_H  # ... at least this ...
@@ -175,6 +188,20 @@ TURRET_EXPOSED = 2  # turret-steer: our village whose zone borders this many zon
                     # Atreides, weakest, was overrun by Fremen through such villages with no battery built)
 TURRET_REMOTE = 3   # ... also a village this many zones or more from our main base (Zone.getDistanceToPlayerBase; 1 =
                     # bordering it): too far for a relief to arrive in time if something happens (user)
+REMOTE_D = 350      # turret-steer / airfield-steer: a village this far (straight) from our main base is remote too, whatever
+                    # its zone hops (Harkonnen's Odlab, 386 from Carthag, got no battery; Harur 309 is not remote)
+AF_SPACING = 300    # airfield-steer: no Airfield within this of another of ours (range 80: neighbouring villages
+                    # 100-200 apart don't both get one; user)
+AF_BONUS = 100      # ... a remote village's Airfield scores vanilla + this (as STAND_BONUS for batteries)
+WONDER_COST = {  # wonder-steer: cdb building (props.isWonder) -> base cost (sum of qty; the village's real cost / this
+    'ExperimentalAlloyFurnace': 1500, 'ExperimentalAlloyFurnace_Fremen': 1500, 'MilitaryFactory': 1500,  # = discount)
+    'MilitaryFactory_Fremen': 1500, 'ShaiHuludTemple': 1500, 'NuclearSilo': 3000, 'ResearchStation': 1500,
+    'ResearchStation_Fremen': 1500, 'SpacingGuildBranch': 1500, 'RecyclingPlant': 1500}
+WONDER_BOOST = {'SpacingGuildBranch': 'SpaceCruiserWreck', 'RecyclingPlant': 'SpaceCruiserWreck'}  # building ->
+                   # zone kind prefix that boosts its production (cdb trait R_SpaceWreck: TBuilding_Built_TRes2Prod_Flat)
+WONDER_BASE_R = 600  # wonder-steer: nearness to our main base 1 at it -> 0 at this distance ...
+WONDER_DISC_W = 3.0  # ... a building discount d (1 - real / base cost) multiplies the score by 1 + this x d (large) ...
+WONDER_BOOST_W = 1.3  # ... a production boost there by this (small)
 TURRET_BASE_GATE = 1  # ... also a village bordering our main base's zone with this many zones of any other faction
                       # next to it (at war or not: treaties end): the way into our base (user)
 TURRET_DEMOLISH = ('Marketplace', 'MaintenanceCenter', 'ResearchHub')  # ... a full front village frees a slot
@@ -201,6 +228,8 @@ PANNEX_MIN_VILLAGES = 4  # ... and only once we own this many villages: the open
 UHQ_MIN = 3        # HQ cap = max(UHQ_MIN, UHQ_PER_VILLAGE x our villages); built ones are never removed
 UHQ_PER_VILLAGE = 3
 UHQ_AUTH = 5       # Annex reserve: next HQ's Authority = this x (HQs + 1) (data: InstallUWHeadquarter 5 + 5 per existing)
+UHQ_SOFT_PER_VILLAGE = 2  # Annex reserve only from this x our villages HQs on (below: HQs go up while the Annex is far)
+UHQ_NEAR_AU = 60  # ... or while Authority is within this of the cheapest Annex (~4 min of Smugglers income: about to launch)
 UHQ_RES_T = 120    # ... the cheapest Annex cost (siege.py `acmin`) counts this long after its last scoring
 UHQ_MB_R = 500     # placement: a host village within this of its owner's main base scores up to ...
 UHQ_MB_W = 1.0     # ... x (1 + this) at the base (falls linearly to x 1 at UHQ_MB_R): hardly ever recaptured there

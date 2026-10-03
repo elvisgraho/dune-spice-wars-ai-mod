@@ -7,7 +7,9 @@ deployed F_Harvester near Haththah (zone worm activity 3) vanished together. `Sa
 `canBeWormTarget` (off sand, near a sietch), so reaching rock is the escape.
 
 Every WORM_T s per faction: each of our armies with `isWormTarget()` and `isOnSand()`, outside a protected zone (at most every WFLEE_T s per
-army): the AI order holding it is stopped (Cancel: a hunt / raid / siege would walk it back onto the sand), and it and
+army), unless it makes it on its own (moving, not fighting, and its path ends >= WORM_ESC_D farther from the worm
+than it is now, or off the sand within WORM_SAFE_REACH: the worm aggroes within 30-60, strikes <= 40 away after a
+5-10 s wind-up; logged `wlet` a, d worm distance, pe path left, once per army per 10 s): the AI order holding it is stopped (Cancel: a hunt / raid / siege would walk it back onto the sand), and it and
 the order's other armies on sand within WORM_NEAR of the worm each get `doAction("Move", {actionTarget:
 EWorldPosition})` to the nearest safe point: rock (`World.isSandAt`) or sand in a zone the worm can't strike (_no_worm_zone: worm activity
 0 or Zone_NoSandworm, e.g. next to a Decoy Thumper) (rings of WORM_STEP up to WORM_R, WORM_DIRS directions: the nearest ring with land; on it a siege army takes the land point nearest its target, the village being land, so it steps towards its group; others the first found;
@@ -16,12 +18,12 @@ WORM_HOLD s (no hunt / raid relaunch onto the same sand; a moved harvester's zon
 field), and aimod_wormheld keeps them out of vanilla's Resupply and
 mission picks while a worm is within WORM_NEAR (at most WORM_HOLD s): vanilla re-issued the Atreides Resupply 0.5 s
 after every stop, back over the same sand, and the worm re-targeted them: stop / go every 3-4 s for 70 s, 20 moved.
-Our sieges (Military order on a structure) are never stopped, in any phase (user: a capture is never on sand, only a
+Our sieges (Military order on a structure), and any other Military order (hunt) with armies besides the target, are never stopped, in any phase (user: a capture is never on sand, only a
 stray army on the way is): before Action the targeted army alone steps onto rock and stays in the order, held there while the
 worm is near (aimod_wormonly: vanilla's Regroup / Engage march call and our gather / stage / desert-step / spos skip it,
 strike.py strike_skip / common._skip_striking); in Action it leaves the order by removeUnit
-(its last army stays). Other orders (hunt, raid walk, Resupply, Discovery, ...) are stopped and their armies on sand
-moved, as before. Logs `wflee` per moved army (a, rock found, d to the point, w worm distance, ok). In a trap."""
+(its last army stays). Other orders (a lone-army Military order, raid walk, Resupply, Discovery, ...) are stopped and their armies on
+sand moved. Logs `wflee` per moved army (a, rock found, d to the point, w worm distance, ok). In a trap."""
 import math
 
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
@@ -159,6 +161,37 @@ def build_worm_flee(cx, helpers):
     fb.op('JFalse', cond=b.call('ent.Entity.isOnSand', a), offset='army')
     _no_worm_zone(fb, b, cx, b.call('ent.Entity.get_zone', a), 'army')  # protected: vanilla drops the target
     moved_now(a, 'army')
+    # let it run: a moving army not stuck in a fight that walks away from the worm, or reaches safe ground within
+    # WORM_SAFE_REACH, makes it on its own (re-judged every WORM_T: once it stops or turns back, it flees)
+    wv = b.field(a, 'targettedByWorm')
+    fb.op('JNull', reg=wv, offset='flee')
+    fb.op('JTrue', cond=b.call('ent.Entity.isFighting', a), offset='flee')
+    pe = b.call('ent.MobileEntity.getCurrentPathEnd', a)
+    fb.op('JNull', reg=pe, offset='flee')
+    pex, pey, lq, lr = (fb.reg(cx.t('f64')) for _ in range(4))
+    fb.op('Mov', dst=pex, src=b.field(pe, 'x'))
+    fb.op('Mov', dst=pey, src=b.field(pe, 'y'))
+    def dist2(dst, x1, y1, x2, y2):
+        fb.op('Sub', dst=lq, a=x1, b=x2)
+        fb.op('Mul', dst=lq, a=lq, b=lq)
+        fb.op('Sub', dst=lr, a=y1, b=y2)
+        fb.op('Mul', dst=lr, a=lr, b=lr)
+        fb.op('Add', dst=dst, a=lq, b=lr)
+        fb.op('Mov', dst=dst, src=b.call('hxd.$Math.sqrt', dst))
+    dpa, dpw, daw = (fb.reg(cx.t('f64')) for _ in range(3))
+    dist2(dpa, pex, pey, b.field(a, 'posx'), b.field(a, 'posy'))
+    fb.op('JSLte', a=dpa, b=b.const('f64', 2), offset='flee')  # standing (path done)
+    dist2(dpw, pex, pey, b.field(wv, 'posx'), b.field(wv, 'posy'))
+    dist2(daw, b.field(a, 'posx'), b.field(a, 'posy'), b.field(wv, 'posx'), b.field(wv, 'posy'))
+    fb.op('Sub', dst=lq, a=dpw, b=daw)
+    fb.op('JSGte', a=lq, b=b.const('f64', WORM_ESC_D), offset='letrun')
+    fb.op('JSGt', a=dpa, b=b.const('f64', WORM_SAFE_REACH), offset='flee')
+    fb.op('JTrue', cond=b.call('world.WorldBase.isSandAt', world, pex, pey), offset='flee')
+    fb.label('letrun')
+    _throttle(fb, b, cx, 'wlet', a, 10, 'army')
+    _log_ev(fb, b, cx, helpers, 'wlet', [('f', fb.get(fac, 'kind')), ('a', a), ('d', daw), ('pe', dpa)])
+    fb.op('JAlways', offset='army')
+    fb.label('flee')
     _throttle(fb, b, cx, 'wflee', a, WFLEE_T, 'army')
     worm = b.field(a, 'targettedByWorm')
     fb.op('Mov', dst=wd, src=b.const('f64', 0))
@@ -185,7 +218,12 @@ def build_worm_flee(cx, helpers):
     wtt = b.field(o, 'targetType')
     fb.op('JNull', reg=wtt, offset='wstop')
     fb.op('EnumIndex', dst=widx, value=wtt)
-    fb.op('JNotEq', a=widx, b=b.const('i32', T_STRUCT), offset='wstop')
+    fb.op('JEq', a=widx, b=b.const('i32', T_STRUCT), offset='wkeep')
+    # ... and any other Military order with armies besides it (hunts): Atreides' 7-army hunt on the renegades at
+    # Fongah was stopped at live balance 7.1 (41:23) for one A_Soldier targeted 150 behind on sand; the rest fell into
+    # Resupply and were picked off by the renegades in two smaller relaunches
+    fb.op('JSLte', a=b.field(units, 'length'), b=one, offset='wstop')
+    fb.label('wkeep')
     # ... nor before Action (user: a capture is never on sand, only a stray army on the way is): the targeted army
     # alone steps onto rock and stays in the order (grp null: nobody else moves). Stopping it cancelled Harkonnen's
     # 10-army Annex of Qalmara in Engage at 06:29 for one worm 30 away

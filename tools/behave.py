@@ -158,7 +158,11 @@ def _install(cx, helpers, new_ids):
     report['uhq-ext'] = 1
     spf = build_spice_first(cx, helpers, new_ids, uhqx)  # Refinery first on a spice village (rules/build.py)
     report['spice-first'] = 1
-    report.update(build_turret_steer(cx, helpers, threat, cover, new_ids, inner=spf))
+    wnd = build_wonder(cx, helpers, new_ids, spf)  # wonders: near our base, away from the middle, on discounts (rules/build.py)
+    report['wonder-steer'] = 1
+    afw = build_airfield(cx, helpers, threat, new_ids, wnd)  # remote villages: Airfield first, spaced (rules/build.py)
+    report.update(build_turret_steer(cx, helpers, threat, cover, new_ids, inner=afw))
+    report['airfield-steer'] = 1
     sengage = build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain, neutral)
     idle = build_free(cx, pw, 0, 0, patrol_ok=False)
     helpers['wormheld'] = build_wormheld(cx)  # worm-flee hold: out of vanilla's Resupply / mission picks
@@ -171,11 +175,16 @@ def _install(cx, helpers, new_ids):
     report.update(build_cp_need(cx, helpers, new_ids))  # ... CP building scored when the army is capped
     report.update(build_cp_defense(cx, helpers, new_ids))  # ... no all-in defense because CP is full
     report.update(build_term_probe(cx, helpers, new_ids))  # rules/orders.py (before order-keep, which redirects the closure's removeUnits): logs why an order dies at once (refused Shuttle step)
+    report.update(build_siege_keep(cx, helpers, new_ids))  # rules/orders.py: a dead lone besieger doesn't scrap the siege (before order-keep: it finds the closure by its removeUnits call)
     report.update(build_order_keep(cx, helpers, new_ids))  # rules/orders.py: one dead unit doesn't scrap a siege before Action
+    report.update(build_take_keep(cx, helpers, new_ids))  # rules/orders.py: one army taken by another order doesn't scrap it
     strand = build_strand(cx, helpers, idle, unsafe)
     report.update(build_patrol_gate(cx, helpers, hsafe, own, pw, new_ids))
-    undeploy = build_undeploy(cx, helpers)
+    air = build_air(cx)  # rules/deploy.py: at-war flying armies near a unit (what an installed F_Special_2 can hit)
+    new_ids.add(air)
+    undeploy = build_undeploy(cx, helpers, air)
     report.update(build_ability_gate(cx, new_ids))
+    report.update(build_aa_gate(cx, helpers, air, new_ids))
     danger = build_danger(cx)
     memory = build_memory(cx, helpers, danger, threat, own)
     report.update(harvest_fields(cx, danger, helpers, new_ids))
@@ -197,14 +206,15 @@ def _install(cx, helpers, new_ids):
     report.update(build_keep_capture(cx, helpers, new_ids))
     report.update(gather_busy(cx, new_ids))
     sact = build_sact(cx, helpers, pw, militia)  # diagnostics only (rules/sdiag.py)
+    sreach = build_sreach(cx, helpers)  # diagnostics only: special villages' reach / recon per faction
     release = build_release(cx, helpers, relunits, threat, neutral, cover)  # rules/release.py
     sweep = sweep_stub(cx)  # the map sweep: swapped for the real one at the end (every map exists by then)
     new_ids.add(sweep)
     # next Annex choices kept from raid and vanilla's Pillage gauge (rules/raid.py; before raid, which reads them)
     akeep = build_annex_keep(cx, helpers, helpers['scores'])
     new_ids.add(akeep)
-    tick = build_chain(cx, [memory, wormflee, ttick, dmz, strat, hunt, akeep, raid, rally, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, sact, sweep])
-    new_ids.update({dmz, sact, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
+    tick = build_chain(cx, [memory, wormflee, ttick, dmz, strat, hunt, akeep, raid, rally, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, sact, sreach, sweep])
+    new_ids.update({dmz, sact, sreach, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
                     memory, tick})
     report['strand'] = 1
     report['worm-flee'] = 1

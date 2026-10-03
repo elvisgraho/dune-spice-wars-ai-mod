@@ -8,7 +8,8 @@ base guns, and lost 6 of them while the order's own balance read 2-13 (winning);
 Every SPOS_T_CHECK s per faction: our Military orders with a Structure target in Action (any army within SPOS_R of
 the target) or Engage (armies within SPOS_IN: never pulls a walker forward): an army covered by at-war turrets other
 than the target's (aimod_cover, own false, target excluded) is moved (doAction Move, at most every SPOS_T s per army)
-to P = target + SPOS_OFF away from the nearest at-war structure E (not the target): still in the occupation range,
+to P = target + SPOS_OFF away from the nearest at-war structure E whose guns cover it (aimod_cover1 > 0; not the
+target): still in the occupation range,
 farther from E's guns. Not if P is no farther from E than the army already is. Map `sposm` army -> time (desert-step
 leaves such an army alone for SPOS_T x 2). Logs `spos` (a, tgt, es, d to P) once per army per 15 s. In a trap.
 
@@ -134,7 +135,8 @@ def build_spos(cx, helpers, cover):
     fb.label('cov')
     fb.op('CallN', dst=cv, fun=cover, args=[fac, ae, tgt, f_false, no_arr])
     fb.op('JSLte', a=cv, b=b.const('f64', 0), offset='a')
-    # nearest at-war structure (not the target): the guns to step away from
+    # nearest at-war structure (not the target) covering the army: the guns to step away from
+    c1 = fb.reg(cx.t('f64'))
     fb.op('Null', dst=ee)
     fb.op('Mov', dst=bd, src=b.const('f64', 1 << 30))
     fb.op('Mov', dst=k, src=zi)
@@ -156,6 +158,12 @@ def build_spos(cx, helpers, cover):
     fb.op('JEq', a=se, b=tgt, offset='g')
     fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', ae, se))
     fb.op('JSGte', a=d, b=bd, offset='g')
+    # only a structure whose guns reach the army: Fremen at Atreides' Arkwaz stepped away from a gunless Smugglers
+    # InfiltrationCell 50 off (towards Arrakeen's guns, the real cover) 76 times in 3 min
+    sst = b.cast(fb.dyn(se), 'ent.Structure')
+    fb.op('JNull', reg=sst, offset='g')
+    fb.op('Call3', dst=c1, fun=helpers['cover1'], arg0=ae, arg1=sst, arg2=no_arr)
+    fb.op('JSLte', a=c1, b=b.const('f64', 0), offset='g')
     fb.op('Mov', dst=bd, src=d)
     fb.op('Mov', dst=ee, src=se)
     fb.op('JAlways', offset='g')

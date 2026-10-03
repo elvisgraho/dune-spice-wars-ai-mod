@@ -40,7 +40,13 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
   hride / rride: f, a (hunt / raid army in transit: the order isn't re-judged, at most RIDE_MAX s)
   keepcap: f, a, s, v (vanilla micro wanted army a to defend our structure s; kept at village v we capture)
   unstick: f, a, tgt, st, ok (siege army standing still in the village with no siege running moved to the target's safe position; st = s still)
-  undeploy: a, ok, nm, sup (installed turret not fighting on hostile land uninstalled; nm = order move blocks removed)
+  undeploy: a, ok, nm, sup, air (installed AA turret uninstalled: nothing flying within AA_R, or idle on hostile land; nm = order move blocks removed)
+  sreach: f, s, rk, hops, rec (special-region village not ours: region id, zone hops to our territory, surveyed by us; rules/sdiag.py)
+  wlet  : f, a, d, pe (worm-targeted army left to walk out on its own: d worm distance, pe path left; rules/worm.py)
+  aagate: f, a (FSpecialInstall refused: no at-war flying army within AA_R; rules/deploy.py)
+  afield / afveto: f, s, sc, d, hops / why (Airfield lifted on a remote village / vanilla's Airfield dropped: behind | spaced; rules/build.py)
+  bkeep : f, tgt, n, ph (siege order kept after its last besieger of ours died; rules/orders.py siege-keep)
+  tkeep : f, a, n, ph (our Military order kept before Action when another order took army a; rules/orders.py take-keep)
   alone: f, tgt, s, c (sole Annex candidate past the opening with no ring / special / spice value: dropped)
   ascore: f, tgt, s, c, cmin, vb, v0, vs, n, dd (x100: Fremen deep-desert surround sum of the best), hold (off-ring candidates dropped by the Fremen ring hold), rt / rs / rdd (best ring village, its score, dd x100), ddh (zone hops of the focus deep desert, 999 none) (Annex value: our best target vs vanilla's best; tools/rules/siege.py)
   noregen: f, a, hp (army without safe regen and full supply removed from the checkUnits Resupply query)
@@ -175,6 +181,8 @@ def parse_lines(lines):
             ev = parse_value(line, k + 6)[0]
             if isinstance(ev.get('e'), dict) and 'cv' in ev:   # old spos rows logged the enemy structure as `e`
                 ev['es'], ev['e'] = ev['e'], 'spos'
+            elif isinstance(ev.get('e'), dict) and 'M' in ev:   # old strike start rows logged the enemy army as `e`
+                ev['en'], ev['e'] = ev['e'], 'strike'
             events.append(ev)
         except (ValueError, IndexError):
             events.append(_salvage(line[k:]) or {'e': 'unparsed'})
@@ -469,7 +477,8 @@ def summarize(events, faction=None, all_orders=False):
             rallies.append(e)
         elif k in ('gather', 'stage'):
             gathers.append(e)
-        elif k in ('treaty', 'patrol', 'turret', 'tveto', 'aring', 'pkeep', 'odead', 'okeep', 'fpeace', 'pannex', 'uhqcap', 'uhqres', 'uhqp', 'uhqx', 'dmz'):
+        elif k in ('treaty', 'patrol', 'turret', 'tveto', 'aring', 'pkeep', 'odead', 'okeep', 'fpeace', 'pannex', 'uhqcap',
+                   'uhqres', 'uhqp', 'uhqx', 'dmz', 'sreach', 'wsteer', 'wveto', 'afield', 'afveto', 'aagate', 'undeploy', 'bkeep', 'tkeep', 'tdem'):
             standoff.append(e)
         elif k in ('wflee', 'weaten', 'dstep', 'whold', 'hrun', 'spos', 'unstick', 'keepcap', 'tension', 'hride', 'rride'):
             worms.append(e)
@@ -651,7 +660,12 @@ def summarize(events, faction=None, all_orders=False):
                    'dmz on = at war, the neighbour holds n villages in regions next to ours (taken, not pillaged), dmz war = '
                    'truce broken by declareWar (cap = border villages it was capturing, r 1 = Success); '
                    'uhqcap = no new Underworld HQ (n ours >= cap); uhqres = no new HQ: Authority left after it < cheapest Annex (au, left, cmin); uhqp = HQ placement (cand candidates, kept, newf in factions '
-                   'hosting none of ours); uhqx = HQ extension score (k, sc ours (NaN = skip), van vanilla)')
+                   'hosting none of ours); uhqx = HQ extension score (k, sc ours (NaN = skip), van vanilla); '
+                   'afield = Airfield lifted on a remote village (d from our base, hops); afveto = vanilla Airfield dropped '
+                   '(behind our base / spaced: another of ours within AF_SPACING); aagate = Fremen AA turret install refused '
+                   '(nothing flying in reach); undeploy = installed AA turret uninstalled (air = flyers in reach); '
+                   'bkeep = siege kept after its lone besieger died; tkeep = Military order kept when another order took '
+                   'one army before Action; tdem = building demolished for a front battery')
         c = Counter((e.get('f'), e['e'], e.get('act') or '') for e in standoff)
         out.append('  ' + ', '.join(f'{f}:{k}{":" + a if a else ""} x{n}' for (f, k, a), n in sorted(c.items(), key=str)))
         for e in standoff[-16:]:
@@ -681,6 +695,21 @@ def summarize(events, faction=None, all_orders=False):
                 out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} okeep  order kept with {e.get('n')} armies (ph{e.get('ph')})")
             elif e['e'] in ('aring', 'pkeep'):
                 out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {e['e']:<6} {ent(e.get('v'))[:22]:<22} v0{e.get('v0', '')}")
+            elif e['e'] in ('afield', 'afveto'):
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {e['e']:<6} {ent(e.get('s'))[:22]:<22} "
+                           f"{e.get('why') or ''} sc{e.get('sc')} d{e.get('d')} hops{e.get('hops', '-')}")
+            elif e['e'] in ('aagate', 'undeploy'):
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {e['e']:<8} {ent(e.get('a'))[:22]:<22} "
+                           + (f"ok{e.get('ok')} nm{e.get('nm')} sup{e.get('sup')} air{e.get('air')}" if e['e'] == 'undeploy' else ''))
+            elif e['e'] in ('wsteer', 'wveto'):
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {e['e']:<6} {ent(e.get('s'))[:22]:<22} {e.get('k')} "
+                           f"{e.get('why') or ''} sc{e.get('sc')} m{e.get('m', '')} disc{e.get('disc', '')}")
+            elif e['e'] == 'sreach':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} sreach {ent(e.get('s'))[:22]:<22} {e.get('rk')} hops{e.get('hops')} rec{e.get('rec')}")
+            elif e['e'] in ('bkeep', 'tkeep'):
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {e['e']} {ent(e.get('tgt') or e.get('a'))[:22]:<22} n{e.get('n')} ph{e.get('ph')}")
+            elif e['e'] == 'tdem':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} tdem   {ent(e.get('s'))[:22]:<22} {e.get('k')} n{e.get('n')} hops{e.get('hops')}")
             elif e['e'] == 'tveto':
                 out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} tveto  {ent(e.get('s'))[:22]:<22} "
                            f"sc{e.get('sc')} n{e.get('n')} hops{e.get('hops')}")

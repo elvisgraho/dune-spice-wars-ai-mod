@@ -1673,6 +1673,16 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     fb.op('JSLte', a=rn, b=zi, offset='ares_ok')
     fb.op('Call2', dst=rau, fun=cx.fn('ent.Faction.getResource').findex.value, arg0=fac,
           arg1=b.const('i32', RES_AUTHORITY))
+    # never more than the stock can hold (Faction.getMaxResStock): Fremen sat at the 500 cap vs need 522 for 6 min
+    # (68:03-73:32) and no Annex could ever launch
+    rmx = b.call('ent.Faction.getMaxResStock', fac, fb.string('Authority'))
+    fb.op('JNull', reg=rmx, offset='ares_cap')
+    rmf = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=rmf, src=rmx)
+    fb.op('JSLte', a=rmf, b=b.const('f64', 0), offset='ares_cap')  # no cap known
+    fb.op('JSLte', a=rneed, b=rmf, offset='ares_cap')
+    fb.op('Mov', dst=rneed, src=rmf)
+    fb.label('ares_cap')
     fb.op('JSGte', a=rau, b=rneed, offset='ares_ok')
     _throttle(fb, b, cx, 'ares', fac, 10, 'ares_nl')
     _log_ev(fb, b, cx, helpers, 'ares', [('f', fb.get(fac, 'kind')), ('tgt', s_e), ('au', rau), ('need', rneed),

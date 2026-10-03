@@ -7,8 +7,9 @@ danger, and when a structure of ours needs them (raid.py `defend` / `home` split
 
 aimod_relunits(order, annex, keep) -> armies released. Who stays: an army below RELEASE_SUP supply (the pillage refill /
 the captured village resupplies it there), on an Annex also one below RELEASE_LIFE health (it heals at the new
-village), and always the keeper: the weakest permanent army (aimod_pw, hasSafeRegen: a temporary one disbands and
-the emptied order is cancelled; the weakest of any if none is permanent). Everyone else is removed from the order
+village), and always the keeper: the weakest permanent ground army (aimod_pw, hasSafeRegen: a temporary one disbands
+and the emptied order is cancelled; the weakest ground one if none is permanent; never a flyer: Unit.isFlying armies
+can't occupy, nothing is released from an order of flyers only). Everyone else is removed from the order
 (idle: vanilla's Defense / our hunts / raid pick them up). Nothing is released from an order of one army or when all
 need the refill. keep: power (aimod_pw) the staying armies must still hold; an army leaves only while the rest keep at
 least that much (release: 0; raid split: ENTER x the enemy side at the target / terrain: Fremen's Liberate of Arknit,
@@ -75,6 +76,9 @@ def build_relunits(cx, pw):
     fb.label('p1w')
     fb.op('Call1', dst=p, fun=pw, arg0=a)
     fb.op('Add', dst=tp, a=tp, b=p)
+    # the keeper must walk: flying armies (ships) can't occupy, a ship left alone stalls the occupation (Harkonnen's
+    # Pillage of Tab-Al'lon kept its H_Ship, released the H_Elite at 23%: stuck 8+ min)
+    fb.op('JTrue', cond=b.call('ent.Unit.isFlying', a), offset='p1')
     fb.op('JSGte', a=p, b=best, offset='p1r')
     fb.op('Mov', dst=best, src=p)
     fb.op('Mov', dst=weak, src=a)
@@ -90,6 +94,7 @@ def build_relunits(cx, pw):
     fb.op('JNull', reg=weakr, offset='p1k')
     fb.op('Mov', dst=weak, src=weakr)
     fb.label('p1k')
+    fb.op('JNull', reg=weak, offset='end')  # only flyers: nobody could finish it alone, release none
     # pass 2, backwards (removeUnit shrinks the list): the keeper and the needy stay, the others go
     fb.op('Mov', dst=j, src=b.field(units, 'length'))
     b.loop_head('p2')
