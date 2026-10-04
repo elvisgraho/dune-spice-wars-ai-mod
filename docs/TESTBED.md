@@ -33,6 +33,8 @@ ai-mod\mod.cmd launch          # or start normally
 | Your `patches/data.json` AI changes | same pack, so you test your mod |
 | O/P/K/L/F9/F10 macros (L = `info` = log marker, F9/F10 = speed 2/4, K = fog), fog off | `prefs.sav` (`shortcutCommands`, `admin.noFog`) |
 
+`noFog` is game-wide: `Faction.applyVisibility` marks every cell visible for every faction, AI included. The testbed runs with fog on (`noFog: false`, our AI respects fog); pressing K blinds-off every AI too. Factions start with 1000 Intel and 10 agents (`startResources` Intel / Agent) for operation tests.
+
 Seed stays random (`PREFS.seed = 0`). AI difficulty is **Insane** (hard-coded in `allFactionsNewGame`). Hegemony, political and economy victories are blocked, so matches run until military supremacy.
 
 ## Scenario knobs (`testbed/scenario.json`)

@@ -214,6 +214,7 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.op('JNull', reg=sarr, offset='sok')
     sk = fb.reg(cx.t('i32'))
     sx = _army_loop(fb, b, sarr, b.field(sarr, 'length'), sk, 'so', 'sok')
+    fb.op('JFalse', cond=b.call('ent.Entity.isVisibleForFaction', sx, fac), offset='so')  # fog: unseen ones stay counted
     sxo = b.call('ent.Entity.get_owner', sx)
     spe_t = cx.code.types[cx.fn('ent.MobileEntity.getCurrentPathEnd').type.value].definition.ret.value
     spe = fb.reg(spe_t)

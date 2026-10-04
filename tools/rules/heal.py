@@ -118,6 +118,22 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     t = fb.reg(cx.t('f64'))
     fb.op('Call2', dst=t, fun=terrain, arg0=1, arg1=z)
     fb.op('Mul', dst=bal, a=bal, b=t)
+    # bold ops of ours running in this zone (Sleeper Agent / Combat Drugs, rules/opsbrain.py map `opbold`): their
+    # dead spawn our sleepers, drugs add 30% damage: hold the fight (user: Harkonnen retreated from Atreides with both on)
+    # the balance here (terrain-adjusted, before bold) for the fight ops (rules/opsbrain.py): maps `wzbv` / `wzbt`
+    # per faction, warzone -> value / time; an op on a fight this check is leaving anyway is wasted
+    b.call('haxe.ds.ObjectMap.set', _fac_map(fb, b, cx, 'wzbv', 1), fb.dyn(0), fb.dyn(bal))
+    b.call('haxe.ds.ObjectMap.set', _fac_map(fb, b, cx, 'wzbt', 1), fb.dyn(0),
+           fb.dyn(b.field(_state(fb, b, cx), 'time')))
+    bz = _uid('bold')
+    fb.op('JNull', reg=z, offset=bz)
+    bv = b.call('haxe.ds.ObjectMap.get', _fac_map(fb, b, cx, 'opbold', 1), fb.dyn(z))
+    fb.op('JNull', reg=bv, offset=bz)
+    bq = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=bq, src=bv)
+    fb.op('JSLt', a=bq, b=b.field(_state(fb, b, cx), 'time'), offset=bz)
+    fb.op('Mul', dst=bal, a=bal, b=_ratio(fb, b, OPS_BOLD_K))
+    fb.label(bz)
     # supply factor over our armies in the warzone (same radius as vanilla's balance)
     tot, st, p, dx, dy = (fb.reg(cx.t('f64')) for _ in range(5))
     zero = b.const('f64', 0)
@@ -216,6 +232,7 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     i4 = fb.reg(cx.t('i32'))
     c2 = b.const('f64', CONTACT * CONTACT)
     x4 = _army_loop(fb, b, all_a, alen4, i4, 'pen', 'pendone')
+    fb.op('JFalse', cond=b.call('ent.Entity.isVisibleForFaction', x4, 1), offset='pen')  # fog: seen enemies only
     xo = b.call('ent.Entity.get_owner', x4)
     fb.op('JNotNull', reg=xo, offset='powned')
     rd = b.field(x4, 'raid')  # a neutral raider counts only when it raids us

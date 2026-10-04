@@ -6,8 +6,7 @@ territory, which then walk home out of the zone. The drop is a zone effect (TSup
 non-mech units in that zone gain 80 supply / day and lose none. It pays off only where armies stay: a far siege's
 militia fight, a fight off our land, a stranded army.
 
-- `sdrop-block`: checkOperations' tryLaunchOperation call -> wrapper: a held MSupplyDrop is never launched by vanilla
-  (logs `sdrop` act veto, 120 s per faction).
+- vanilla never launches it (rules/ops.py ops-block, like every military op).
 - `aimod_sdrop(mil, dt)` (tick chain before raid, every SD_CHECK s), only while we hold a ready MSupplyDrop
   (MissionManager.getCompleteMissions):
   1. Locked task (map `sdlk` faction -> order, one slot): kept while the order lives (phase <= Action) and its
@@ -38,49 +37,10 @@ militia fight, a fight off our land, a stranded army.
 Cast = `AbilityManager.canUseAbilityOn` / `useAbilityOn("SupplyDrop", {src: DisplayTarget.Spying(fac), zone})` as
 vanilla's case. Fails safe: in a trap."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
+from rules.opsbrain import ops_scores
 
 ENGAGE = 4  # AIOrder.phase Engage (common: REGROUP 3, ACTION 5)
 PREP = 2    # AIOrder.phase Preparation
-
-
-def build_sdrop_block(cx, helpers, new_ids):
-    orig = cx.fn('logic.ai.Spying.tryLaunchOperation')
-    ft = cx.code.types[orig.type.value].definition
-    args = [a.value for a in ft.args]
-    if len(args) != 2 or ft.ret.value != cx.t('bool') or args[1] != cx.t('logic.faction.Mission'):
-        raise ValueError('sdrop-block: tryLaunchOperation(spying, mission) -> Bool expected')
-    fb = FB(cx, args, ft.ret.value, fun_type=orig.type.value)
-    b = B(fb)
-    res, blk = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
-    fb.op('Bool', dst=blk, value=False)
-    guard = fb.try_()
-    fb.op('JNull', reg=1, offset='g_end')
-    mid = b.field(1, 'id')
-    fb.op('JNull', reg=mid, offset='g_end')
-    fb.op('JNotEq', a=b.call('String.__compare', mid, fb.dyn(fb.string(SD_OP))), b=b.const('i32', 0), offset='g_end')
-    fb.op('Bool', dst=blk, value=True)
-    fac = b.field(0, 'f')
-    fb.op('JNull', reg=fac, offset='g_end')
-    _throttle(fb, b, cx, 'sdveto', fac, 120, 'g_end')
-    _log_ev(fb, b, cx, helpers, 'sdrop', [('f', fb.get(fac, 'kind')), ('act', 'veto')])
-    fb.label('g_end')
-    fb.end_try(guard)
-    fb.op('JTrue', cond=blk, offset='no')
-    fb.op('Call2', dst=res, fun=orig.findex.value, arg0=0, arg1=1)  # vanilla, outside any trap
-    fb.op('Ret', ret=res)
-    fb.label('no')
-    fb.op('Bool', dst=res, value=False)
-    fb.op('Ret', ret=res)
-    w = fb.build()
-    new_ids.add(w)
-    caller = cx.fn('logic.ai.Spying.checkOperations')
-    sites = [op for op in caller.ops if op.op.startswith('Call') and op.df.get('fun') is not None
-             and op.df['fun'].value == orig.findex.value]
-    if len(sites) != 1:
-        raise ValueError(f'sdrop-block: expected 1 tryLaunchOperation call in checkOperations, found {len(sites)}')
-    for op in sites:
-        op.df['fun'].value = w
-    return {'sdrop-block': len(sites)}
 
 
 def build_sdrop(cx, helpers, pw, land, supok, own, threat):
@@ -146,6 +106,14 @@ def build_sdrop(cx, helpers, pw, land, supok, own, threat):
     cres = fb.reg(rt)
     cix = fb.reg(cx.t('i32'))
 
+    def _low(army, skip):
+        """Jump to `skip` unless army's supply is at most SD_LOW of its max (user: a drop at 30-50% was wasted)."""
+        lr = fb.reg(cx.t('f64'))
+        ms = b.call('ent.Army.get_maxSupply', army)
+        fb.op('JSLte', a=ms, b=b.const('f64', 0), offset=skip)
+        fb.op('SDiv', dst=lr, a=b.call('ent.Army.get_supply', army), b=ms)
+        fb.op('JSGt', a=lr, b=_ratio(fb, b, SD_LOW), offset=skip)
+
     def cast_drop(fail):
         """cast on zone z; falls through on success (sdz[z] = now + SD_DUR), else jumps to `fail`."""
         abm = b.call('ent.Faction.get_abilities', fac)
@@ -206,11 +174,14 @@ def build_sdrop(cx, helpers, pw, land, supok, own, threat):
     fb.op('JTrue', cond=b.call('ent.Unit.isMechanical', a), offset='lka')
     fb.op('JFalse', cond=b.call('ent.Army.isLosingSupply', a), offset='lka')
     fb.op('JSGt', a=b.call('ent.Army.get_supply', a), b=cneed, offset='lka')
+    _low(a, 'lka')
     fb.label('lk_cast')
     cast_drop('lk_fail')
     b.call('haxe.ds.ObjectMap.remove', lk, fb.dyn(fac))
     _log_ev(fb, b, cx, helpers, 'sdrop', [('f', fb.get(fac, 'kind')), ('act', 'cast'), ('why', 'lock'), ('tgt', ve),
-                                          ('sa', fb.get(o, 'siegeAction'))])
+                                          ('sa', fb.get(o, 'siegeAction')), ('a', a),
+                                          ('sup', b.call('ent.Army.get_supply', a)),
+                                          ('ms', b.call('ent.Army.get_maxSupply', a))])
     fb.op('JAlways', offset='end')
     fb.label('lk_fail')
     _throttle(fb, b, cx, 'sdfail', fac, 30, 'lk_hold')
@@ -290,6 +261,7 @@ def build_sdrop(cx, helpers, pw, land, supok, own, threat):
     fb.op('JTrue', cond=b.call('ent.Unit.isMechanical', a), offset='ea')
     fb.op('JSLte', a=b.call('ent.Army.get_maxSupply', a), b=zero, offset='ea')
     fb.op('Mov', dst=sup, src=b.call('ent.Army.get_supply', a))
+    _low(a, 'ea')
     fb.op('Call2', dst=ld, fun=land, arg0=fac, arg1=ae)
     fb.op('JSLt', a=ld, b=eland, offset='ea')
     sok = fb.reg(cx.t('bool'))
@@ -451,6 +423,7 @@ def build_sdrop_buy(cx, helpers, new_ids):
     guard = fb.try_()
     fb.op('JNull', reg=res, offset='end')
     fb.op('JNull', reg=1, offset='end')
+    ops_scores(fb, b, cx, res, 1)  # rules/opsbrain.py: loadout rank scores
     mm = b.call('ent.Faction.get_missionManager', 1)
     fb.op('JNull', reg=mm, offset='end')
     n = fb.reg(cx.t('i32'))

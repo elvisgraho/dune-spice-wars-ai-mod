@@ -29,20 +29,31 @@ reach, war = [{f, ds (desiredStatus toward it), pw (its army power)}] per at-war
 dropped press (why done | gone | truce | slow | weak; + ha hc hm hn = their armies / cover / militia / raiders, tf,
 pr = our occupation progress, rem = its remaining s, -1 when not occupying). Fails safe: in a trap."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
+from rules.intel import _seen_map, _rec_get, _rec_of
 
 POSTURES = ('', 'defend', 'hold', 'press', 'expand', 'harass', 'recover')  # index RECOVER_POST = recover
 
 
 def build_fpow(cx, pw):
-    """aimod_fpow(f) -> power of faction f's combat armies (no militia, harvesters, transported, dead)."""
-    fb = FB(cx, [cx.t('ent.Faction')], cx.t('f64'))
+    """aimod_fpow(f, obs) -> power of faction f's combat armies (no militia, harvesters, transported, dead) as obs
+    knows it (fog of war, rules/intel.py): obs null or f itself: the truth; else each army at its power when obs
+    last saw it (any age: the stack still exists somewhere), armies obs never saw not at all."""
+    fb = FB(cx, [cx.t('ent.Faction'), cx.t('ent.Faction')], cx.t('f64'))
     b = B(fb)
     tot = b.const('f64', 0)
     fb.op('JNull', reg=0, offset='end')
+    mp = _seen_map(fb, b, cx, 1)
     arr, alen = _my_armies(fb, b, 0, 'end')
     i, p = fb.reg(cx.t('i32')), fb.reg(cx.t('f64'))
     x = _army_loop(fb, b, arr, alen, i, 'loop', 'end')
     fb.op('JNotNull', reg=b.field(x, 'harvestComponent'), offset='loop')
+    fb.op('JNull', reg=1, offset='live')
+    fb.op('JEq', a=1, b=0, offset='live')
+    fb.op('JTrue', cond=b.call('ent.Entity.isVisibleForFaction', x, 1), offset='live')
+    rec = _rec_of(fb, b, cx, mp, x, 'loop')
+    fb.op('Add', dst=tot, a=tot, b=_rec_get(fb, b, cx, rec, 'p'))
+    fb.op('JAlways', offset='loop')
+    fb.label('live')
     fb.op('Call1', dst=p, fun=pw, arg0=x)
     fb.op('Add', dst=tot, a=tot, b=p)
     fb.op('JAlways', offset='loop')
@@ -383,7 +394,7 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.label('fresh')
     fb.op('Call2', dst=d, fun=land, arg0=fac, arg1=ve)
     fb.op('JSGt', a=d, b=front_r, offset='v')
-    fb.op('Call1', dst=et, fun=fpow, arg0=vo)
+    fb.op('Call2', dst=et, fun=fpow, arg0=vo, arg1=fac)
     fb.op('JSLt', a=T, b=et, offset='v')  # never poke the stronger side
     # our spare armies in reach (+ our cover) vs their side
     cover_at(m, ve, True, atk=True)
@@ -559,7 +570,7 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('Mov', dst=ds, src=b.call('logic.ai.Diplomacy.getTargetStatus', dip, ef))
     fb.label('nods')
     fb.end_try(gd)
-    fb.op('Call1', dst=et, fun=fpow, arg0=ef)
+    fb.op('Call2', dst=et, fun=fpow, arg0=ef, arg1=fac)
     wd = fb.reg(cx.t('dynobj'))
     fb.op('New', dst=wd)
     b.put(wd, 'f', fb.get(ef, 'kind'))

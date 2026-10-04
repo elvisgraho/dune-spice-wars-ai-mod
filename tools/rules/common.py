@@ -239,9 +239,32 @@ PANNEX_INF = 100   # peaceful annex (siege.py launch gate): Atreides use Peacefu
                    # this much Influence, so force peace / diplomacy keep a reserve
 PANNEX_MIN_VILLAGES = 4  # ... and only once we own this many villages: the opening's idle armies annex for free
                    # while Influence is scarce (user: early peaceful annexes wasted it)
+OPS_CHECK = 2      # s: operations pass (rules/opsbrain.py) per AI faction holding an op
+OPS_W = 100        # opsbuy: a wanted op scores this minus OPS_W_STEP x its loadout rank (vanilla data weights 0-10)
+OPS_W_STEP = 15
+OPS_EXTRACT_B = 0.45  # Extraction Network: our armies at the siege below this x their side there ...
+OPS_EXTRACT_LAND = 300  # ... and the target at least this far from our land (a long walk home)
+OPS_LATE = 0.75    # Cease Fire: only while the enemy capture of our village is below this progress
+OPS_CF_HOPE = 0.9  # ... and our power within RALLY_R (+ cover) is below this x theirs within LOCAL
+OPS_BIGFIGHT = 120000  # fight ops: both sides' power together at least this (~3 armies; 250k skipped every Harkonnen-Fremen fight of match 23:36: 2-3 armies a side, 169-181k)
+OPS_B_LO = 0.7     # combat ops in fights with balance (ours / theirs) in [OPS_B_LO, OPS_B_HI]: they swing it
+OPS_B_HI = 2.0
+OPS_DRUG_HI = 1.4  # Combat Drugs alone (no Sleeper held) only up to this balance
+OPS_SCAV_B = 0.8  # Scavenger Team on a big fight from this balance (their dead pay; ours would too, but we lose less)
+OPS_BOLD_K = 1.5   # fight retreat balance x this in a zone where our Sleeper Agent / Combat Drugs runs (0.65 -> ~0.43)
+OPS_THUMP_PW = 150000  # deny thumper: their visible group in its zone at least this ...
+OPS_THUMP_DEPTH = 200  # ... still this far from its path end (a long desert walk: it can't just step out) ...
+OPS_THUMP_NEAR = 150   # ... which lies this close to a structure of ours ...
+OPS_THUMP_HOPE = 1.0   # ... and our armies within RALLY_R + cover there below this x their group
+OPS_WZB_T = 10      # s: our fight retreat's balance for a warzone counts for the fight ops this long
+OPS_FIGHT_H = 60000  # fight ops: their visible side at least this (B is ours / theirs; a mop-up is no fight)
+OPS_SCAV_H = 120000  # Scavenger Team on a fight: their side at least this (their dead pay)
+OPS_DRUG_SITE = 1.2  # Harkonnen Combat Drugs on a sietch / renegade garrison fight only while winning by this
+OPS_SAB_SHARE = 0.3  # Defense Sabotage: enemy turret cover at the target at least this share of their side
 SD_OP = 'MSupplyDrop'  # Supply Drop operation (rules/sdrop.py): ability SupplyDrop, zone effect TSupplyDrop: allied
                    # non-mech units in the zone +80 supply / day and no supply loss, 3 days
 SD_DUR = 90        # s: its duration (3 days x 30 s)
+SD_LOW = 0.1       # Supply Drop: cast only for an army at most this share of its max supply (user: at ~5%)
 SD_CHECK = 3       # s: sdrop pass period
 SD_CAST_R = 150    # a locked task's drop is cast once an order army is this close to the target (Engage: the armies
                    # are entering the target zone; the militia fight follows)
@@ -333,6 +356,9 @@ SPOS_IN = 80       # Engage: only armies already this close (walkers aren't pull
 SPOS_OFF = 25      # the safe point: this far from the target's centre, away from the nearest enemy structure (inside
                    # the occupation range: occupiers seen up to ~30 from the village)
 SPOS_T = 4         # s: an army is re-sent at most this often (micro re-engages in between)
+SCOUT_NEED = {1: (2, 0), 2: (3, 2), 3: (2, 2)}  # scout wait (rules/annex.py): structures owned (main base included) ->
+                   # Annex candidates needed (Fremen / Vernius, others) before an early village is taken ...
+SCOUT_WAIT = 120   # s: ... at most this long, then take it
 ALONE_HOLD = 60    # s: raid skips a village the Annex value dropped as a plain lone candidate this recently
 DIST_COST_ATB = 952  # Outpost_DistanceCost_MRatio: Annex cost grows with distance (> 0); Smugglers don't have it
 FAR_ZONES = 1      # extra zones of siege-target reach for a faction without that cost (vanilla AI: 1 zone total)
@@ -350,6 +376,14 @@ RAID_GAUGE = 85    # a raid doesn't start while our Annexation gauge is this ful
                    # and takes the raid's armies (Fremen raid on Damrekh cancelled 8 s after start)
 RAID_GAUGE_T = 20  # ... unless it stayed that full this many s: the Annex isn't coming (unaffordable, no army, ...)
 HRUN_T = 20        # s: an outgunned harvester under fire is sent to a safe field (or home) at most this often
+INTEL_T = 1        # s: fog of war (rules/intel.py): sighting pass per AI faction
+SEEN_T = 90        # s: a hostile army unseen this long is no longer counted by the local queries (aimod_fpow keeps it)
+SEEN_HOME_T = 300  # s: ... but one last seen within SEEN_HOME_R of our land this long (user: a capturing stack at our
+SEEN_HOME_R = 150  # conceded village went into stealth; we never saw it leave)
+GHOST_SPD = 3      # units/s: an unseen army is assumed this much closer per second since its sighting (half of
+                   # CONTEST_SPD: worst case it walks our way, most don't) ...
+GHOST_R_MAX = 90   # ... capped at this: a remembered stack is expected near where it was seen
+BUSY_SEEN_T = 30   # s: an army last seen fighting / capturing counts as busy (BUSY_W where the query discounts) this long
 BUSY_W = 0.25      # aimod_threat family: an at-war army occupying a structure more than BUSY_R from the query point
 BUSY_R = 60        # counts this share (busy capturing elsewhere: no scare for defending another place)
 OUT_W = 0.5        # ... a query point on our land: an idle at-war army standing off our land counts this share (it
@@ -371,6 +405,9 @@ OCC_REFILL = 0.5   # = data Army_Supply_Resupply_OccupationRatio: share of max s
 NEUTRAL_REQ = 1.25 # siege launch: required ratio on a neutral target (vanilla 1.0). Below ENTER: militia is known and
                    # never reinforced, and siege-join adds the idle armies nearby on top
 EARLY_VILLAGES = 2  # opening: while we own fewer villages than this, a neutral target needs only EARLY_REQ (vanilla)
+OWNED_REQ = 1.3    # siege launch: required ratio on an owned (at-war) village (vanilla's own often 1.05-1.2: those lost)
+OWNED_D0 = 200     # ... raised x (1 + (distance from our land - OWNED_D0) / OWNED_DK) beyond that distance
+OWNED_DK = 600     # (415 away: x1.36 = 1.77; 877 away: x2.13 = 2.77)
 EARLY_REQ = 1.0    # ... at launch and at the target: the 2 armies of a normal start vs a 2-defense village fall between
                    # 1.0 and NEUTRAL_REQ, and the AI waited instead of taking its first villages
 JOIN_R = HUNT_R    # siege launch: idle armies this close to the target may join (vanilla sends the minimum) ...
@@ -393,6 +430,11 @@ UNREACH_T = 300    # s: a target whose last order died in Waiting (vanilla's pat
                    # not while we hold a free Supply Drop (sdrop-trip lifts that check)
 LOST_T = 900       # s: a siege target whose last order of ours reached Engage and lost >= 1 / LOST_SHARE_DEN of
 LOST_SHARE_DEN = 2 # ... its armies is out of our target scores this long (lost-siege memory: no second assault the same way)
+SQ_MIN = 1.5       # square law vs militia (rules/sqlaw.py): (our dps sum x hp sum) / theirs at least this (743 fights:
+                   # >= 1.5 won 97%, below 55-61%)
+DRAIN_HP = 0.45    # siege drain (rules/drain.py): a siege in Action whose armies' mean life fell below this ...
+DRAIN_DROP = 0.25  # ... and at least this much since Action began ...
+DRAIN_PR = 0.15    # ... with the capture there below this progress (a capture under way: the fight was won; 0.6 cancelled two won pillages at 40%): cancelled, target into lost-siege memory
 LOST_WIN = 600     # s: ... judged only within this of that launch (a capture that succeeded and was lost later stays a target)
 FAIL_N = 3         # stuck: this many vanilla launches on one target ending without an order (ArmyNotStrongEnough,
 FAIL_WIN = 120     # NotEnoughArmies, ...) within this many s drop it from the target scores for FAIL_BLOCK s, doubled

@@ -3,10 +3,10 @@
   "factions": ["Atreides", "Harkonnen", "Smugglers", "Fremen"],
   "humanSlot": 0,
   "mapCells": 130,
-  "noFog": true,
+  "noFog": false,
   "startResources": {
     "Solari": 15000, "Plascrete": 4000, "Manpower": 1200,
-    "Authority": 400, "Influence": 400, "Intel": 200, "GuildFavor": 200
+    "Authority": 400, "Influence": 400, "Intel": 1000, "Agent": 10, "GuildFavor": 200
   },
   "armies": {
     "Atreides":  ["A_Trooper", "A_Trooper", "A_Trooper", "A_Soldier", "A_Soldier", "A_Soldier", "A_Demo", "A_Elite"],

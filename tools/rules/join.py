@@ -4,7 +4,7 @@ target pass enter)."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
 
 
-def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, new_ids, neutral):
+def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, new_ids, neutral, sqr):
     """Siege launch sizing: the pickUnits call(s) in tryArmyAction (every vanilla siege launch after the gate).
     Vanilla requires balance 1.0 flat for a neutral target and adds idle armies closest-first only until it is
     reached, so a village gets 2 armies while more sit idle next to it: the militia fight drags on (~50 s), drains
@@ -12,13 +12,13 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
     0. vanilla's candidates (consideredUnits) lose armies on a Discovery trip farther than JOIN_R from the target and,
        unless a free Supply Drop is held, armies whose walk there fails vanilla's siege supply check (SUP_U x distance
        > SD_VAN_K x supply: one such army cancels the whole order with InsufficientSupply; log `trippick`);
-    1. neutral target (targetFaction null): requiredPowerBalance raised to NEUTRAL_REQ, except in the opening (we own
+    1. owned target (targetFaction set): requiredPowerBalance raised to OWNED_REQ; neutral target (targetFaction null): raised to NEUTRAL_REQ, except in the opening (we own
        fewer than EARLY_VILLAGES villages: vanilla's EARLY_REQ, so the starting armies take the first villages); a
        sietch or a renegade base: ENTER;
     3. a sietch / renegade base: fewer than SIETCH_ARMIES / RENEGADE_ARMIES armies (its garrison) -> empty pick,
        logs `sfloor`; a simulated pick only when we own fewer armies than that (vanilla then recruits instead of
        waiting);
-    2. after the pick, the nearest other considered armies (vanilla getUnits idle list: life/supply >= 90%, not in
+    2. after the pick (and until aimod_sqr vs its militia reaches SQ_MIN), the nearest other considered armies (vanilla getUnits idle list: life/supply >= 90%, not in
        an order of the action's priority or higher, so Discovery/Patrol armies are taken as vanilla does) within
        JOIN_R of the target with supok(a, land(target), SUP_ENTER) and a walk there within vanilla's siege supply check
        (SUP_U x distance <= SD_VAN_K x supply) are appended one by one until our power there
@@ -81,7 +81,26 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
     fb.op('SafeCast', dst=req, src=rq)
     fb.label('req_tf')
     tfac, _ = _vfield(fb, b, 1, 'targetFaction')
-    fb.op('JNotNull', reg=tfac, offset='req_done')
+    # an owned target (at-war village): at least OWNED_REQ (35 such attacks reaching the fight, matches 2026-10-04:
+    # req < 1.25 won 0 of 7 and lost 18 armies, est < 1.3 0 of 5 with 15 dead)
+    fb.op('JNull', reg=tfac, offset='req_neu')
+    fb.op('Mov', dst=enter, src=_ratio(fb, b, OWNED_REQ))
+    # ... x (1 + (its distance from our land - OWNED_D0) / OWNED_DK): a deep attack can't retreat (Harkonnen's Zanit
+    # 415 away lost 7 of 12 walking home from Smugglers' relief, Smugglers' Sinwaz 877 away 4 of 8)
+    fb.op('JNull', reg=owner, offset='req_neu')
+    oes, _ = _vfield(fb, b, 1, 'enemyStructure')
+    fb.op('JNull', reg=oes, offset='req_neu')
+    oe = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=oe, src=b.cast(fb.dyn(oes), 'ent.Entity'))
+    fb.op('JNull', reg=oe, offset='req_neu')
+    odl = fb.reg(cx.t('f64'))
+    fb.op('Call2', dst=odl, fun=land, arg0=owner, arg1=oe)
+    fb.op('Sub', dst=odl, a=odl, b=b.const('f64', OWNED_D0))
+    fb.op('JSLte', a=odl, b=b.const('f64', 0), offset='req_neu')
+    fb.op('SDiv', dst=odl, a=odl, b=b.const('f64', OWNED_DK))
+    fb.op('Add', dst=odl, a=odl, b=b.const('f64', 1))
+    fb.op('Mul', dst=enter, a=enter, b=odl)
+    fb.label('req_neu')
     fb.op('JNull', reg=rq, offset='req_set')
     fb.op('JSGte', a=req, b=enter, offset='req_done')
     fb.label('req_set')
@@ -231,9 +250,15 @@ def build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, ne
     # add the nearest eligible idle army until we have q
     best = fb.reg(cx.t('ent.Army'))
     big = b.const('f64', 1 << 30)
+    sqv = fb.reg(cx.t('f64'))
     b.loop_head('jo')
     fb.op('JSLt', a=m, b=q, offset='jgo')
-    fb.op('JSGte', a=b.field(res, 'length'), b=jmin, offset='jdone')
+    fb.op('JSLt', a=b.field(res, 'length'), b=jmin, offset='jgo')
+    # and until the square law vs its militia holds (rules/sqlaw.py: 2 armies at 1.75x summed power vs 3-6 squads
+    # won 55-59%; at SQ_MIN 97%)
+    fb.op('JNull', reg=st, offset='jdone')
+    fb.op('Call2', dst=sqv, fun=sqr, arg0=res, arg1=st)
+    fb.op('JSGte', a=sqv, b=_ratio(fb, b, SQ_MIN), offset='jdone')
     fb.label('jgo')
     fb.op('Null', dst=best)
     fb.op('Mov', dst=bd, src=big)

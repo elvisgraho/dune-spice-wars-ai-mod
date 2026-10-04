@@ -1,9 +1,133 @@
 """Vanilla siege and order inputs: turret/third-party-aware power reports, bunker target score, siege launch gate
 (defend / bunker / annex-spacing), discovery gate, busy-siege null fix."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
+from rules.intel import _seen_map, _rec_get, _rec_of
 
 
-def build_turret_stats(cx, cover, silence, threat_stats, new_ids):
+
+OWNER_F = (1, 0.75, 0.5, 0.25, 0.1, 0)   # data AI_PowerScore_EnemyAdditionalArmy_Factor: an owner's army by zones away
+OWNER_MB_F = (1, 0.8, 0.65, 0.5, 0.2)    # ... _MainBase_Factor (the target is a main base)
+
+
+def _owner_armies(fb, b, cx, pw, ai, s, res, fac=None, acc=None):
+    """Vanilla getEnemyCombatStats' owner-army part with fog of war: each combat army of s's owner by what the asking
+    faction knows: seen now -> its zone (busy fighting / capturing: x BUSY_W); seen within SEEN_T -> the zone of its
+    sighting (busy then and less than BUSY_SEEN_T ago: x BUSY_W); unknown -> the owner's main base (a player assumes
+    the unseen army is home). Weight = vanilla's factor by zones from s; pushed into res as
+    unitSimulatedCombatStats(army, s's zone) with that externalFactor, as vanilla does. With `acc` (f64 reg) and
+    `fac` (the asking faction): power x weight summed into acc instead (aimod_owner_pw)."""
+    if fac is None:
+        fac = b.field(b.field(ai, 'controller'), 'owner')
+    fb.op('JNull', reg=fac, offset='oa_end')
+    so = b.call('ent.Entity.get_owner', s)
+    fb.op('JNull', reg=so, offset='oa_end')
+    sz = b.call('ent.Entity.get_zone', s)
+    fb.op('JNull', reg=sz, offset='oa_end')
+    dists = b.call('ent.Zone.calcDistanceFrom', sz)
+    fb.op('JNull', reg=dists, offset='oa_end')
+    nd = b.field(dists, 'length')
+    gs = fb.reg(cx.t('$Game'))
+    fb.op('GetGlobal', dst=gs, **{'global': cx.global_of('$Game')})
+    world = b.field(b.field(gs, 'inst'), 'world')
+    fb.op('JNull', reg=world, offset='oa_end')
+    mbz = fb.reg(cx.t('ent.Zone'))
+    fb.op('Null', dst=mbz)
+    mb = b.call('ent.Faction.get_mainBase', so)
+    fb.op('JNull', reg=mb, offset='oa_nomb')
+    mbe = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=mbe, src=mb)
+    fb.op('Mov', dst=mbz, src=b.call('ent.Entity.get_zone', mbe))
+    fb.label('oa_nomb')
+    ismb = b.call('ent.Structure.get_isMainBase', s)
+    mp = _seen_map(fb, b, cx, fac)
+    now = b.field(_state(fb, b, cx), 'time')
+    arr, alen = _my_armies(fb, b, so, 'oa_end')
+    i, dz, zid = fb.reg(cx.t('i32')), fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    z = fb.reg(cx.t('ent.Zone'))
+    f, p, age = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    bz = fb.reg(cx.t('bool'))
+    x = _army_loop(fb, b, arr, alen, i, 'oa_l', 'oa_end')
+    fb.op('JNotNull', reg=b.field(x, 'harvestComponent'), offset='oa_l')
+    fb.op('Call1', dst=p, fun=pw, arg0=x)
+    fb.op('JSLte', a=p, b=b.const('f64', 0), offset='oa_l')
+    fb.op('Bool', dst=bz, value=False)
+    fb.op('JTrue', cond=b.call('ent.Entity.isVisibleForFaction', x, fac), offset='oa_vis')
+    rec = _rec_of(fb, b, cx, mp, x, 'oa_unk')
+    fb.op('Sub', dst=age, a=now, b=_rec_get(fb, b, cx, rec, 't'))
+    fb.op('JSGt', a=age, b=b.const('f64', SEEN_T), offset='oa_unk')
+    fb.op('Mov', dst=z, src=b.call('world.World.getZoneAt', world, _rec_get(fb, b, cx, rec, 'x'),
+                                   _rec_get(fb, b, cx, rec, 'y')))
+    fb.op('JSGt', a=age, b=b.const('f64', BUSY_SEEN_T), offset='oa_zone')
+    fb.op('JSLt', a=_rec_get(fb, b, cx, rec, 'b'), b=b.const('f64', 1), offset='oa_zone')
+    fb.op('Bool', dst=bz, value=True)
+    fb.op('JAlways', offset='oa_zone')
+    fb.label('oa_unk')
+    fb.op('Mov', dst=z, src=mbz)
+    fb.op('JAlways', offset='oa_zone')
+    fb.label('oa_vis')
+    fb.op('Mov', dst=z, src=b.call('ent.Entity.get_zone', x))
+    fb.op('JTrue', cond=b.call('ent.Entity.isFighting', x), offset='oa_vb')
+    fb.op('JNotNull', reg=b.field(x, 'occupiedStructure'), offset='oa_vb')
+    fb.op('JNull', reg=b.field(x, 'contestingStructure'), offset='oa_zone')
+    fb.label('oa_vb')
+    fb.op('Bool', dst=bz, value=True)
+    fb.label('oa_zone')
+    fb.op('JNull', reg=z, offset='oa_l')
+    fb.op('Mov', dst=zid, src=b.field(z, 'id'))
+    fb.op('Mov', dst=dz, src=b.const('i32', 0))
+    fb.op('JSGte', a=zid, b=nd, offset='oa_dz')  # vanilla: an id past the table reads 0
+    fb.op('JSLt', a=zid, b=b.const('i32', 0), offset='oa_dz')
+    fb.op('SafeCast', dst=dz, src=b.call('hl.types.ArrayBytes_Int.getDyn', dists, zid))
+    fb.label('oa_dz')
+    fb.op('JTrue', cond=ismb, offset='oa_mf')
+    for tbl, lab in ((OWNER_F, 'oa_vf'), (OWNER_MB_F, 'oa_mf')):
+        fb.label(lab)
+        for k, v in enumerate(tbl):
+            nxt = f'{lab}{k}'
+            if k < len(tbl) - 1:
+                fb.op('JNotEq', a=dz, b=b.const('i32', k), offset=nxt)
+            fb.op('Mov', dst=f, src=_ratio(fb, b, v))
+            fb.op('JAlways', offset='oa_f')
+            if k < len(tbl) - 1:
+                fb.label(nxt)
+    fb.label('oa_f')
+    fb.op('JSLte', a=f, b=b.const('f64', 0), offset='oa_l')
+    fb.op('JFalse', cond=bz, offset='oa_nb')
+    fb.op('Mul', dst=f, a=f, b=_ratio(fb, b, BUSY_W))
+    fb.label('oa_nb')
+    if acc is not None:
+        fb.op('Mul', dst=p, a=p, b=f)
+        fb.op('Add', dst=acc, a=acc, b=p)
+        fb.op('JAlways', offset='oa_l')
+    else:
+        st = b.call('$HCombatStats.unitSimulatedCombatStats', x, sz)
+        fb.op('JNull', reg=st, offset='oa_l')
+        fb.op('DynSet', obj=st, field=cx.s('externalFactor'), src=f)
+        b.call('hl.types.ArrayObj.push', res, fb.dyn(st))
+        fb.op('JAlways', offset='oa_l')
+    fb.label('oa_end')
+
+
+def build_owner_pw(cx, pw):
+    """aimod_owner_pw(fac, s) -> f64: the owner of structure s's combat armies as faction fac knows them (seen -> its
+    zone, remembered -> the zone of its sighting, unknown -> the owner's main base; busy x BUSY_W), each power x
+    vanilla's owner factor by zones from s (OWNER_F / OWNER_MB_F). 0 for an unowned s or on any error. Raids on an
+    at-war village read their side as at least this (Atreides raided Smugglers' Tab-Al'nin at 274k vs a seen 287k
+    twice and lost everything to 166-245M of order power: the defenders were out of sight)."""
+    fb = FB(cx, [cx.t('ent.Faction'), cx.t('ent.Structure')], cx.t('f64'))
+    b = B(fb)
+    acc = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=acc, src=b.const('f64', 0))
+    guard = fb.try_()
+    fb.op('JNull', reg=0, offset='oa_end')
+    fb.op('JNull', reg=1, offset='oa_end')
+    _owner_armies(fb, b, cx, pw, None, 1, None, fac=0, acc=acc)
+    fb.end_try(guard)
+    fb.op('Ret', ret=acc)
+    return fb.build()
+
+
+def build_turret_stats(cx, cover, silence, threat_stats, new_ids, pw):
     """Turret- and third-party-aware vanilla power reports (pickUnits = attack/defense sizing, getOrderPowerBalance =
     live balance):
     - getEnemyCombatStats(s, ...) for a structure not ours: drop s's own turrets (silent while we annex / pillage
@@ -26,7 +150,34 @@ def build_turret_stats(cx, cover, silence, threat_stats, new_ids):
     b = B(fb)
     void = fb.reg(cx.t('void'))
     res = fb.reg(arr_t)
-    fb.op('Call4', dst=res, fun=orig.findex.value, arg0=0, arg1=1, arg2=2, arg3=3)
+    # fog of war: the owner's armies (vanilla: every one, zone-weighted) are added below from what we know of them
+    own_add = fb.reg(cx.t('bool'))
+    ign = fb.reg(args[3])
+    fb.op('Bool', dst=own_add, value=False)
+    fb.op('Mov', dst=ign, src=3)
+    g0 = fb.try_()
+    fb.op('JNull', reg=1, offset='oa_no')
+    so0 = b.call('ent.Entity.get_owner', 1)
+    fb.op('JNull', reg=so0, offset='oa_no')
+    fb.op('JEq', a=so0, b=b.field(b.field(0, 'controller'), 'owner'), offset='oa_no')
+    fb.op('JNull', reg=3, offset='oa_yes')
+    fl0 = fb.reg(cx.t('bool'))
+    fb.op('SafeCast', dst=fl0, src=3)
+    fb.op('JTrue', cond=fl0, offset='oa_no')
+    fb.label('oa_yes')
+    fb.op('Bool', dst=own_add, value=True)
+    tb = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=tb, value=True)
+    fb.op('Mov', dst=ign, src=fb.dyn(tb))
+    fb.label('oa_no')
+    fb.end_try(g0)
+    fb.op('Call4', dst=res, fun=orig.findex.value, arg0=0, arg1=1, arg2=2, arg3=ign)
+    fb.op('JFalse', cond=own_add, offset='oa_done')
+    fb.op('JNull', reg=res, offset='oa_done')
+    g1 = fb.try_()
+    _owner_armies(fb, b, cx, pw, 0, 1, res)
+    fb.end_try(g1)
+    fb.label('oa_done')
     guard = fb.try_()
     fb.op('JNull', reg=res, offset='end')
     fb.op('JNull', reg=1, offset='end')

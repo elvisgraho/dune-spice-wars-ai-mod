@@ -733,6 +733,63 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('Mov', dst=best, src=se)
     fb.op('JAlways', offset='an2')
     fb.label('an2d')
+    # scout wait (user): too few choices for an early village -> no Annex yet, the ornithopters discover more.
+    # Needed candidates by structures owned (main base included): Fremen / Vernius (no spice field needed first)
+    # SCOUT_FV (1st village 2, 2nd 3, 3rd 2), others SCOUT_ANY (2nd 2, 3rd 2); taken anyway after SCOUT_WAIT s
+    # of waiting (map `ascout` faction -> since when; reset once there are enough). The director's pressed
+    # village stands. Logs `scout` (f, tgt = our best, w = s waited, n, need) once per ASCORE_T
+    sw = _uid('sw')
+    swm = _global_map(fb, b, cx, 'ascout')
+    need = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=need, src=b.const('i32', 0))
+    fv = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=fv, value=False)
+    fk = b.cast(fb.get(fac, 'kind'), 'String')
+    fb.op('JNull', reg=fk, offset=sw + 'k')
+    for nm in ('Fremen', 'Vernius'):
+        fb.op('JNotEq', a=b.call('String.__compare', fk, fb.dyn(fb.string(nm))), b=b.const('i32', 0), offset=sw + nm)
+        fb.op('Bool', dst=fv, value=True)
+        fb.label(sw + nm)
+    fb.label(sw + 'k')
+    for k_, (vf, va) in sorted(SCOUT_NEED.items()):
+        nx = f'{sw}m{k_}'
+        fb.op('JNotEq', a=mn, b=b.const('i32', k_), offset=nx)
+        fb.op('Mov', dst=need, src=b.const('i32', va))
+        fb.op('JFalse', cond=fv, offset=nx)
+        fb.op('Mov', dst=need, src=b.const('i32', vf))
+        fb.label(nx)
+    fb.op('JSGte', a=n, b=need, offset=sw + 'reset')
+    fb.op('JNull', reg=best, offset=sw)
+    fb.op('JEq', a=fb.dyn(best), b=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'spv'), fb.dyn(fac)),
+          offset=sw)
+    swt = fb.reg(cx.t('f64'))
+    swnow = b.field(_state(fb, b, cx), 'time')
+    swv = b.call('haxe.ds.ObjectMap.get', swm, fb.dyn(fac))
+    fb.op('JNotNull', reg=swv, offset=sw + 'have')
+    b.call('haxe.ds.ObjectMap.set', swm, fb.dyn(fac), fb.dyn(swnow))
+    fb.op('Mov', dst=swt, src=b.const('f64', 0))
+    fb.op('JAlways', offset=sw + 'drop')
+    fb.label(sw + 'have')
+    fb.op('SafeCast', dst=swt, src=swv)
+    fb.op('Sub', dst=swt, a=swnow, b=swt)
+    fb.op('JSGte', a=swt, b=b.const('f64', SCOUT_WAIT), offset=sw)
+    fb.label(sw + 'drop')
+    # every candidate out (vanilla's input list)
+    swi = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=swi, src=b.const('i32', 0))
+    b.loop_head(sw + 'dl')
+    fb.op('JSGte', a=swi, b=n, offset=sw + 'dd')
+    b.call('haxe.ds.ObjectMap.remove', res, b.call('hl.types.ArrayObj.getDyn', 0, swi))
+    fb.op('Incr', dst=swi)
+    fb.op('JAlways', offset=sw + 'dl')
+    fb.label(sw + 'dd')
+    _throttle(fb, b, cx, 'scout', fac, ASCORE_T, 'end')
+    _log_ev(fb, b, cx, helpers, 'scout', [('f', fb.get(fac, 'kind')), ('tgt', best), ('w', swt), ('n', n),
+                                          ('need', need)])
+    fb.op('JAlways', offset='end')
+    fb.label(sw + 'reset')
+    b.call('haxe.ds.ObjectMap.remove', swm, fb.dyn(fac))
+    fb.label(sw)
     # lone candidate: past the opening (we own > EARLY_VILLAGES structures), vanilla's only candidate is taken only
     # if it adds something (ring / special region / spice); else dropped: no Annex now, the armies stay free and
     # the supply range grows (Fremen annexed Ur-Al'nun, 181 from Tabr, the sole candidate, 30 s before ring

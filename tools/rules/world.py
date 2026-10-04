@@ -2,6 +2,7 @@
 us), neutral raiders, terrain, own power, free armies, our land, supply budget, turret cover, siege state,
 defensive posture. Each builder appends one function and returns its findex."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
+from rules.intel import _ghost, _seen_map, _known_rec, _rec_get
 
 
 def build_pw(cx):
@@ -78,15 +79,43 @@ def build_threat(cx, pw, horizon_s=HORIZON, stats=False, reach=None, prey=False,
     ref_t = cx.code.types[cx.fn('ent.Unit.getSpeed').type.value].definition.args[1].value
     noref = fb.reg(ref_t)
     fb.op('Null', dst=noref)
+    # fog of war (rules/intel.py): unseen armies count from fac's sightings only
+    mp = _seen_map(fb, b, cx, 0)
+    now = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=now, src=b.field(state, 'time'))
+    qx, qy = b.field(1, 'posx'), b.field(1, 'posy')
+
+    gr = 2
+    if reach is not None:  # aimod_react: a remembered army within the answer radius counts too (busy: BUSY_W)
+        gr = fb.reg(cx.t('f64'))
+        fb.op('Mov', dst=gr, src=2)
+        rch = b.const('f64', reach)
+        fb.op('JSGte', a=gr, b=rch, offset='grok')
+        fb.op('Mov', dst=gr, src=rch)
+        fb.label('grok')
+
+    def ghost(live):
+        gp = _ghost(fb, b, cx, 0, mp, now, x, live, 'loop', qx, qy, gr, busy=discount)
+        fb.op('Add', dst=tot, a=tot, b=gp)
+        if stats:
+            fb.op('JNull', reg=4, offset='loop')
+            fb.op('JNull', reg=5, offset='loop')
+            b.call('hl.types.ArrayObj.push', 4, fb.dyn(b.call('$HCombatStats.unitSimulatedCombatStats', x, 5)))
+        fb.op('JAlways', offset='loop')
+
     x = _army_loop(fb, b, armies, alen, i, 'loop', 'done')
     xo = b.call('ent.Entity.get_owner', x)
     fb.op('JNotNull', reg=xo, offset='owned')
-    _raider_vs(fb, b, x, 0, 'near', 'loop')
+    _raider_vs(fb, b, x, 0, 'rvis', 'loop')
+    fb.label('rvis')
+    ghost('near')
     fb.label('owned')
     fb.op('JEq', a=xo, b=0, offset='loop')
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, 0, xo), offset='loop')
     if stats:
         fb.op('JEq', a=xo, b=3, offset='loop')
+    ghost('olive')
+    fb.label('olive')
     if prey:
         fb.op('JNull', reg=3, offset='near')
         fb.op('JEq', a=xo, b=3, offset='near')  # the prey's own armies
@@ -205,11 +234,18 @@ def build_neutral(cx, pw):
     alen = b.field(armies, 'length')
     i = fb.reg(cx.t('i32'))
     p = fb.reg(cx.t('f64'))
+    mp = _seen_map(fb, b, cx, 0)
+    now = b.field(_state(fb, b, cx), 'time')
+    qx, qy = b.field(1, 'posx'), b.field(1, 'posy')
     x = _army_loop(fb, b, armies, alen, i, 'loop', 'end')
     fb.op('JNotNull', reg=b.call('ent.Entity.get_owner', x), offset='loop')
     fb.op('JNull', reg=b.field(x, 'raid'), offset='loop')
     _raider_vs(fb, b, x, 0, 'loop', 'other')
     fb.label('other')
+    gp = _ghost(fb, b, cx, 0, mp, now, x, 'nlive', 'loop', qx, qy, 2)  # fog: unseen raiders from memory
+    fb.op('Add', dst=tot, a=tot, b=gp)
+    fb.op('JAlways', offset='loop')
+    fb.label('nlive')
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', x, 1), b=2, offset='loop')
     fb.op('Call1', dst=p, fun=pw, arg0=x)
     fb.op('Add', dst=tot, a=tot, b=p)
@@ -411,6 +447,8 @@ def build_home(cx, pw, land, own=False):
         fb.label('noours')
         qx, qy = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
         out2 = b.const('f64', OUT_R * OUT_R)
+        mp = _seen_map(fb, b, cx, 0)
+        now = b.field(state, 'time')
     x = _army_loop(fb, b, arr, alen, i, 'loop', 'end')
     if own:
         fb.op('JNotNull', reg=b.field(x, 'harvestComponent'), offset='loop')
@@ -425,6 +463,13 @@ def build_home(cx, pw, land, own=False):
         fb.op('JEq', a=xo, b=0, offset='loop')
         fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, 0, xo), offset='loop')
         fb.label('hostile')
+        # fog: an unseen army by its sighting (land distance then, minus its possible walk since); last seen busy: out
+        gd = fb.reg(cx.t('f64'))
+        gp = _ghost(fb, b, cx, 0, mp, now, x, 'hlive', 'loop', dist=gd, busy='skip')
+        fb.op('JSGt', a=gd, b=1, offset='loop')
+        fb.op('Add', dst=tot, a=tot, b=gp)
+        fb.op('JAlways', offset='loop')
+        fb.label('hlive')
         fb.op('JTrue', cond=b.call('ent.Entity.isFighting', x), offset='loop')
         fb.op('JNotNull', reg=b.field(x, 'occupiedStructure'), offset='loop')
         fb.op('JNotNull', reg=b.field(x, 'contestingStructure'), offset='loop')
@@ -770,6 +815,10 @@ def build_cover(cx, helpers):
     fb.op('JNull', reg=s, offset='sl')
     fb.op('Mov', dst=se, src=s)
     fb.op('JEq', a=se, b=2, offset='sl')
+    # fog: an enemy structure we never surveyed has unknown turrets (Structure.isReconnedFaction)
+    fb.op('JTrue', cond=3, offset='rcn')
+    fb.op('JFalse', cond=b.call('ent.Structure.isReconnedFaction', s, 0), offset='sl')
+    fb.label('rcn')
     # far structures first (most of the map): no call / trap per structure past turret reach
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', 1, se), b=b.const('f64', COVER_R + TURRET_SPREAD), offset='sl')
     gz = b.call('ent.Entity.get_zone', se)
@@ -1105,6 +1154,10 @@ def build_sieged(cx):
     fb.op('JEq', a=o, b=0, offset='yes')
     fb.op('JTrue', cond=b.call('logic.state.State.areAtWar', state, 0, o), offset='end')
     fb.label('yes')
+    # fog: another faction's / a neutral village's siege state only while we see its cell (ours: the game alerts us)
+    fb.op('JEq', a=b.call('ent.Entity.get_owner', 1), b=0, offset='vok')
+    fb.op('JFalse', cond=b.call('ent.Faction.isInVisibleCell', 0, 1), offset='end')
+    fb.label('vok')
     fb.op('Bool', dst=res, value=True)
     fb.label('end')
     fb.op('Ret', ret=res)

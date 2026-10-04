@@ -48,6 +48,10 @@ from rules.sdiag import *  # noqa: F401,F403
 from rules.release import *  # noqa: F401,F403
 from rules.pannex import *  # noqa: F401,F403
 from rules.sdrop import *  # noqa: F401,F403
+from rules.intel import build_intel
+from rules.opsbrain import build_ops, build_ops_buy, build_agent_steer
+from rules.drain import build_drain
+from rules.sqlaw import build_sqr
 from rules.ops import *  # noqa: F401,F403
 from rules.fopen import *  # noqa: F401,F403
 from rules.isai import *  # noqa: F401,F403
@@ -126,12 +130,14 @@ def _install(cx, helpers, new_ids):
     report['annex-spacing'] = 1
     threat_stats = build_threat(cx, pw, stats=True)
     new_ids.add(threat_stats)
-    report.update(build_turret_stats(cx, cover, silence, threat_stats, new_ids))
+    report.update(build_turret_stats(cx, cover, silence, threat_stats, new_ids, pw))
     report['discovery-gate'] = build_discovery(cx, helpers, threat, pw, terrain, land, supok, new_ids)
     threat_far = build_threat(cx, pw, DISC_HORIZON)
     discabort = build_disc_abort(cx, helpers, pw, threat_far, terrain)
     militia = build_militia(cx)
-    report.update(build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, new_ids, neutral))
+    sqr = build_sqr(cx)  # rules/sqlaw.py: square-law ratio vs a village's militia
+    new_ids.add(sqr)
+    report.update(build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, new_ids, neutral, sqr))
     helpers['tension'] = build_tension(cx)  # contact tension query (rules/tension.py): scoring, hunt, strat
     new_ids.add(helpers['tension'])
     helpers['dmzv'] = build_dmzv(cx)  # DMZ village test (rules/dmz.py): scoring, raid, strat
@@ -144,14 +150,16 @@ def _install(cx, helpers, new_ids):
     hthreat = build_threat(cx, pw, prey=True)
     ttick = build_tension_tick(cx, helpers, threat)
     new_ids.add(ttick)
+    owner_pw = build_owner_pw(cx, pw)  # rules/siege.py: an at-war village owner's armies by our knowledge
+    new_ids.add(owner_pw)
     hunt = build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieged, cover, defend, neutral,
-                      react)
+                      react, owner_pw)
     raidable = build_free(cx, pw, RAID_LIFE, 0, resupply_ok=True)
     raidsup = build_raidsup(cx)
     relunits = build_relunits(cx, pw)  # rules/release.py: who leaves an occupation under way (release, raid split)
     new_ids.add(relunits)
     raid = build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, defend, militia, threat, free,
-                      home, homeown, helpers['scores'], neutral, relunits)
+                      home, homeown, helpers['scores'], neutral, relunits, owner_pw, sqr)
     fpow = build_fpow(cx, pw)
     threat_in = build_threat(cx, pw, 0)  # strat keep: armies within r only (r = what arrives before our capture ends)
     new_ids.add(threat_in)
@@ -200,8 +208,10 @@ def _install(cx, helpers, new_ids):
     report.update(build_ability_gate(cx, new_ids))
     report.update(build_aa_gate(cx, helpers, air, new_ids))
     report.update(build_pannex_gate(cx, helpers, new_ids))  # rules/pannex.py: vanilla's PeacefullyAnnex gated
-    report.update(build_sdrop_block(cx, helpers, new_ids))  # rules/sdrop.py: vanilla never launches Supply Drop
-    report.update(build_ops_gate(cx, helpers, new_ids))  # rules/ops.py: no optional ops on neutral targets
+    report.update(build_ops_block(cx, helpers, new_ids))  # rules/ops.py: vanilla launches no military op
+    report.update(build_ops_gate(cx, helpers, new_ids))  # rules/ops.py: siege orders carry no op lists
+    report.update(build_ops_buy(cx, helpers, new_ids))  # rules/opsbrain.py: buy candidates = loadout wants
+    report.update(build_agent_steer(cx, helpers, new_ids))  # rules/opsbrain.py: agents fill the loadout infiltrations
     report.update(build_isai_guard(cx, helpers, new_ids))  # rules/isai.py: `ai true` leaves running AIs alone
     sdrop = build_sdrop(cx, helpers, pw, land, supok, own, threat)  # rules/sdrop.py: our Supply Drop use (task lock, emergency)
     report.update(build_sdrop_buy(cx, helpers, new_ids))  # rules/sdrop.py: no second unlocked drop bought
@@ -233,9 +243,12 @@ def _install(cx, helpers, new_ids):
     # next Annex choices kept from raid and vanilla's Pillage gauge (rules/raid.py; before raid, which reads them)
     akeep = build_annex_keep(cx, helpers, helpers['scores'])
     new_ids.add(akeep)
-    tick = build_chain(cx, [memory, wormflee, ttick, dmz, strat, hunt, akeep, sdrop, raid, rally, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, sact, sweep])
-    new_ids.update({sdrop, dmz, sact, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
-                    memory, tick})
+    ops = build_ops(cx, helpers, pw, threat, own, cover, militia, land)  # rules/opsbrain.py: our operation casts
+    drain = build_drain(cx, helpers, militia)  # rules/drain.py: worn-down sieges called off
+    intel = build_intel(cx, helpers, pw, land)  # rules/intel.py: fog of war, sightings first
+    tick = build_chain(cx, [intel, memory, wormflee, ttick, dmz, strat, hunt, akeep, sdrop, raid, rally, ops, drain, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, sact, sweep])
+    new_ids.update({drain, sdrop, dmz, sact, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
+                    memory, intel, ops, tick})
     report['strand'] = 1
     report['worm-flee'] = 1
     report['desert-step'] = 1

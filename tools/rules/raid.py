@@ -113,7 +113,7 @@ def _behind(fb, b, cx, state, fac, ve, nbh, skip):
 
 
 def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, defend, militia, threat, free, home,
-               homeown, scores, neutral, relunits):
+               homeown, scores, neutral, relunits, owner_pw, sqr):
     """aimod_raid(mil, dt) (see module doc)."""
     fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
     b = B(fb)
@@ -164,9 +164,19 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
         if atk:
             _atk_cover(fb, b, dst)
 
+    def _owner_floor(dst, s):
+        """dst = max(dst, aimod_owner_pw(fac, s)): an at-war village's owner armies we can't see count where we last
+        saw them / at its main base (fog: never assume an unseen defender is gone)."""
+        u = _uid('of')
+        fb.op('Call2', dst=q, fun=owner_pw, arg0=fac, arg1=s)
+        fb.op('JSLte', a=q, b=dst, offset=u)
+        fb.op('Mov', dst=dst, src=q)
+        fb.label(u)
+
     def their_side(dst, s):
         """dst = at-war armies in reach + enemy turret cover + militia at structure s (entity reg ve)."""
         fb.op('Call3', dst=dst, fun=react, arg0=fac, arg1=ve, arg2=local)
+        _owner_floor(dst, s)
         cover_at(q, ve, False, target=True)
         fb.op('Add', dst=dst, a=dst, b=q)
         fb.op('Call1', dst=q, fun=militia, arg0=s)
@@ -292,6 +302,9 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('Add', dst=hl, a=hl, b=q)
     fb.op('Mul', dst=hl, a=hl, b=abort)
     fb.op('Mul', dst=q, a=h, b=_ratio(fb, b, ABORT * RAID_FAR / ENTER))
+    fb.op('JNull', reg=b.call('ent.Entity.get_owner', ve), offset='aw_nown')
+    fb.op('Mul', dst=q, a=h, b=abort)  # an at-war village: its whole side (the launch test's ENTER x all of it)
+    fb.label('aw_nown')
     fb.op('JSGte', a=hl, b=q, offset='aw_max')
     fb.op('Mov', dst=hl, src=q)
     fb.label('aw_max')
@@ -650,6 +663,7 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('JSGte', a=dmin, b=big, offset='refuse')  # armies near it, none raid-ready (life / supply budget)
     # their side: armies in reach, turrets covering it, its militia
     fb.op('Call3', dst=hq, fun=react, arg0=fac, arg1=ve, arg2=local)
+    _owner_floor(hq, v)
     cover_at(cq, ve, False, target=True)
     fb.op('Call1', dst=mq, fun=militia, arg0=v)
     fb.op('Call3', dst=q, fun=neutral, arg0=fac, arg1=ve, arg2=local)  # other raiders at it: counted as militia
@@ -669,7 +683,14 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('SDiv', dst=q, a=q, b=tf)
     fb.op('Mov', dst=rej_why_c, src=why_weak)
     fb.op('JSLt', a=m, b=q, offset='refuse')
-    fb.op('Mul', dst=q, a=h, b=_ratio(fb, b, RAID_FAR))
+    # an at-war village: its owner defends it (not "may come"): the whole side at ENTER, no RAID_FAR discount
+    # (Smugglers' Liberate of Fremen's Nunesek 46:40 started at 408k vs 355k, lost 3 armies in 15 s when they came)
+    fq = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=fq, src=_ratio(fb, b, RAID_FAR))
+    fb.op('JNull', reg=b.call('ent.Entity.get_owner', ve), offset='rf_n')
+    fb.op('Mov', dst=fq, src=gate)
+    fb.label('rf_n')
+    fb.op('Mul', dst=q, a=h, b=fq)
     fb.op('SDiv', dst=q, a=q, b=tf)
     fb.op('JSLt', a=m, b=q, offset='refuse')
     # home race: hostile armies nearer our land than the raid must be held by what stays home. The raid takes
@@ -763,8 +784,23 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('Call1', dst=p, fun=pw, arg0=ny)
     fb.op('Add', dst=m, a=m, b=p)
     fb.op('JSLt', a=m, b=need, offset='sel')
+    # square law vs its militia (rules/sqlaw.py): keep picking until SQ_MIN
+    bst = fb.reg(cx.t('ent.Structure'))
+    fb.op('Mov', dst=bst, src=b.cast(fb.dyn(best), 'ent.Structure'))
+    sqv = fb.reg(cx.t('f64'))
+    fb.op('Call2', dst=sqv, fun=sqr, arg0=arr, arg1=bst)
+    fb.op('JSLt', a=sqv, b=_ratio(fb, b, SQ_MIN), offset='sel')
     fb.label('seldone')
     fb.op('JSLte', a=b.field(arr, 'length'), b=zi, offset='end')
+    fb.op('Mov', dst=bst, src=b.cast(fb.dyn(best), 'ent.Structure'))
+    fb.op('Call2', dst=sqv, fun=sqr, arg0=arr, arg1=bst)
+    fb.op('JSGte', a=sqv, b=_ratio(fb, b, SQ_MIN), offset='sq_ok')
+    b.call('haxe.ds.ObjectMap.set', retrymap, fb.dyn(best), fb.dyn(t))  # not this village again for RAID_RETRY
+    _throttle(fb, b, cx, 'raidx', fac, RAID_GAP, 'end')
+    _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', 'refuse'), ('why', 'sq'), ('tgt', best),
+                                         ('sq%', sqv), ('M', m), ('H', best_h), ('n', b.field(arr, 'length'))])
+    fb.op('JAlways', offset='end')
+    fb.label('sq_ok')
     # flyers can't occupy (Unit.isFlying: ships, frigates): a pick of flyers only would stand at the village forever
     ga = fb.reg(cx.t('i32'))
     gi = fb.reg(cx.t('i32'))

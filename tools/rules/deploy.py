@@ -84,6 +84,7 @@ def build_air(cx):
     fb.op('JNull', reg=o, offset='loop')
     fb.op('JEq', a=o, b=0, offset='loop')
     fb.op('JFalse', cond=b.call('ent.Unit.isFlying', x), offset='loop')
+    fb.op('JFalse', cond=b.call('ent.Entity.isVisibleForFaction', x, 0), offset='loop')  # fog: seen flyers only
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', x, 1), b=2, offset='loop')
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', st, 0, o), offset='loop')
     fb.op('Incr', dst=n)

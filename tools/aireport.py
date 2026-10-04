@@ -43,11 +43,19 @@ Every event: e=event, t=app seconds, g=game seconds, f=faction (usually). Events
   undeploy: a, ok, nm, sup, air (installed AA turret uninstalled: nothing flying within AA_R, or idle on hostile land; nm = order move blocks removed)
   wlet  : f, a, d, pe (worm-targeted army left to walk out on its own: d worm distance, pe path left; rules/worm.py)
   aagate: f, a (FSpecialInstall refused: no at-war flying army within AA_R; rules/deploy.py)
-  opgate: f, s, k, n (siege order on an ownerless target: its n optional operations dropped; rules/ops.py)
+  opgate: f, s, k, n (siege order: its n operations dropped, vanilla launches no military op; rules/ops.py)
+  opcast / opfail: f, op, why, s / zs (zone village), zid, B (x100), M, H, r (opfail: checkUseAbilityOn EReason index, named via tools/ereason.json; -1 = refused on use) (our cast / refused; rules/opsbrain.py)
+  opveto / opvan: f, op (vanilla launch blocked / a vanilla-kept op launched: Cell Search, ...)
+  opcell: f, drop (held op cancelled for a Cell Search slot)
+  ophold: f, intel, ag, slots, held, started (every 60 s per faction)
+  opfz: f, opp, M, H, n, nl (a fight of ours with >= OPS_FIGHT_H visible enemy power, 20 s per faction)
+  opcf: f, s, pr%, M, H (Atreides: our village under capture the Cease Fire trigger judged, 20 s per village)
+  drain: f, s, hp%, hp0%, pr%, n (siege in Action worn down: cancelled; rules/drain.py)
   fopen : f, act, n (Fremen opening: first Annex held, n neutral villages surveyed; rules/fopen.py)
   afield / afveto: f, s, sc, d, hops / why (Airfield lifted on a remote village / vanilla's Airfield dropped: behind | spaced; rules/build.py)
   bkeep : f, tgt, n, ph (siege order kept after its last besieger of ours died; rules/orders.py siege-keep)
   tkeep : f, a, n, ph (our Military order kept before Action when another order took army a; rules/orders.py take-keep)
+  scout: f, tgt, w, n, need (early village: too few Annex candidates (n < need), held while ornithopters scout, w s waited; rules/annex.py)
   alone: f, tgt, s, c (sole Annex candidate past the opening with no ring / special / spice value: dropped)
   ascore: f, tgt, s, c, cmin, vb, v0, vs, n, dd (x100: Fremen deep-desert surround sum of the best), hold (off-ring candidates dropped by the Fremen ring hold), rt / rs / rdd (best ring village, its score, dd x100), ddh (zone hops of the focus deep desert, 999 none) (Annex value: our best target vs vanilla's best; tools/rules/annex.py)
   noregen: f, a, hp (army without safe regen and full supply removed from the checkUnits Resupply query)
@@ -97,6 +105,28 @@ PH = ['Pa', 'W', 'P', 'Rg', 'E', 'A', 'R']
 LEGEND = ('phases Pa=Paused W=Waiting P=Preparation Rg=Regroup E=Engage A=Action R=Retreat | dist = attacking army '
           'to target at order start | est = planned my/enemy power (req = required ratio) | fight = live power '
           'first->last (me/en change; rel@ = armies released alive then, compared up to it; deadK/N = armies removed as dead, the loss flag when logged) | end = reason [code path that stopped it] | ! = est<1.25, own loss>30% (half the armies dead when logged) or failed')
+
+
+_EREASON = None
+
+
+def _ereason(i):
+    """EReason constructor name of index i (tools/ereason.json, dumped from hlboot.dat); -1 = refused on use."""
+    global _EREASON
+    try:
+        i = int(float(i))
+    except (TypeError, ValueError):
+        return str(i)
+    if i < 0:
+        return 'UseFailed'
+    if _EREASON is None:
+        import json as _j
+        from pathlib import Path as _P
+        try:
+            _EREASON = _j.load(open(_P(__file__).with_name('ereason.json')))
+        except OSError:
+            _EREASON = []
+    return _EREASON[i] if i < len(_EREASON) else str(i)
 
 
 def parse_value(s, i):
@@ -390,6 +420,7 @@ def summarize(events, faction=None, all_orders=False):
     worms, lowpicks, ascores, gathers, rallies = [], [], [], [], []
     acands = []
     standoff = []                           # treaty / patrol / turret rows (rules/peace.py, strand.py, build.py)
+    opsev = []                              # operations (rules/ops.py, opsbrain.py)
     for e in events:
         k, f, t = e.get('e'), e.get('f'), when(e, t0)
         e['_t'] = t
@@ -487,13 +518,15 @@ def summarize(events, faction=None, all_orders=False):
             rallies.append(e)
         elif k in ('gather', 'stage'):
             gathers.append(e)
+        elif k in ('opcast', 'opfail', 'opveto', 'opvan', 'opcell', 'ophold', 'opgate', 'opbuy', 'opfz', 'drain', 'opcf'):
+            opsev.append(e)
         elif k in ('treaty', 'patrol', 'turret', 'tveto', 'aring', 'pkeep', 'odead', 'okeep', 'fpeace', 'pannex', 'pagate', 'sdrop', 'airpick', 'rejoin', 'dall', 'uhqcap',
                    'uhqres', 'uhqp', 'uhqx', 'dmz', 'wsteer', 'wveto', 'afield', 'afveto', 'aagate', 'undeploy', 'bkeep', 'tkeep', 'tdem',
                    'rpoint', 'rfaf', 'bpick', 'trippick'):
             standoff.append(e)
         elif k in ('wflee', 'weaten', 'dstep', 'whold', 'hrun', 'hpick', 'spos', 'unstick', 'keepcap', 'tension', 'hride', 'rride'):
             worms.append(e)
-        elif k in ('ascore', 'alone'):
+        elif k in ('ascore', 'alone', 'scout'):
             ascores.append(e)
         elif k == 'acand':
             acands.append(e)
@@ -677,6 +710,46 @@ def summarize(events, faction=None, all_orders=False):
             out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {ent(e.get('a'))[:20]:<20} -> {ent(e.get('tgt'))[:20]:<20} "
                        f"d{e.get('d')} dmax{e.get('dmax')} n{e.get('n')}")
 
+    if opsev:
+        out.append('\n## Operations (rules/ops.py, opsbrain.py; docs/OPERATIONS-PLAN.md): cast = ours (why: trigger), '
+                   'van = vanilla launch that went through (Cell Search, Assassination, ...), veto = vanilla wanted to '
+                   'launch a military op (blocked), fail = our cast refused, cell = held op dropped for a Cell Search slot, '
+                   'gate = siege order op lists emptied, hold = held / started ops + Intel / agents (last per faction)')
+        c = Counter((e.get('f'), e['e'][2:], e.get('op') or '') for e in opsev
+                    if e['e'] in ('opcast', 'opfail', 'opveto', 'opvan', 'opcell', 'opgate'))
+        out.append('  ' + ', '.join(f'{f}:{k}:{o} x{n}' if o else f'{f}:{k} x{n}'
+                                    for (f, k, o), n in sorted(c.items(), key=str)))
+        last = {}
+        for e in opsev:
+            if e['e'] == 'ophold':
+                last[e.get('f')] = e
+        buys = {}
+        for e in opsev:
+            if e['e'] == 'opbuy':
+                cs_ = e.get('cand') or []
+                if isinstance(cs_, str):
+                    cs_ = [x for x in cs_.strip('[]').split(',') if x]
+                buys.setdefault(e.get('f'), set()).update(cs_)
+        for f, cs in sorted(buys.items(), key=str):
+            out.append(f"  buyable {str(f):<10} {sorted(cs)}")
+        for f, e in sorted(last.items(), key=str):
+            out.append(f"  hold {str(f):<10} {clock(e['_t'])} intel{e.get('intel')} agents{e.get('ag')}/{e.get('agmax')} slots{e.get('slots')} "
+                       f"held{e.get('held')} started{e.get('started')} inf{e.get('inf') or ''}")
+        fz = [e for e in opsev if e['e'] == 'opfz']
+        if fz:
+            out.append('  fights seen (opfz, 20 s per faction): ' + ', '.join(
+                f"{f}>{o} x{n}" for (f, o), n in sorted(Counter((e.get('f'), e.get('opp')) for e in fz).items(), key=str)))
+        for e in [e for e in opsev if e['e'] == 'opcf']:
+            out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} CF?   {ent(e.get('s'))[:22]:<22} pr{e.get('pr')} "
+                       f"M{kpw(e.get('M'))} H{kpw(e.get('H'))}")
+        for e in [e for e in opsev if e['e'] == 'drain']:
+            out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} DRAIN {ent(e.get('s'))[:22]:<22} hp{e.get('hp')} "
+                       f"from{e.get('hp0')} pr{e.get('pr')} n{e.get('n')}")
+        for e in [e for e in opsev if e['e'] in ('opcast', 'opfail', 'opvan', 'opcell')][-30:]:
+            out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {e['e'][2:]:<4} {str(e.get('op') or e.get('drop')):<22} "
+                       f"{(str(e.get('why') or '') + ('/' + _ereason(e.get('r')) if e.get('r') is not None else '')):<9} {ent(e.get('s') or e.get('zs'))[:22]:<22} "
+                       f"B{e.get('B')} M{kpw(e.get('M'))} H{kpw(e.get('H'))}")
+
     if standoff:
         out.append('\n## Treaty scope / patrol gate / turret steering (tools/rules/peace.py, strand.py, build.py): '
                    'treaty skip = a third-party treaty no longer cancels our orders, narrow = only orders on the other '
@@ -768,6 +841,9 @@ def summarize(events, faction=None, all_orders=False):
                    'compactness / cost ratio / first spice) vs vanilla\'s best (v0 its vanilla score, vs now); '
                    'c / cmin = its Authority cost / cheapest candidate (once per faction per 30 s)')
         for e in ascores[-16:]:
+            if e['e'] == 'scout':
+                out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {ent(e.get('tgt'))[:22]:<22} SCOUT wait {e.get('w')} s ({e.get('n')} candidates, need {e.get('need')})")
+                continue
             if e['e'] == 'alone':
                 out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {ent(e.get('tgt'))[:22]:<22} s{e.get('s')} c{e.get('c')} LONE candidate, nothing special: dropped")
                 continue

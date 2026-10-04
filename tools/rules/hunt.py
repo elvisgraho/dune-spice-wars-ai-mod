@@ -87,7 +87,8 @@ def _late(fb, b, cx, v, d, t, late_lbl, ok_lbl, fall=False):
     return lq, lrem, lp
 
 
-def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieged, cover, defend, neutral, react):
+def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieged, cover, defend, neutral, react,
+               owner_pw):
     """aimod_hunt(mil, dt): abort pass every CHECK s, start pass every START s (see module doc). Threat is always
     aimod_hthreat around the prey's faction (a third party at war with it doesn't count, one allied with it only
     if it arrives before we finish), and the target group holds only that faction's armies, the one nearest the
@@ -992,7 +993,9 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     # the Fremen prey). Vanilla checkStructures pattern; the group drops dead members and removes itself when
     # empty; checkEngageOrder requires a Group target for ArmyFight
     def member(lp, ok):
-        """Fall through to label `ok` if army x of loop `lp` belongs in the group, else jump back to `lp`."""
+        """Fall through to label `ok` if army x of loop `lp` belongs in the group, else jump back to `lp`. Fog of
+        war: only armies we see (an unseen one can't be targeted)."""
+        fb.op('JFalse', cond=b.call('ent.Entity.isVisibleForFaction', x, fac), offset=lp)
         xo = b.call('ent.Entity.get_owner', x)
         fb.op('JNotNull', reg=xo, offset=f'{lp}own')
         fb.op('JEq', a=best_mode, b=two, offset=f'{lp}rd')
@@ -1078,6 +1081,21 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('JSGte', a=hs, b=dq, offset='hs_ok')
     fb.op('Mov', dst=hs, src=dq)
     fb.label('hs_ok')
+    # prey on its own faction's land (not a contest): the owner's unseen armies count as we know them
+    # (aimod_owner_pw at that zone's village; fog: Smugglers lost 3 of 4 / 98% on harvester hunts in Fremen land at
+    # est 355-520k vs 40-49k, the defenders out of sight)
+    fb.op('JEq', a=best_mode, b=one, offset='ho_d')
+    hpo = b.call('ent.Entity.get_owner', best_anc)
+    fb.op('JNull', reg=hpo, offset='ho_d')
+    hz = b.call('ent.Entity.get_zone', best_anc)
+    fb.op('JNull', reg=hz, offset='ho_d')
+    fb.op('JNotEq', a=b.field(hz, 'owner'), b=hpo, offset='ho_d')
+    hv = b.call('ent.Zone.getVillage', hz)
+    fb.op('JNull', reg=hv, offset='ho_d')
+    fb.op('Call2', dst=dq, fun=owner_pw, arg0=fac, arg1=hv)
+    fb.op('JSLte', a=dq, b=hs, offset='ho_d')
+    fb.op('Mov', dst=hs, src=dq)
+    fb.label('ho_d')
     fb.op('Call2', dst=tfb, fun=terrain, arg0=fac, arg1=b.call('ent.Entity.get_zone', best_anc))
     fb.op('SDiv', dst=hs, a=hs, b=tfb)
     fb.op('Mul', dst=goal, a=hs, b=_ratio(fb, b, HUNT_TO))

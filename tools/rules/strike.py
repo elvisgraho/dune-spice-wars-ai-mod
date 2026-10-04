@@ -8,7 +8,8 @@ from an order before Action cancels the whole order).
 
 Tick (every STRIKE_T s per faction), pass 2: our Military orders on a structure in Regroup / Engage. An order army not
 striking: the nearest visible army of a faction at war with us (neutral raiders / militia ignored: they may be on
-their way to someone else) within STRIKE_R (turret range + a little) starts a strike when the order's armies within
+their way to someone else) within STRIKE_R (turret range + a little) and no farther from the order's target than our army (+ STRIKE_R / 2: on
+the way, not a chase) starts a strike when the order's armies within
 LOCAL of it >= STRIKE_RATIO x (aimod_threat(fac, it, LOCAL) + enemy cover there). Only armed targets (aimod_pw > 0, no
 harvester: Harkonnen sent 14 of 15 Annex armies at a Fremen harvester with Fremen armies near it). Order armies within
 LOCAL of it join nearest first until their power >= STRIKE_TO x that side; each gets doAction("ArmyFight",
@@ -179,6 +180,8 @@ def build_strike(cx, helpers, pw, threat, cover, striking):
     eo = b.call('ent.Entity.get_owner', e)
     fb.op('JNull', reg=eo, offset='stop')
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, fac, eo), offset='stop')
+    fb.op('Mov', dst=why, src=fb.string('ran'))  # fog: out of sight is gone for us
+    fb.op('JFalse', cond=b.call('ent.Entity.isVisibleForFaction', e, fac), offset='stop')
     # time: only while not in the fight itself (a fight under way is vanilla micro's, its retreat judges it)
     fb.op('Mov', dst=why, src=fb.string('time'))
     fb.op('JTrue', cond=b.call('ent.Entity.isFighting', ae), offset='ntime')
@@ -242,6 +245,16 @@ def build_strike(cx, helpers, pw, threat, cover, striking):
     fb.op('JTrue', cond=st, offset='u')
     fb.op('Null', dst=e)
     fb.op('Mov', dst=dn, src=b.const('f64', STRIKE_R))
+    # the order's target and this army's distance to it: only an enemy no farther from it than we are (+ STRIKE_R /
+    # 2) is on the way; one off to the side or behind is a chase (Fremen's 14-army Annex of Harrekh 13:18-14:55:
+    # strike after strike on Harkonnen armies falling back to Carthag drew the stack ~250 east under its main base
+    # and 12 armies died)
+    otg = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=otg, src=b.call('logic.ai.AIOrder.getTarget', o))
+    fb.op('JNull', reg=otg, offset='u')
+    dme = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=dme, src=b.call('ent.Entity.getDistTo', ae, otg))
+    fb.op('Add', dst=dme, a=dme, b=b.const('f64', STRIKE_R // 2))
     x = _army_loop(fb, b, armies, b.field(armies, 'length'), n, 'x', 'xd')
     xo = b.call('ent.Entity.get_owner', x)
     fb.op('JNull', reg=xo, offset='x')  # neutral raiders: maybe on their way to someone else
@@ -250,6 +263,7 @@ def build_strike(cx, helpers, pw, threat, cover, striking):
     fb.op('JSGt', a=d, b=dn, offset='x')
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, fac, xo), offset='x')
     fb.op('JFalse', cond=b.call('ent.Entity.isVisibleForFaction', x, fac), offset='x')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', x, otg), b=dme, offset='x')  # not on the way: a chase
     # armed armies only: a harvester (or anything powerless) can't hurt the march; Harkonnen's 15-army Annex of
     # Ulrekh sent 14 armies at a Fremen harvester because Fremen armies stood within LOCAL of it (H 275k)
     fb.op('JNotNull', reg=b.field(x, 'harvestComponent'), offset='x')
