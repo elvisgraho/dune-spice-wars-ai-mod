@@ -5,7 +5,7 @@ Front village: our village (on our land, not a main base) whose zone borders >= 
 factions at war with us, or that lies >= TURRET_REMOTE zones from our main base (Zone.getDistanceToPlayerBase: too
 far for a relief to come in time), or that borders our main base's zone and >= TURRET_BASE_GATE zones of any other faction
 (at war or not: the way into our base), or that lies >= REMOTE_D from our nearest active main base in a straight line (big zones: Harkonnen's Odlab, 386
-from Carthag, 2 hops), or that is the map's centre zone or borders it (zone at the mean village
+from Carthag, 2 hops), or that has another village of ours within COVER_R (a bunker pair: each gets a battery, user) while either of them is within TEN_R of another faction's village (a contact point), or that is the map's centre zone or borders it (zone at the mean village
 position, World.getZoneAt: every way across the map passes there), without a battery: MissileBattery scores max(vanilla, 0) + STAND_BONUS when it can be built
 now or once paid. Full (VillageUpgradesLimitReached) and the battery affordable now (AIController.getMissingResources
 at priority 3 empty): the first of TURRET_DEMOLISH present (Marketplace, MaintenanceCenter, ResearchHub) is removed
@@ -142,6 +142,40 @@ def build_turret_steer(cx, helpers, threat, cover, new_ids, inner=None):
         fb.op('JNotEq', a=hops, b=b.const('i32', 1), offset=u + 'm')
         fb.op('JSGte', a=ne_o, b=b.const('i32', TURRET_BASE_GATE), offset=u + 'y')
         fb.label(u + 'm')
+        # bunker pair at a contact point (user: "the whole bunker thing is to build turrets on each"): another village
+        # of ours within COVER_R (the two batteries cover each other) and another faction's village within TEN_R of
+        # either. Atreides' Halsan (Ub-val 88 away, Smugglers' Buresek 67) was liberated at twice, no battery built
+        bl = b.field(_state(fb, b, cx), 'villages')
+        fb.op('JNull', reg=bl, offset=u + 'bpd')
+        bk, bk2 = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+        bse, bpe, bwe = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('ent.Entity'))
+        fb.op('Mov', dst=bse, src=s)
+        fb.op('Mov', dst=bk, src=zi)
+        b.loop_head(u + 'bp')
+        fb.op('JSGte', a=bk, b=b.field(bl, 'length'), offset=u + 'bpd')
+        bv = b.cast(b.call('hl.types.ArrayObj.getDyn', bl, bk), 'ent.Structure')
+        fb.op('Incr', dst=bk)
+        fb.op('JNull', reg=bv, offset=u + 'bp')
+        fb.op('Mov', dst=bpe, src=bv)
+        fb.op('JEq', a=bpe, b=bse, offset=u + 'bp')
+        fb.op('JNotEq', a=b.call('ent.Entity.get_owner', bpe), b=1, offset=u + 'bp')
+        fb.op('JTrue', cond=b.call('ent.Structure.get_isMainBase', bv), offset=u + 'bp')
+        fb.op('JSGt', a=b.call('ent.Entity.getDistTo', bpe, bse), b=b.const('f64', COVER_R), offset=u + 'bp')
+        # partner found: a contact (another faction's village) within TEN_R of either
+        fb.op('Mov', dst=bk2, src=zi)
+        b.loop_head(u + 'bw')
+        fb.op('JSGte', a=bk2, b=b.field(bl, 'length'), offset=u + 'bp')
+        bw = b.cast(b.call('hl.types.ArrayObj.getDyn', bl, bk2), 'ent.Entity')
+        fb.op('Incr', dst=bk2)
+        fb.op('JNull', reg=bw, offset=u + 'bw')
+        fb.op('Mov', dst=bwe, src=bw)
+        bwo = b.call('ent.Entity.get_owner', bwe)
+        fb.op('JNull', reg=bwo, offset=u + 'bw')
+        fb.op('JEq', a=bwo, b=1, offset=u + 'bw')
+        fb.op('JSLte', a=b.call('ent.Entity.getDistTo', bwe, bse), b=b.const('f64', TEN_R), offset=u + 'y')
+        fb.op('JSLte', a=b.call('ent.Entity.getDistTo', bwe, bpe), b=b.const('f64', TEN_R), offset=u + 'y')
+        fb.op('JAlways', offset=u + 'bw')
+        fb.label(u + 'bpd')
         # the map's centre zone (zone at the mean village position) or one bordering it: every faction's way across
         # the map passes there (Harkonnen's Tuorekh, 195 from the centre)
         vl = b.field(_state(fb, b, cx), 'villages')

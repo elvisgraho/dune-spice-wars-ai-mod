@@ -301,6 +301,11 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('JSGte', a=q, b=local, offset='krad')
     fb.op('Mov', dst=q, src=local)
     fb.label('krad')
+    # ... never farther than REACT_R (aimod_react's reach before the occupation): a 204 s Annex of an enemy village
+    # counted Atreides' armies within 1284 (831k vs our 636k) and dropped Fremen's Tablab `weak` at 354:1 there (user)
+    fb.op('JSLte', a=q, b=b.const('f64', REACT_R), offset='kcap')
+    fb.op('Mov', dst=q, src=b.const('f64', REACT_R))
+    fb.label('kcap')
     fb.op('Call3', dst=ha, fun=threat_in, arg0=fac, arg1=ve, arg2=q)  # no movers from outside q: it is the ETA
     fb.label('kfull')
     cover_at(hc, ve, False)
@@ -394,8 +399,14 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.label('fresh')
     fb.op('Call2', dst=d, fun=land, arg0=fac, arg1=ve)
     fb.op('JSGt', a=d, b=front_r, offset='v')
+    # never poke the stronger side, except an enclave of its between our regions (aimod_encl, rules/dmz.py: user,
+    # Atreides 492k never pressed Harkonnen 756k, Harkonnen's Wal-po sat between Tuodalus and Aynnit): the local
+    # softness test below still decides
+    fb.op('Call2', dst=ok, fun=helpers['encl'], arg0=fac, arg1=v)
+    fb.op('JTrue', cond=ok, offset='encok')
     fb.op('Call2', dst=et, fun=fpow, arg0=vo, arg1=fac)
-    fb.op('JSLt', a=T, b=et, offset='v')  # never poke the stronger side
+    fb.op('JSLt', a=T, b=et, offset='v')
+    fb.label('encok')
     # our spare armies in reach (+ our cover) vs their side
     cover_at(m, ve, True, atk=True)
     fb.op('Mov', dst=dm, src=big)
@@ -438,6 +449,12 @@ def build_strat(cx, helpers, pw, fpow, raidable, react, land, terrain, cover, de
     fb.op('Mov', dst=ve, src=best)
     fb.op('Bool', dst=annex, value=False)
     fb.op('JFalse', cond=b.call('logic.ai.AIMilitary.isInSupplyRange', 0, ve), offset='trypil')
+    # a DMZ village outside our side (aimod_dmzin false) is liberated, not annexed (user): `raid` liberates it below
+    fb.op('Call2', dst=ok, fun=helpers['dmzv'], arg0=fac, arg1=best)
+    fb.op('JFalse', cond=ok, offset='dmzann')
+    fb.op('Call2', dst=ok, fun=helpers['dmzin'], arg0=fac, arg1=best)
+    fb.op('JFalse', cond=ok, offset='trypil')
+    fb.label('dmzann')
     _has_action(fb, b, cx, best, fac, 'Annex', 'annexok', 'trypil')
     fb.label('annexok')
     cfn = cx.fn('ent.comp.SiegeComponent.getOccupationActionCost')
@@ -758,6 +775,23 @@ def strat_levers(cx, new_ids):
     fb.op('JSGt', a=sdq, b=b.const('f64', SD_FRESH), offset='nosd')
     fb.op('Add', dst=ext, a=ext, b=b.const('i32', SD_ZONES))
     fb.label('nosd')
+    # a worm ride available (rules/ride.py map `wfree`: a thumper no order has claimed): + RIDE_ZONES, the same military
+    # scans as the drop (user: Fremen reach farther by worm); the ride covers RIDE_LEG of the trip at no supply and
+    # vanilla's worm plan has no supply check. Stacks with the drop (the ride gets there, the drop keeps it there)
+    fb.op('JNotNull', reg=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'rscan'), fb.dyn(owner)), offset='wrmil')
+    for mp in ('mscan', 'ascan'):
+        mv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, mp), fb.dyn(owner))
+        nx = mp + '_wno'
+        fb.op('JNull', reg=mv, offset=nx)
+        mq = fb.reg(cx.t('f64'))
+        fb.op('SafeCast', dst=mq, src=mv)
+        fb.op('JEq', a=mq, b=now_t, offset='wrmil')
+        fb.label(nx)
+    fb.op('JAlways', offset='nowr')
+    fb.label('wrmil')
+    _ride_free(fb, b, cx, owner, now_t, 'nowr')
+    fb.op('Add', dst=ext, a=ext, b=b.const('i32', RIDE_ZONES))
+    fb.label('nowr')
     fb.op('JSLte', a=ext, b=b.const('i32', 0), offset='end')
     z = b.call('ent.Entity.get_zone', 1)
     fb.op('JNull', reg=z, offset='end')
@@ -765,7 +799,7 @@ def strat_levers(cx, new_ids):
     gdt = [a.value for a in cx.code.types[gd.type.value].definition.args]
     pf, tr = fb.reg(gdt[1]), fb.reg(gdt[2])
     fb.op('Mov', dst=pf, src=owner)
-    fb.op('Bool', dst=tr, value=True)
+    _box_true(fb, cx, tr)  # considerAirfields is Null<Bool>: box it (a raw Bool there threw in the trap)
     zd = fb.reg(cx.t('i32'))
     fb.op('Call3', dst=zd, fun=gd.findex.value, arg0=z, arg1=pf, arg2=tr)
     mx = fb.reg(cx.t('i32'))

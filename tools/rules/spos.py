@@ -13,6 +13,9 @@ target): still in the occupation range,
 farther from E's guns. Not if P is no farther from E than the army already is. Map `sposm` army -> time (desert-step
 leaves such an army alone for SPOS_T x 2). Logs `spos` (a, tgt, es, d to P) once per army per 15 s. In a trap.
 
+An army within SPOS_FIGHT_R of an at-war army is left alone (its fight and the fight retreat decide): the step
+every 2-4 s against micro's attack kept Fremen's 15 armies at Arkkhelon in a tug-of-war under Arrakeen's guns.
+
 Unstick (same pass, Action): an army stuck in the village footprint (see `_unstick`) is walked out to the target's
 safe position; vanilla only re-sends ArmySiege to it, which never takes hold (Fremen F_Sneak at Tabwan, 2.5 min)."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
@@ -133,6 +136,65 @@ def build_spos(cx, helpers, cover):
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', ae, tgt), b=lim, offset='a')
     _unstick(fb, b, cx, helpers, fac, t, ph, a, ae, tgt, maps, sp_args, 'cov', 'a')
     fb.label('cov')
+    # capture leash (Action): an occupier out past CAPL_R from the target in contact only with at-war armies running
+    # away (moving, farther from the target than it; at least one) walks back. No contact: left alone (armies
+    # still walking in fired it 113 times in match 2026-10-04 12:2x, Smugglers at Dam-ras 1:09). Micro chases a retreating defender
+    # out of the occupation range: Fremen's 10 armies at Atreides' Fon-Al'lulah followed 4 fleeing defenders to
+    # 75-150 from the village, the capture fell from 24% to 0 and their own fight retreat pulled them home (user)
+    fb.op('JNotEq', a=ph, b=b.const('i32', ACTION), offset='nol')
+    fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', ae, tgt))
+    fb.op('JSLte', a=d, b=b.const('f64', CAPL_R), offset='nol')
+    larm = b.field(state, 'armies')
+    fb.op('JNull', reg=larm, offset='nol')
+    jl = fb.reg(cx.t('i32'))
+    runr = fb.reg(cx.t('bool'))  # a running at-war army in contact (none: an army walking in, not a chase)
+    fb.op('Bool', dst=runr, value=False)
+    lf = _army_loop(fb, b, larm, b.field(larm, 'length'), jl, 'lf', 'lfd')
+    lo = b.call('ent.Entity.get_owner', lf)
+    fb.op('JNull', reg=lo, offset='lf')
+    fb.op('JEq', a=lo, b=fac, offset='lf')
+    fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, fac, lo), offset='lf')
+    fb.op('JNotNull', reg=b.field(lf, 'harvestComponent'), offset='lf')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', lf, ae), b=b.const('f64', SPOS_FIGHT_R), offset='lf')
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', lf, tgt), b=d, offset='nol')  # it stands between: a real fight
+    fb.op('JFalse', cond=b.call('ent.Unit.isMoving', lf), offset='nol')  # it stands and fights
+    fb.op('Bool', dst=runr, value=True)
+    fb.op('JAlways', offset='lf')
+    fb.label('lfd')
+    fb.op('JFalse', cond=runr, offset='nol')
+    _throttle(fb, b, cx, 'capl', a, SPOS_T, 'a')
+    # P = target + SPOS_OFF towards the army (its own side of the village)
+    fb.op('Sub', dst=dx, a=b.field(ae, 'posx'), b=b.field(tgt, 'posx'))
+    fb.op('Sub', dst=dy, a=b.field(ae, 'posy'), b=b.field(tgt, 'posy'))
+    off_l = b.const('f64', SPOS_OFF)
+    fb.op('Mul', dst=px, a=dx, b=off_l)
+    fb.op('SDiv', dst=px, a=px, b=d)
+    fb.op('Add', dst=px, a=px, b=b.field(tgt, 'posx'))
+    fb.op('Mul', dst=py, a=dy, b=off_l)
+    fb.op('SDiv', dst=py, a=py, b=d)
+    fb.op('Add', dst=py, a=py, b=b.field(tgt, 'posy'))
+    b.call('haxe.ds.ObjectMap.set', sposm, fb.dyn(a), fb.dyn(t))
+    okl = _move_to(fb, b, cx, a, px, py, fac)
+    _throttle(fb, b, cx, 'capllog', a, 15, 'a')
+    _log_ev(fb, b, cx, helpers, 'capl', [('f', fb.get(fac, 'kind')), ('a', a), ('tgt', tgt), ('d', d),
+                                         ('ok', okl)])
+    fb.op('JAlways', offset='a')
+    fb.label('nol')
+    # an army in contact with an at-war army (within SPOS_FIGHT_R) stays in its fight: stepping away every 2-4 s
+    # while micro sent it back in left Fremen's 15 armies at Arkkhelon (under Arrakeen's guns) neither fighting nor
+    # leaving, 5 dead, 86% of their power lost (user: "clicked to back off a lot of times, the army wasn't listening")
+    sarm = b.field(state, 'armies')
+    fb.op('JNull', reg=sarm, offset='nofight')
+    jf = fb.reg(cx.t('i32'))
+    xf = _army_loop(fb, b, sarm, b.field(sarm, 'length'), jf, 'sf', 'nofight')
+    xo = b.call('ent.Entity.get_owner', xf)
+    fb.op('JNull', reg=xo, offset='sf')
+    fb.op('JEq', a=xo, b=fac, offset='sf')
+    fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, fac, xo), offset='sf')
+    fb.op('JNotNull', reg=b.field(xf, 'harvestComponent'), offset='sf')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', xf, ae), b=b.const('f64', SPOS_FIGHT_R), offset='sf')
+    fb.op('JAlways', offset='a')  # in contact: leave it to the fight (and the fight retreat)
+    fb.label('nofight')
     fb.op('CallN', dst=cv, fun=cover, args=[fac, ae, tgt, f_false, no_arr])
     fb.op('JSLte', a=cv, b=b.const('f64', 0), offset='a')
     # nearest at-war structure (not the target) covering the army: the guns to step away from

@@ -2,7 +2,7 @@
 # F10 (speed x4), run for -Minutes, then close the game normally (prefs.sav is rewritten on exit).
 # Keys go through keybd_event with scan codes after forcing the game window to the foreground:
 # computer-use screenshots minimize the fullscreen game, so nothing here needs a screen capture.
-param([double]$Minutes = 17, [int]$MenuSec = 20, [int]$LoadSec = 37)
+param([double]$Minutes = 17, [int]$MenuSec = 14, [int]$LoadSec = 28)
 Add-Type @'
 using System; using System.Runtime.InteropServices;
 public class K {

@@ -575,8 +575,9 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     fb.op('Null', dst=ocn)
     rq = fb.reg(cx.t('f64'))
     rneed, rau = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
-    rn = fb.reg(cx.t('i32'))
+    rn, rown = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))  # pending Annexes / of them still owing their price
     fb.op('Mov', dst=rn, src=zi)
+    fb.op('Mov', dst=rown, src=zi)
 
     def annex_cost(st, dst):
         """dst += sum of qty of st's Annex costs for us."""
@@ -627,6 +628,7 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     fb.op('JSGt', a=b.call('ent.comp.SiegeComponent.getOccupationActionProgress', rsg), b=b.const('f64', 0),
           offset='ro')  # capturing: paid
     fb.label('rowe')
+    fb.op('Incr', dst=rown)
     annex_cost(rs, rneed)
     fb.op('JAlways', offset='ro')
     fb.label('rjudge')
@@ -635,6 +637,10 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
           arg1=b.const('i32', RES_AUTHORITY))
     # never more than the stock can hold (Faction.getMaxResStock): Fremen sat at the 500 cap vs need 522 for 6 min
     # (68:03-73:32) and no Annex could ever launch
+    # ... but only while no other Annex of ours still owes its price (rown 0): with one pending the cap let Fremen
+    # launch Yekhelon (500) on top of Adriyah (177) at 497 Authority, then Odnin; Authority fell to 1 and the captures
+    # stood waiting for it (user: only go for a capture with the Authority)
+    fb.op('JSGt', a=rown, b=zi, offset='ares_cap')
     rmx = b.call('ent.Faction.getMaxResStock', fac, fb.string('Authority'))
     fb.op('JNull', reg=rmx, offset='ares_cap')
     rmf = fb.reg(cx.t('f64'))
@@ -646,7 +652,7 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     fb.op('JSGte', a=rau, b=rneed, offset='ares_ok')
     _throttle(fb, b, cx, 'ares', fac, 10, 'ares_nl')
     _log_ev(fb, b, cx, helpers, 'ares', [('f', fb.get(fac, 'kind')), ('tgt', s_e), ('au', rau), ('need', rneed),
-                                         ('n', rn), ('near', near)])
+                                         ('n', rn), ('owe', fb.dyn(rown)), ('near', near)])
     fb.label('ares_nl')
     fb.op('Mov', dst=why, src=fb.string('auth'))
     fb.op('Bool', dst=blocked, value=True)
@@ -825,11 +831,15 @@ def build_spacing(cx, helpers, defend, land, home, homeown):
     b.call('haxe.ds.ObjectMap.remove', asd, fb.dyn(s_e3))
     sdv3 = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'sdfree'),
                   fb.dyn(b.field(b.field(0, 'controller'), 'owner')))
-    fb.op('JNull', reg=sdv3, offset='asd_no')
+    fb.op('JNull', reg=sdv3, offset='asd_w')
     sdq3 = fb.reg(cx.t('f64'))
     fb.op('SafeCast', dst=sdq3, src=sdv3)
     fb.op('Sub', dst=sdq3, a=now3, b=sdq3)
-    fb.op('JSGt', a=sdq3, b=b.const('f64', SD_FRESH), offset='asd_no')
+    fb.op('JSLte', a=sdq3, b=b.const('f64', SD_FRESH), offset='asd_set')
+    # ... or with a worm ride available (rules/ride.py map `wfree`): the same, for the ride's waiver
+    fb.label('asd_w')
+    _ride_free(fb, b, cx, b.field(b.field(0, 'controller'), 'owner'), now3, 'asd_no')
+    fb.label('asd_set')
     b.call('haxe.ds.ObjectMap.set', asd, fb.dyn(s_e3), fb.dyn(now3))
     fb.label('asd_no')
     # an Annex on an uncontested ring village: count it (the ring hold ends after DD_TRIES: resistance)

@@ -70,15 +70,30 @@ def _near_base(fb, b, cx, state, fac, e, mbr, wr):
     fb.label(ok)
 
 
-def _late(fb, b, cx, v, d, t, late_lbl, ok_lbl, fall=False):
+def _late(fb, b, cx, v, d, t, late_lbl, ok_lbl, fall=False, fac=None):
     """Contest arrival test (start and `objective` abort alike): jump to late_lbl when an army d away (CONTEST_SPD)
     arrives after the occupation at village v ends (+ CONTEST_SLACK), else to ok_lbl (fall=True: ok falls through).
+    With fac: a trip of at least RIDE_MIN while fac can ride a worm (rules/ride.py: the contest gets the worm plan)
+    arrives by worm (RIDE_LEG at RIDE_SPD + RIDE_OVER, the rest walked), when that is sooner.
     Remaining time: _cap_rem (rules/common.py); a capture making no progress is never late. Returns the (arrival, remaining, progress) registers."""
     u = _uid('lt')
     lq = fb.reg(cx.t('f64'))
     fb.op('Mov', dst=lq, src=b.const('f64', 0))
     lrem, lp = _cap_rem(fb, b, cx, v, t, u + 'ok')  # stalled / no siege: never late, worth contesting
     fb.op('SDiv', dst=lq, a=d, b=b.const('f64', CONTEST_SPD))
+    if fac is not None:
+        rq, rw = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+        fb.op('Mov', dst=rw, src=d)
+        _ride_leg(fb, b, cx, fac, t, rw, critical=True)  # a contest may take the last free thumper; unchanged: no ride
+        fb.op('JEq', a=rw, b=d, offset=u + 'nr')
+        fb.op('Sub', dst=rq, a=d, b=rw)  # the ridden part
+        fb.op('SDiv', dst=rq, a=rq, b=b.const('f64', RIDE_SPD))
+        fb.op('SDiv', dst=rw, a=rw, b=b.const('f64', CONTEST_SPD))
+        fb.op('Add', dst=rw, a=rw, b=rq)
+        fb.op('Add', dst=rw, a=rw, b=b.const('f64', RIDE_OVER))
+        fb.op('JSGte', a=rw, b=lq, offset=u + 'nr')
+        fb.op('Mov', dst=lq, src=rw)
+        fb.label(u + 'nr')
     fb.op('Add', dst=lrem, a=lrem, b=b.const('f64', CONTEST_SLACK))
     fb.op('JSGt', a=lq, b=lrem, offset=late_lbl)
     fb.label(u + 'ok')
@@ -117,6 +132,7 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     hunt_r, local = b.const('f64', HUNT_R), b.const('f64', LOCAL)
     home_r, home_exit = b.const('f64', HOME_R), b.const('f64', HOME_EXIT)
     defend_r, leash = b.const('f64', DEFEND_R), b.const('f64', LEASH)
+    contest_r = b.const('f64', CONTEST_R)
     contact, drift_r = b.const('f64', CONTACT), b.const('f64', DRIFT_R)
     enter, abort = _ratio(fb, b, ENTER), _ratio(fb, b, ABORT)
     sup_enter = _ratio(fb, b, SUP_ENTER)
@@ -342,6 +358,14 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('Mov', dst=ve, src=wv)
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', core, ve), b=b.const('f64', WON_R), offset='ab_won')
     fb.label('nowon')
+    # a contest reaches CONTEST_R (a worm ride: CONTEST_RIDE_R) from our land: its leash is CONTEST_LEASH, and no
+    # `drift` (the besiegers stand at their village; our armies walking / riding there aren't in contact yet)
+    fb.op('JNull', reg=cv, offset='lsh')
+    fb.op('JSGt', a=sd, b=b.const('f64', CONTEST_LEASH), offset='ab_leash')
+    fb.op('JNotEq', a=home, b=cnt, offset='nodrift')
+    fb.op('JSGt', a=sd, b=home_exit, offset='ab_home')
+    fb.op('JAlways', offset='nodrift')
+    fb.label('lsh')
     fb.op('JSGt', a=sd, b=leash, offset='ab_leash')
     fb.op('JNotEq', a=home, b=cnt, offset='nothome')
     fb.op('JSGt', a=sd, b=home_exit, offset='ab_home')
@@ -423,7 +447,7 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('JSLte', a=b.call('ent.Entity.getDistTo', g, ve), b=local, offset='go')
     fb.op('JNotNull', reg=found, offset='obj')
     fb.op('Call2', dst=sdx, fun=land, arg0=fac, arg1=ve)
-    fb.op('JSGt', a=sdx, b=defend_r, offset='obj')
+    fb.op('JSGt', a=sdx, b=contest_r, offset='obj')
     # a minor contest (not ours, farther than CONTEST_NEAR) doesn't cancel a running chase
     fb.op('JEq', a=b.call('ent.Entity.get_owner', ve), b=fac, offset='objmaj')
     fb.op('JSGt', a=sdx, b=b.const('f64', CONTEST_NEAR), offset='obj')
@@ -446,7 +470,7 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.op('JAlways', offset='ou')
     fb.label('oudone')
     fb.op('JSGte', a=dv, b=big, offset='obj')
-    _late(fb, b, cx, v, dv, t, 'obj', _uid('olt'), fall=True)  # same arrival test as the contest start
+    _late(fb, b, cx, v, dv, t, 'obj', _uid('olt'), fall=True, fac=fac)  # same arrival test as the contest start
     hv, rv = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     besieger(v)  # same measure as the contest start
     threat_at(hv, ve, dv)
@@ -773,8 +797,27 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.label('vstk')
     fb.op('Mov', dst=ent_r, src=v)
     fb.op('Call2', dst=sd, fun=land, arg0=fac, arg1=ent_r)
-    fb.op('JSGt', a=sd, b=defend_r, offset='vcand')
+    # one of our next Annex choices (map `akeep`, rules/raid.py annex-keep, within AKEEP_T) is contested however far
+    # (user: Harkonnen pillaged Fremen's next Annex Hulsan 3 times in 25 min; a pillage leaves it Devastated 20 days)
+    akx = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=akx, value=False)
     fb.op('Mov', dst=rr, src=hunt_r)
+    # an at-war capture within CONTEST_R (DEFEND_R + a short run: Atreides annexed Tab-riyah / Aegkus / Ars-sud
+    # 496-548 from Fremen's villages unopposed, user); farther, up to CONTEST_RIDE_R, while a thumper is free (the
+    # contest rides: rules/ride.py), and our armies up to HUNT_R + RIDE_LEG away can join (the ride carries them)
+    fb.op('JSLte', a=sd, b=contest_r, offset='vnear')
+    fb.op('JSGt', a=sd, b=b.const('f64', CONTEST_RIDE_R), offset='vakp')
+    _ride_free(fb, b, cx, fac, t, 'vakp')
+    fb.op('Mov', dst=rr, src=b.const('f64', HUNT_R + RIDE_LEG))
+    fb.op('JAlways', offset='vnear')
+    fb.label('vakp')
+    akt = b.call('haxe.ds.ObjectMap.get', _fac_map(fb, b, cx, 'akeep', fac), fb.dyn(v))
+    fb.op('JNull', reg=akt, offset='vcand')
+    fb.op('SafeCast', dst=q, src=akt)
+    fb.op('Sub', dst=q, a=t, b=q)
+    fb.op('JSGte', a=q, b=b.const('f64', AKEEP_T), offset='vcand')
+    fb.op('Bool', dst=akx, value=True)
+    fb.label('vnear')
     # the village we defend (ours, or a neutral one in our home ring: aimod_defend) or any of ours: everyone free
     # within GATHER_R comes (vanilla Regroup gathers them)
     dfe = fb.reg(cx.t('ent.Entity'))
@@ -789,6 +832,7 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     fb.label('notown')
     fb.op('JNotNull', reg=dfs, offset='vcand')  # defending: our own villages first
     fb.op('JSLte', a=sd, b=b.const('f64', CONTEST_NEAR), offset='vown')
+    fb.op('JTrue', cond=akx, offset='vown')  # our next Annex: a full contest
     fb.op('Bool', dst=minor, value=True)
     fb.label('vown')
     besieger(v)
@@ -811,6 +855,14 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     # (the way back alone passed Smugglers' stack 313 from a Fremen harvester 282 off their land: `supply` abort
     # on arrival, three hunts into the same spot in 90 s)
     _trip(y, dy, sd, tripd)
+    # a contest may ride (rules/ride.py): the ride carries up to RIDE_LEG of the way there at no supply (same as
+    # trippick / the raid budget); the way back is walked
+    rsk = _uid('rsk')
+    fb.op('JNotEq', a=mode, b=one, offset=rsk)
+    fb.op('Sub', dst=tripl, a=tripd, b=sd)
+    _ride_leg(fb, b, cx, fac, t, tripl, critical=True)
+    fb.op('Add', dst=tripd, a=tripl, b=sd)
+    fb.label(rsk)
     fb.op('Call3', dst=ok, fun=supok, arg0=y, arg1=tripd, arg2=sup_enter)
     fb.op('JFalse', cond=ok, offset='mloop')
     fb.op('Call1', dst=p, fun=pw, arg0=y)
@@ -823,7 +875,7 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
     # contest that can't arrive before the capture ends: skip (Smugglers' contest of Fremen's Annex of Tuoiel started
     # 329 away 36 s into the 72 s capture and arrived after it)
     fb.op('JNotEq', a=mode, b=one, offset='lt_ok')
-    lq, lrem, lp = _late(fb, b, cx, v, dmin, t, 'lt_late', 'lt_ok')
+    lq, lrem, lp = _late(fb, b, cx, v, dmin, t, 'lt_late', 'lt_ok', fac=fac)
     fb.label('lt_late')
     _throttle(fb, b, cx, 'hlate', v, 30, 'next')
     _log_hunt(fb, b, cx, helpers, fac, 'nogo', 'late', anc, lq, lrem, {'pr': lp})
@@ -1178,8 +1230,15 @@ def build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieg
         fb.op('Null', dst=r)
         nulls.append(r)
     res = fb.reg(cx.t('logic.ai.AIOrder'))
+    # a contest may ride a worm (rules/ride.py plan gate, map `wcon` faction -> 1 around the call); a chase never: a
+    # moving prey isn't where the worm lands
+    wcon = _global_map(fb, b, cx, 'wcon')
+    fb.op('JNotEq', a=best_mode, b=one, offset='wc_no')
+    b.call('haxe.ds.ObjectMap.set', wcon, fb.dyn(fac), fb.dyn(b.const('i32', 1)))
+    fb.label('wc_no')
     fb.op('CallN', dst=res, fun=helpers.get('addOrder', add.findex.value),
           args=[orders_obj, kind, b.const('i32', 5), arr, ent_r, fb.string('ArmyFight')] + nulls)
+    b.call('haxe.ds.ObjectMap.remove', wcon, fb.dyn(fac))
     fb.op('Bool', dst=ok, value=False)
     fb.op('JNull', reg=res, offset='fail')
     fb.op('Bool', dst=ok, value=True)

@@ -12,7 +12,9 @@ than it is now while the worm is >= WORM_LET_D away, or off the sand within WORM
 5-10 s wind-up; logged `wlet` a, d worm distance, pe path left, once per army per 10 s): the AI order holding it is stopped (Cancel: a hunt / raid / siege would walk it back onto the sand), and it and
 the order's other armies on sand within WORM_NEAR of the worm each get `doAction("Move", {actionTarget:
 EWorldPosition})` to the nearest safe point: rock (`World.isSandAt`) or sand in a zone the worm can't strike (_no_worm_zone: worm activity
-0 or Zone_NoSandworm, e.g. next to a Decoy Thumper) (rings of WORM_STEP up to WORM_R, WORM_DIRS directions: the nearest ring with land; on it a siege army takes the land point nearest its target, the village being land, so it steps towards its group; others the first found;
+0 or Zone_NoSandworm, e.g. next to a Decoy Thumper) (rings of WORM_STEP up to WORM_R, WORM_DIRS directions: the nearest ring with land; an army with a destination (siege target, else its path end, kept per army WORM_DEST_T in
+map `wdest`) while the worm is >= WORM_LET_D away looks WORM_DETOUR further and takes the land point with the least
+escape + onward walk (user: the map's rocky middle on the way); others the first found;
 none found: WORM_R straight away from the worm). Moved armies go into map `wfled`: aimod_free refuses them for
 WORM_HOLD s (no hunt / raid relaunch onto the same sand; a moved harvester's zone is stamped in the faction memory so vanilla's team re-route picks another
 field), and aimod_wormheld keeps them out of vanilla's Resupply and
@@ -200,6 +202,44 @@ def build_worm_flee(cx, helpers):
     fb.op('JNull', reg=worm, offset='nw')
     fb.op('Mov', dst=wd, src=b.call('ent.Entity.getDistTo', a, worm))
     fb.label('nw')
+    # where it was going (user: solid ground on the way, e.g. the map's rocky middle, beats the nearest rock behind
+    # it): the end of its current path, before the order stop below clears it; a siege target replaces it
+    hasd = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=hasd, value=False)
+    # remembered from this army's last flee within WORM_DEST_T (map `wdest` army -> {x, y, t}): after one flee its
+    # path ends at our flee point, the real destination is gone (a Fremen trooper fled 11 times in 80 s, rock to rock
+    # 20 apart, on its way to Tabr)
+    wdm = _global_map(fb, b, cx, 'wdest')
+    wdr = fb.reg(cx.t('dyn'))
+    fb.op('Mov', dst=wdr, src=b.call('haxe.ds.ObjectMap.get', wdm, fb.dyn(a)))
+    fb.op('JNull', reg=wdr, offset='wd_new')
+    wdt = fb.reg(cx.t('f64'))
+    fb.op('DynGet', dst=wdt, obj=wdr, field=cx.s('t'))
+    fb.op('Sub', dst=wdt, a=t, b=wdt)
+    fb.op('JSGt', a=wdt, b=b.const('f64', WORM_DEST_T), offset='wd_new')
+    fb.op('DynGet', dst=tx, obj=wdr, field=cx.s('x'))
+    fb.op('DynGet', dst=ty, obj=wdr, field=cx.s('y'))
+    fb.op('Bool', dst=hasd, value=True)
+    fb.op('JAlways', offset='nodest')
+    fb.label('wd_new')
+    pe2 = b.call('ent.MobileEntity.getCurrentPathEnd', a)
+    fb.op('JNull', reg=pe2, offset='nodest')
+    fb.op('Mov', dst=tx, src=b.field(pe2, 'x'))
+    fb.op('Mov', dst=ty, src=b.field(pe2, 'y'))
+    fb.op('Sub', dst=q, a=tx, b=b.field(a, 'posx'))
+    fb.op('Mul', dst=q, a=q, b=q)
+    fb.op('Sub', dst=d, a=ty, b=b.field(a, 'posy'))
+    fb.op('Mul', dst=d, a=d, b=d)
+    fb.op('Add', dst=q, a=q, b=d)
+    fb.op('JSLt', a=q, b=b.const('f64', WORM_DEST_MIN * WORM_DEST_MIN), offset='nodest')
+    fb.op('Bool', dst=hasd, value=True)
+    wdo = fb.reg(cx.t('dynobj'))
+    fb.op('New', dst=wdo)
+    b.put(wdo, 'x', tx)
+    b.put(wdo, 'y', ty)
+    b.put(wdo, 't', t)
+    b.call('haxe.ds.ObjectMap.set', wdm, fb.dyn(a), fb.dyn(wdo))
+    fb.label('nodest')
     # stop the order holding it (backwards scan, first match)
     fb.op('Null', dst=grp)
     fb.op('Bool', dst=hast, value=False)
@@ -243,6 +283,18 @@ def build_worm_flee(cx, helpers):
     fb.op('Mov', dst=grp, src=b.call('hl.types.ArrayObj.copy', units))
     b.call('logic.ai.AIOrder.stop', o, cancel)
     fb.label('odone')
+    fb.op('JFalse', cond=hast, offset='hd_k')
+    fb.op('Bool', dst=hasd, value=True)  # the siege target is the destination
+    fb.label('hd_k')
+    # rings beyond the nearest one with land count while within WORM_DETOUR of it and the worm is still >= WORM_LET_D
+    # away (closer it has aggroed: the nearest rock only)
+    rlim = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=rlim, src=b.const('f64', 0))
+    fb.op('JFalse', cond=hasd, offset='rl_d')
+    fb.op('JSLt', a=wd, b=b.const('f64', WORM_LET_D), offset='rl_d')
+    fb.op('Mov', dst=rlim, src=b.const('f64', WORM_DETOUR))
+    fb.label('rl_d')
+    r0 = fb.reg(cx.t('f64'))
     # move a, then the order's other armies on sand
     fb.op('Mov', dst=k, src=zi)
     fb.op('Mov', dst=mv, src=a)
@@ -251,10 +303,12 @@ def build_worm_flee(cx, helpers):
     fb.op('Mov', dst=ay, src=b.field(mv, 'posy'))
     fb.op('Bool', dst=rock, value=True)
     fb.op('Mov', dst=r, src=step)
-    b.loop_head('ring')
-    fb.op('JSGt', a=r, b=rmax, offset='away')
     fb.op('Bool', dst=fnd, value=False)
     fb.op('Mov', dst=bd, src=big)
+    fb.op('Mov', dst=r0, src=big)
+    b.loop_head('ring')
+    fb.op('JSGt', a=r, b=rmax, offset='rend')
+    fb.op('JSGt', a=r, b=r0, offset='rend')  # past the nearest land ring + the detour allowance
     for c, s in dirs:
         cand, nxt = _uid('wc'), _uid('wn')
         fb.op('Mul', dst=q, a=r, b=c)
@@ -265,25 +319,32 @@ def build_worm_flee(cx, helpers):
         _no_worm_zone(fb, b, cx, b.call('world.World.getZoneAt', world, px, py), cand)  # thumper-protected sand
         fb.op('JAlways', offset=nxt)
         fb.label(cand)
-        fb.op('JFalse', cond=hast, offset='go')  # not a siege army: the first land point
+        fb.op('JFalse', cond=hasd, offset='go')  # nowhere to go: the first land point
+        # the first land ring found sets how far we look (r0 = it + the allowance)
+        fb.op('JTrue', cond=fnd, offset=cand + 'f')
+        fb.op('Add', dst=r0, a=r, b=rlim)
+        fb.label(cand + 'f')
+        # cost: the escape walk (r) + the way on from there to the destination
         fb.op('Sub', dst=q, a=px, b=tx)
         fb.op('Mul', dst=q, a=q, b=q)
         fb.op('Sub', dst=d, a=py, b=ty)
         fb.op('Mul', dst=d, a=d, b=d)
         fb.op('Add', dst=q, a=q, b=d)
+        fb.op('Mov', dst=q, src=b.call('hxd.$Math.sqrt', q))
+        fb.op('Add', dst=q, a=q, b=r)
         fb.op('JSGte', a=q, b=bd, offset=nxt)
         fb.op('Mov', dst=bd, src=q)
         fb.op('Mov', dst=bx, src=px)
         fb.op('Mov', dst=by, src=py)
         fb.op('Bool', dst=fnd, value=True)
         fb.label(nxt)
-    fb.op('JFalse', cond=fnd, offset='rnext')
+    fb.op('Add', dst=r, a=r, b=step)
+    fb.op('JAlways', offset='ring')
+    fb.label('rend')
+    fb.op('JFalse', cond=fnd, offset='away')
     fb.op('Mov', dst=px, src=bx)
     fb.op('Mov', dst=py, src=by)
     fb.op('JAlways', offset='go')
-    fb.label('rnext')
-    fb.op('Add', dst=r, a=r, b=step)
-    fb.op('JAlways', offset='ring')
     # no rock in reach: straight away from the worm (or stay if it is unknown)
     fb.label('away')
     fb.op('Bool', dst=rock, value=False)

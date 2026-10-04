@@ -5,18 +5,20 @@ while turret fire and unseen armies took every army from 100% to 4-30% life, the
 The fight retreat check never fired: the warzone balance read 1.0 (no enemy army power found), so nothing judged
 the siege lost.
 
-aimod_drain(mil, dt), in the tick chain every DRAIN_CHECK s: each of our Military orders on a structure in Action:
-avg = summed life ratio of its armies / the army count when Action began (a dead army counts 0); the first avg
-seen in Action and that count are kept (maps `drain0` / `drain0n`, per order). When avg <
-DRAIN_HP and avg <= start - DRAIN_DROP and the capture progress there < DRAIN_PR and its militia still stands (aimod_militia > 0): the order is cancelled (its
-armies go home to heal through vanilla) and the target goes into lost-siege memory (`slost`, no second assault
-the same way for LOST_T). Logs `drain` (f, s, hp% avg now, hp0% start, pr% progress, n armies)."""
+aimod_drain(mil, dt), in the tick chain every DRAIN_CHECK s: each of our Military orders on a structure in Action
+whose capture progress there < DRAIN_PR and whose militia still stands (aimod_militia > 0) or at-war guns other than
+its own cover it (aimod_cover > 0: the wear is the guns; Fremen at Arkkhelon under Arrakeen) is judged per army (user):
+an army is worn when its life < DRAIN_HP and at least DRAIN_DROP below its life when first seen in this order's Action
+(maps `drain0a` army -> life, `drain0o` army -> order). Worn armies leave the order (removeUnit; never the last one;
+they heal through vanilla) while the rest keep capturing (log `drain` act split, n of). Every army left worn: the order
+is cancelled and the target goes into lost-siege memory (`slost`, no second assault the same way for LOST_T; a neutral
+village gets `nbump` instead). Logs `drain` act cancel (f, s, hp% mean now, hp0% mean start, pr% progress, n armies)."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
 
 DRAIN_CHECK = 2
 
 
-def build_drain(cx, helpers, militia):
+def build_drain(cx, helpers, militia, cover):
     fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
     b = B(fb)
     void = fb.reg(cx.t('void'))
@@ -32,7 +34,6 @@ def build_drain(cx, helpers, militia):
     k, ix, j, n = (fb.reg(cx.t('i32')) for _ in range(4))
     avg, h0, pr, q, nf = (fb.reg(cx.t('f64')) for _ in range(5))
     zero = b.const('f64', 0)
-    mp = _global_map(fb, b, cx, 'drain0')
     o = fb.reg(cx.t('logic.ai.AIOrder'))
     tgt = fb.reg(cx.t('ent.Entity'))
     fb.op('Mov', dst=k, src=b.field(orders, 'length'))
@@ -54,44 +55,7 @@ def build_drain(cx, helpers, militia):
     fb.op('JNull', reg=s, offset='o')
     units = b.field(o, 'units')
     fb.op('JNull', reg=units, offset='o')
-    # mean life of the order's armies
-    fb.op('Mov', dst=avg, src=zero)
-    fb.op('Mov', dst=n, src=b.const('i32', 0))
-    fb.op('Mov', dst=j, src=b.const('i32', 0))
-    b.loop_head('u')
-    fb.op('JSGte', a=j, b=b.field(units, 'length'), offset='ud')
-    a = b.cast(b.call('hl.types.ArrayObj.getDyn', units, j), 'ent.Army')
-    fb.op('Incr', dst=j)
-    fb.op('JNull', reg=a, offset='u')
-    fb.op('Add', dst=avg, a=avg, b=b.call('ent.Entity.get_lifeRatio', a))
-    fb.op('Incr', dst=n)
-    fb.op('JAlways', offset='u')
-    fb.label('ud')
-    fb.op('JSLte', a=n, b=b.const('i32', 0), offset='o')
-    fb.op('ToSFloat', dst=nf, src=n)
-    # start value per order: mean life and army count when Action began
-    mpn = _global_map(fb, b, cx, 'drain0n')
-    sv = b.call('haxe.ds.ObjectMap.get', mp, fb.dyn(o))
-    fb.op('JNotNull', reg=sv, offset='has')
-    sa = fb.reg(cx.t('f64'))
-    fb.op('SDiv', dst=sa, a=avg, b=nf)
-    b.call('haxe.ds.ObjectMap.set', mp, fb.dyn(o), fb.dyn(sa))
-    b.call('haxe.ds.ObjectMap.set', mpn, fb.dyn(o), fb.dyn(nf))
-    fb.op('JAlways', offset='o')
-    fb.label('has')
-    fb.op('SafeCast', dst=h0, src=sv)
-    # an army that died counts as 0 life (dead ones leave the order: Atreides' Liberate of Adron 70:00 lost 3 of 12
-    # and most of the rest's life while the survivors' mean stayed up)
-    n0v = b.call('haxe.ds.ObjectMap.get', mpn, fb.dyn(o))
-    fb.op('JNull', reg=n0v, offset='n0d')
-    fb.op('SafeCast', dst=q, src=n0v)
-    fb.op('JSLte', a=q, b=nf, offset='n0d')
-    fb.op('Mov', dst=nf, src=q)
-    fb.label('n0d')
-    fb.op('SDiv', dst=avg, a=avg, b=nf)
-    fb.op('JSGte', a=avg, b=_ratio(fb, b, DRAIN_HP), offset='o')
-    fb.op('Sub', dst=q, a=h0, b=avg)
-    fb.op('JSLt', a=q, b=_ratio(fb, b, DRAIN_DROP), offset='o')
+    # gates: the capture isn't under way (a capture progressing: the fight was won) and something is wearing them
     fb.op('Mov', dst=pr, src=zero)
     sg = b.field(s, 'siege')
     fb.op('JNull', reg=sg, offset='np')
@@ -101,13 +65,106 @@ def build_drain(cx, helpers, militia):
     # militia dead = the fight is won (armies `release` freed then look like dead ones: Smugglers' Ubtar 03:12 and
     # Atreides' Qadlulah 05:06 were cancelled at 7-12% capture with no defender left)
     fb.op('Call1', dst=q, fun=militia, arg0=s)
+    fb.op('JSGt', a=q, b=zero, offset='dr_go')
+    # ... unless enemy guns cover the target (not its own turrets): the wear is the guns, the militia is long dead
+    # (Fremen's Annex of Arkkhelon under Arrakeen's guns: vanilla's balance read 4-23 while 15 armies lost 86%, 5 dead)
+    cvn, cvf = fb.reg(cx.t('hl.types.ArrayObj')), fb.reg(cx.t('bool'))
+    fb.op('Null', dst=cvn)
+    fb.op('Bool', dst=cvf, value=False)
+    fb.op('CallN', dst=q, fun=cover, args=[fac, tgt, tgt, cvf, cvn])
     fb.op('JSLte', a=q, b=zero, offset='o')
-    _log_ev(fb, b, cx, helpers, 'drain', [('f', fb.get(fac, 'kind')), ('s', tgt), ('hp%', avg), ('hp0%', h0),
-                                          ('pr%', pr), ('n', fb.dyn(n))])
+    fb.label('dr_go')
+    # per army (user: judge each army, not everybody at once): an army is worn when its life is below DRAIN_HP and
+    # at least DRAIN_DROP below where it stood when first seen in this order's Action (maps `drain0a` army -> life,
+    # `drain0o` army -> order). Worn armies leave the order (they heal through vanilla) while the others keep
+    # capturing; the order is cancelled only when every army left is worn (Fremen's 8 armies at Atreides' Sad-po,
+    # mean life 76% -> 44%, were all called off while some still stood)
+    m0a, m0o = _global_map(fb, b, cx, 'drain0a'), _global_map(fb, b, cx, 'drain0o')
+    nw, nh = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    lr, st = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=nw, src=b.const('i32', 0))
+    fb.op('Mov', dst=nh, src=b.const('i32', 0))
+    fb.op('Mov', dst=avg, src=zero)
+    fb.op('Mov', dst=h0, src=zero)
+    fb.op('Mov', dst=n, src=b.const('i32', 0))
+    fb.op('Mov', dst=j, src=b.const('i32', 0))
+    b.loop_head('u')
+    fb.op('JSGte', a=j, b=b.field(units, 'length'), offset='ud')
+    a = b.cast(b.call('hl.types.ArrayObj.getDyn', units, j), 'ent.Army')
+    fb.op('Incr', dst=j)
+    fb.op('JNull', reg=a, offset='u')
+    fb.op('Incr', dst=n)
+    fb.op('Mov', dst=lr, src=b.call('ent.Entity.get_lifeRatio', a))
+    fb.op('Add', dst=avg, a=avg, b=lr)
+    ov = b.call('haxe.ds.ObjectMap.get', m0o, fb.dyn(a))
+    fb.op('JNotEq', a=ov, b=fb.dyn(o), offset='u_new')
+    sv = b.call('haxe.ds.ObjectMap.get', m0a, fb.dyn(a))
+    fb.op('JNull', reg=sv, offset='u_new')
+    fb.op('SafeCast', dst=st, src=sv)
+    fb.op('JAlways', offset='u_has')
+    fb.label('u_new')
+    b.call('haxe.ds.ObjectMap.set', m0o, fb.dyn(a), fb.dyn(o))
+    b.call('haxe.ds.ObjectMap.set', m0a, fb.dyn(a), fb.dyn(lr))
+    fb.op('Mov', dst=st, src=lr)
+    fb.label('u_has')
+    fb.op('Add', dst=h0, a=h0, b=st)
+    fb.op('JSGte', a=lr, b=_ratio(fb, b, DRAIN_HP), offset='u_ok')
+    fb.op('Sub', dst=q, a=st, b=lr)
+    fb.op('JSLt', a=q, b=_ratio(fb, b, DRAIN_DROP), offset='u_ok')
+    fb.op('Incr', dst=nw)
+    fb.op('JAlways', offset='u')
+    fb.label('u_ok')
+    fb.op('Incr', dst=nh)
+    fb.op('JAlways', offset='u')
+    fb.label('ud')
+    fb.op('JSLte', a=n, b=b.const('i32', 0), offset='o')
+    fb.op('ToSFloat', dst=nf, src=n)
+    fb.op('SDiv', dst=avg, a=avg, b=nf)
+    fb.op('SDiv', dst=h0, a=h0, b=nf)
+    fb.op('JSLte', a=nw, b=b.const('i32', 0), offset='o')
+    fb.op('JSLte', a=nh, b=b.const('i32', 0), offset='dr_all')
+    # split: the worn ones leave, backwards (removeUnit shrinks the list), never the last army
+    ns = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=ns, src=b.const('i32', 0))
+    fb.op('Mov', dst=j, src=b.field(units, 'length'))
+    b.loop_head('sp')
+    fb.op('JSLte', a=j, b=b.const('i32', 0), offset='spd')
+    fb.op('Sub', dst=j, a=j, b=b.const('i32', 1))
+    x = b.cast(b.call('hl.types.ArrayObj.getDyn', units, j), 'ent.Army')
+    fb.op('JNull', reg=x, offset='sp')
+    fb.op('JSLte', a=b.field(units, 'length'), b=b.const('i32', 1), offset='spd')
+    fb.op('Mov', dst=lr, src=b.call('ent.Entity.get_lifeRatio', x))
+    fb.op('JSGte', a=lr, b=_ratio(fb, b, DRAIN_HP), offset='sp')
+    sv2 = b.call('haxe.ds.ObjectMap.get', m0a, fb.dyn(x))
+    fb.op('JNull', reg=sv2, offset='sp')
+    fb.op('SafeCast', dst=st, src=sv2)
+    fb.op('Sub', dst=q, a=st, b=lr)
+    fb.op('JSLt', a=q, b=_ratio(fb, b, DRAIN_DROP), offset='sp')
+    b.call('logic.ai.AIOrder.removeUnit', o, x)
+    b.call('haxe.ds.ObjectMap.remove', m0o, fb.dyn(x))
+    b.call('haxe.ds.ObjectMap.remove', m0a, fb.dyn(x))
+    fb.op('Incr', dst=ns)
+    fb.op('JAlways', offset='sp')
+    fb.label('spd')
+    fb.op('JSLte', a=ns, b=b.const('i32', 0), offset='o')
+    _log_ev(fb, b, cx, helpers, 'drain', [('f', fb.get(fac, 'kind')), ('act', 'split'), ('s', tgt), ('hp%', avg),
+                                          ('hp0%', h0), ('pr%', pr), ('n', fb.dyn(ns)), ('of', fb.dyn(n))])
+    fb.op('JAlways', offset='o')
+    fb.label('dr_all')
+    nb = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=nb, value=False)
+    # a neutral village (militia only): no fear memory, a little more next time (user; `nbump`, common._nbump):
+    # Harkonnen's first Annex (Kar-nun) drained at 1:04 kept its only Annex candidate out for 15 min
+    _neutral_village(fb, b, cx, tgt, 'dr_lost')
+    _nbump_mark(fb, b, cx, fac, tgt, t)
+    fb.op('Bool', dst=nb, value=True)
+    fb.op('JAlways', offset='dr_log')
+    fb.label('dr_lost')
     b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'slost'), fb.dyn(tgt), fb.dyn(t))
     b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'slostf'), fb.dyn(tgt), fb.dyn(fac))
-    b.call('haxe.ds.ObjectMap.remove', mp, fb.dyn(o))
-    b.call('haxe.ds.ObjectMap.remove', mpn, fb.dyn(o))
+    fb.label('dr_log')
+    _log_ev(fb, b, cx, helpers, 'drain', [('f', fb.get(fac, 'kind')), ('s', tgt), ('hp%', avg), ('hp0%', h0),
+                                          ('pr%', pr), ('n', fb.dyn(n)), ('bump', nb), ('act', 'cancel')])
     reason = cx.code.types[cx.fn('logic.ai.AIOrder.stop').type.value].definition.args[1].value
     cancel = fb.reg(reason)
     fb.op('MakeEnum', dst=cancel, construct=CANCEL, args=[])

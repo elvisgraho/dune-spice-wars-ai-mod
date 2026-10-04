@@ -13,7 +13,9 @@ it with everyone). The rally point R = our structure on our land at least RALLY_
 within RALLY_SAFE, the nearest to D (main base RALLY_MB closer: its guns fight with us; one whose walk from the
 defenders' centroid passes within CROSS_R of D, i.e. on the enemy's side, loses to any on their side). Each defender not fighting
 (a fight in contact is the retreat logic's), not on a Defense of a structure farther than RALLY_MIN from D (that fight is its own),
-and farther than RALLY_AT from R: its order (Resupply / Defense / Patrol) is stopped and it walks to R (doAction Move, every RALLY_MOVE_T s at most); map `rallied` army -> time keeps
+and farther than R's radius + RALLY_AT from R: its order (Resupply / Defense / Patrol) is stopped and it walks to the
+gather point RALLY_OFF outside R's radius on D's side (doAction Move, every RALLY_MOVE_T s at most; R's centre is
+unreachable for a main base: armies were re-sent there every 5 s); map `rallied` army -> time keeps
 it out of vanilla's Resupply / mission picks (aimod_wormheld) while it walks, except a Defense of a structure
 farther than RALLY_MIN from D (pick-life wrappers: Atreides' Tuo-tar Defense against a lone raider found 0 candidates
 while all armies were held for Tuonah). Map `rly` faction -> D (`rlyt` time):
@@ -27,6 +29,8 @@ contest hunt fight it (log act commit). Below even, or judged hopeless (`dhl` < 
 (map `rlygu` structure -> time; never a main base; every pass first stops our running Defense orders of a conceded
 or hopeless (`dhl` < 30 s) structure, log `dstop`: vanilla's Defense re-sends idle members at the enemy one by one): D and its neighbours within LOCAL (map `rlyg`) can't be picked again, aimod_defend skips it, vanilla's Defense
 of it gets no armies (no trickle into a lost cause), and the armies are free for other work (log act giveup).
+While D's occupation progresses, the rally commits as soon as the gathered force is at least DEF_HOPE_IN x H
+(terrain-adjusted; not on a D judged hopeless within 30 s): log act commit why cap (timeout: why time).
 Before any of this: when the defenders already within RALLY_HERE of D (+ turrets, x terrain) are at least
 DEF_HOPE_IN x H, the rally commits at once (log act here, M = that force, Mall = all within RALLY_R): gathering
 elsewhere would walk an army that stands together at D away and back (Harkonnen at Qafiel).
@@ -328,6 +332,29 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.op('JNull', reg=b.call('haxe.ds.ObjectMap.get', rly, fb.dyn(fac)), offset='gnew')
     g0 = b.call('haxe.ds.ObjectMap.get', rly0, fb.dyn(fac))
     fb.op('JNull', reg=g0, offset='gnew')
+    # D's capture is under way (occupation progress > 0): commit as soon as the gathered force is at least even
+    # (terrain-adjusted, the timeout's measure), not at ENTER x RALLY_HYST or the timeout: the gathering costs the
+    # village (Fremen held 443-468k vs 340-376k at Grimpo from 14:24 and committed at the 15:04 timeout, 30 s before
+    # Smugglers' Liberate ended; user). Never on a D judged hopeless within 30 s (as `here`)
+    cwhy = fb.reg(cx.t('String'))
+    fb.op('Mov', dst=cwhy, src=fb.string('time'))
+    dzs = b.cast(fb.dyn(dz), 'ent.Structure')
+    fb.op('JNull', reg=dzs, offset='gtime')
+    dsg = b.field(dzs, 'siege')
+    fb.op('JNull', reg=dsg, offset='gtime')
+    fb.op('JSLte', a=b.call('ent.comp.SiegeComponent.getOccupationActionProgress', dsg), b=zero, offset='gtime')
+    cdv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'dhl'), fb.dyn(dz))
+    fb.op('JNull', reg=cdv, offset='gcap_h')
+    cq = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=cq, src=cdv)
+    fb.op('Sub', dst=cq, a=t, b=cq)
+    fb.op('JSLt', a=cq, b=b.const('f64', 30), offset='gtime')
+    fb.label('gcap_h')
+    fb.op('Mul', dst=p, a=bh, b=_ratio(fb, b, DEF_HOPE_IN))
+    fb.op('JSLt', a=bm, b=p, offset='gtime')
+    fb.op('Mov', dst=cwhy, src=fb.string('cap'))
+    fb.op('JAlways', offset='gcommit')
+    fb.label('gtime')
     fb.op('SafeCast', dst=gq, src=g0)
     fb.op('Sub', dst=gq, a=t, b=gq)
     fb.op('JSLte', a=gq, b=b.const('f64', RALLY_GIVEUP), offset='gkeep')
@@ -359,7 +386,7 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     for mp in (rly, rly0, rlyp):
         b.call('haxe.ds.ObjectMap.remove', mp, fb.dyn(fac))
     _log_ev(fb, b, cx, helpers, 'rally', [('f', fb.get(fac, 'kind')), ('act', 'commit'), ('s', dz), ('H', bh),
-                                          ('M', bm)])
+                                          ('M', bm), ('why', cwhy)])
     fb.op('JAlways', offset='end')
     fb.label('gnew')
     # a rally back on within RALLY_RESUME s of its last qualifying pass (map `rlyt`) keeps its clock (rly0): Smugglers
@@ -454,6 +481,25 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.label('rdone')
     fb.op('JNull', reg=rp, offset='end')
     b.call('haxe.ds.ObjectMap.set', rlyp, fb.dyn(fac), fb.dyn(rp))
+    # the gather point: just outside R's footprint on D's side (radius + RALLY_OFF), not its centre: armies can't
+    # stand in a main base, never came within RALLY_AT of the centre and were re-sent every RALLY_MOVE_T s (user:
+    # "spams base center"); arrived = within R's radius + RALLY_AT of R
+    rgx, rgy, rgo, rgl = (fb.reg(cx.t('f64')) for _ in range(4))
+    fb.op('Add', dst=rgo, a=b.call('ent.Entity.get_radius', rp), b=b.const('f64', RALLY_OFF))
+    fb.op('Mov', dst=rgx, src=b.field(rp, 'posx'))
+    fb.op('Mov', dst=rgy, src=b.field(rp, 'posy'))
+    fb.op('Mov', dst=rgl, src=b.call('ent.Entity.getDistTo', rp, dz))
+    fb.op('JSLte', a=rgl, b=rgo, offset='rg_c')
+    fb.op('SDiv', dst=rgo, a=rgo, b=rgl)
+    fb.op('Sub', dst=rgl, a=b.field(dz, 'posx'), b=rgx)
+    fb.op('Mul', dst=rgl, a=rgl, b=rgo)
+    fb.op('Add', dst=rgx, a=rgx, b=rgl)
+    fb.op('Sub', dst=rgl, a=b.field(dz, 'posy'), b=rgy)
+    fb.op('Mul', dst=rgl, a=rgl, b=rgo)
+    fb.op('Add', dst=rgy, a=rgy, b=rgl)
+    fb.label('rg_c')
+    rat = fb.reg(cx.t('f64'))
+    fb.op('Add', dst=rat, a=b.call('ent.Entity.get_radius', rp), b=b.const('f64', RALLY_AT))
     # 3. bring the defenders to it
     n = fb.reg(cx.t('i32'))
     fb.op('Mov', dst=n, src=zi)
@@ -478,7 +524,7 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     # then blocked vanilla's full one after the commit and went in alone at balance 0.25)
     rarr = fb.reg(cx.t('bool'))
     fb.op('Bool', dst=rarr, value=False)
-    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', a, rp), b=b.const('f64', RALLY_AT), offset='rptfar')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', a, rp), b=rat, offset='rptfar')
     fb.op('Bool', dst=rarr, value=True)  # arrived
     fb.label('rptfar')
     rao = fb.reg(cx.t('logic.ai.AIOrder'))
@@ -509,7 +555,7 @@ def build_rally(cx, helpers, pw, react, threat, terrain, cover, mission):
     fb.op('JNull', reg=rao, offset='nord')
     b.call('logic.ai.AIOrder.stop', rao, cancel)
     fb.label('nord')
-    _move_to(fb, b, cx, a, b.field(rp, 'posx'), b.field(rp, 'posy'), fac)
+    _move_to(fb, b, cx, a, rgx, rgy, fac)
     fb.op('Incr', dst=n)
     fb.op('JAlways', offset='a')
     fb.label('adone')

@@ -247,6 +247,16 @@
         }
       ],
       "why": "Supply Drop is the universal first operation (strategy ARMORY-OPS) but only the Military AI type weighted it. Weight 5 for every AI type (no aiType = all in HAI.getAiWeight). Vanilla never launches it (rules/sdrop.py sdrop-block); our rule casts it for a far siege / raid or a stranded army."
+    },
+    {
+      "sheet": "constant",
+      "id": "AI_Ornithopters_ReconRatio_RefineryAssignment",
+      "path": [
+        "value"
+      ],
+      "expected": 0.2,
+      "value": 1.01,
+      "why": "Vanilla assigns ornithopters to refineries (harvester escort) only once 80% of the zones are reconned; user: every harvester gets an escort from the start (rules/orni.py)."
     }
   ]
 }

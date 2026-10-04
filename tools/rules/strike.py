@@ -9,10 +9,10 @@ from an order before Action cancels the whole order).
 Tick (every STRIKE_T s per faction), pass 2: our Military orders on a structure in Regroup / Engage. An order army not
 striking: the nearest visible army of a faction at war with us (neutral raiders / militia ignored: they may be on
 their way to someone else) within STRIKE_R (turret range + a little) and no farther from the order's target than our army (+ STRIKE_R / 2: on
-the way, not a chase) starts a strike when the order's armies within
-LOCAL of it >= STRIKE_RATIO x (aimod_threat(fac, it, LOCAL) + enemy cover there). Only armed targets (aimod_pw > 0, no
+the way, not a chase) starts a strike when the order's armies within STRIKE_JOIN_R (2 x STRIKE_R: the ones that can reach it; user, per army) of it
+>= STRIKE_RATIO x (aimod_threat(fac, it, LOCAL) + enemy cover there). Only armed targets (aimod_pw > 0, no
 harvester: Harkonnen sent 14 of 15 Annex armies at a Fremen harvester with Fremen armies near it). Order armies within
-LOCAL of it join nearest first until their power >= STRIKE_TO x that side; each gets doAction("ArmyFight",
+STRIKE_JOIN_R of it join nearest first until their power >= STRIKE_TO x that side; each gets doAction("ArmyFight",
 EEntity(it)) (vanilla micro's attack call) without leaving the order (maps `strk`
 army -> last refresh, `strt` -> target, `strs` -> start time, `strx` / `stry` -> start position).
 Pass 1 re-judges every striking army of ours (map `stro` army -> its order), also one whose order ended: it ends
@@ -128,13 +128,15 @@ def build_strike(cx, helpers, pw, threat, cover, striking):
     t_false = fb.reg(cx.t('bool'))
     fb.op('Bool', dst=t_false, value=False)
     local = b.const('f64', LOCAL)
+    jr = b.const('f64', STRIKE_JOIN_R)
 
     def balance(tgt, lbl):
-        """m = power of the order's armies (units / un) within LOCAL of tgt; h = STRIKE_RATIO x (at-war armies
+        """m = power of the order's armies (units / un) within STRIKE_JOIN_R of tgt (the ones a strike may send: user,
+        judged per army; rear armies 220 back turned to a target that ran 2 s later at Sad-po); h = STRIKE_RATIO x (at-war armies
         within LOCAL of it + enemy cover there)."""
         fb.op('Mov', dst=m, src=zero)
         y = _army_loop(fb, b, units, un, k, lbl, lbl + 'd')
-        fb.op('JSGt', a=b.call('ent.Entity.getDistTo', y, tgt), b=local, offset=lbl)
+        fb.op('JSGt', a=b.call('ent.Entity.getDistTo', y, tgt), b=jr, offset=lbl)
         fb.op('Call1', dst=q, fun=pw, arg0=y)
         fb.op('Add', dst=m, a=m, b=q)
         fb.op('JAlways', offset=lbl)
@@ -278,7 +280,7 @@ def build_strike(cx, helpers, pw, threat, cover, striking):
     balance(ee, 'sb')
     fb.op('JSLte', a=h, b=zero, offset='u')  # nothing armed there
     fb.op('JSLt', a=m, b=h, offset='u')
-    # start: order armies within LOCAL of it that aren't striking yet, nearest first, until STRIKE_TO x its side
+    # start: order armies within STRIKE_JOIN_R of it that aren't striking yet, nearest first, until STRIKE_TO x its side
     need, sent, bd = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     fb.op('Mul', dst=need, a=h, b=_ratio(fb, b, STRIKE_TO))
     fb.op('Mov', dst=sent, src=zero)
@@ -290,7 +292,7 @@ def build_strike(cx, helpers, pw, threat, cover, striking):
     fb.op('JSGte', a=sent, b=need, offset='gd')
     fb.label('gpick')
     fb.op('Null', dst=best)
-    fb.op('Mov', dst=bd, src=local)
+    fb.op('Mov', dst=bd, src=jr)  # only armies that can reach it before it gets away (STRIKE_JOIN_R)
     y = _army_loop(fb, b, units, un, k, 'g', 'gsel')
     fb.op('JNotNull', reg=b.field(y, 'harvestComponent'), offset='g')
     fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', y, ee))

@@ -362,8 +362,61 @@ def build_term_probe(cx, helpers, new_ids):
     guard = fb.try_()
     fb.op('EnumIndex', dst=idx, value=res)
     fb.op('JEq', a=idx, b=b.const('i32', names.index('Success')), offset='done')
-    _throttle(fb, b, cx, 'oterm', 0, 2, 'done')
+    _throttle(fb, b, cx, 'oterm', 0, 2, 'skeep')
     _log_ev(fb, b, cx, helpers, 'oterm', [('ab', fb.dyn(1)), ('r', fb.dyn(res))])
+    fb.label('skeep')
+    # shuttle keep: the closure cancels the whole order when one army's Shuttle step is refused Invalid / BlockedBy
+    # (Harkonnen's 12-army Annex of Qaf-fir, in Action at 2.1:1, cancelled at 10:33 for one straggler's ornithopter):
+    # that army's step becomes a Walk step (vanilla's own fallback for a refused Shuttle in Regroup) and the check
+    # reads Success. Logs `skeep` (a, r)
+    fb.op('JEq', a=idx, b=b.const('i32', names.index('Invalid')), offset='sk1')
+    fb.op('JNotEq', a=idx, b=b.const('i32', names.index('BlockedBy')), offset='done')
+    fb.label('sk1')
+    fb.op('JNull', reg=1, offset='done')
+    fb.op('JNotEq', a=b.call('String.__compare', 1, fb.dyn(fb.string('Shuttle'))), b=b.const('i32', 0), offset='done')
+    srcd = fb.get(2, 'src')
+    fb.op('JNull', reg=srcd, offset='done')
+    dt = b.cast(srcd, 'DisplayTarget')
+    fb.op('JNull', reg=dt, offset='done')
+    dix = fb.reg(cx.t('i32'))
+    fb.op('EnumIndex', dst=dix, value=dt)
+    fb.op('JNotEq', a=dix, b=b.const('i32', 3), offset='done')  # DisplayTarget Unit(u) (deploy.UNIT_TGT)
+    su = fb.reg(cx.t('ent.Unit'))
+    fb.op('EnumField', dst=su, value=dt, construct=3, field=0)
+    fb.op('JNull', reg=su, offset='done')
+    sue = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=sue, src=su)
+    sfac = b.call('ent.Entity.get_owner', sue)
+    so = fb.reg(cx.t('logic.ai.AIOrder'))
+    _order_of(fb, b, cx, sfac, sue, so, 'done')
+    from rules.stage import _virtual, _vidx
+    path_t = _virtual(cx, 'logic.ai.AIOrders.checkRegroupOrder', ['current', 'steps'])
+    step_t = _virtual(cx, 'logic.ai.AIOrders.checkRegroupOrder', ['from', 'mode', 'sync', 'to'])
+    cur_i, cur_t = _vidx(cx, path_t, 'current')
+    steps_i, steps_t = _vidx(cx, path_t, 'steps')
+    mode_i, mode_t = _vidx(cx, step_t, 'mode')
+    ups = b.field(so, 'unitPaths')
+    fb.op('JNull', reg=ups, offset='done')
+    pv = b.call('haxe.ds.ObjectMap.get', ups, fb.dyn(su))
+    fb.op('JNull', reg=pv, offset='done')
+    path, step, steps = fb.reg(path_t), fb.reg(step_t), fb.reg(steps_t)
+    ci, cur = fb.reg(cur_t), fb.reg(cx.t('i32'))
+    fb.op('ToVirtual', dst=path, src=pv)
+    fb.op('Field', dst=steps, obj=path, field=steps_i)
+    fb.op('JNull', reg=steps, offset='done')
+    fb.op('Field', dst=ci, obj=path, field=cur_i)
+    fb.op('Mov', dst=cur, src=ci)
+    fb.op('JSGte', a=cur, b=b.field(steps, 'length'), offset='done')
+    sv = b.call('hl.types.ArrayObj.getDyn', steps, cur)
+    fb.op('JNull', reg=sv, offset='done')
+    fb.op('ToVirtual', dst=step, src=sv)
+    walk = fb.reg(mode_t)
+    fb.op('MakeEnum', dst=walk, construct=0, args=[])
+    fb.op('SetField', obj=step, field=mode_i, src=walk)
+    _throttle(fb, b, cx, 'skeep', sue, 10, 'skok')
+    _log_ev(fb, b, cx, helpers, 'skeep', [('f', fb.get(sfac, 'kind')), ('a', sue), ('r', fb.dyn(res))])
+    fb.label('skok')
+    fb.op('MakeEnum', dst=res, construct=names.index('Success'), args=[])
     fb.label('done')
     fb.end_try(guard)
     fb.op('Ret', ret=res)
@@ -372,3 +425,80 @@ def build_term_probe(cx, helpers, new_ids):
         op.df['fun'].value = w
     new_ids.add(w)
     return {'term-probe': len(sites)}
+
+
+def build_heal_dead(cx, helpers, new_ids):
+    """Heal-dead: every AIOrder.stop call -> wrapper. A Resupply / Patrol order on a structure stopped with Cancel in
+    Waiting (phase 1: it never got going) counts against that structure (maps `hdc` s -> count, `hdt` s -> window
+    start); HDEAD_N of them within HDEAD_W s mark it dead for HDEAD_T s (map `hbad` s -> until; read by
+    common._heal_dead in the safe-heal keys and strand). Fremen's Resupply / Patrol orders to the sietch Sha-dad were
+    cancelled in Waiting 868 times in one match (1 success) while 9 armies stood 320 away at Wallon. Logs `hdead`
+    (s, n). In a trap; the original stop always runs."""
+    orig = cx.fn('logic.ai.AIOrder.stop')
+    args = [a.value for a in cx.code.types[orig.type.value].definition.args]
+    ret = cx.code.types[orig.type.value].definition.ret.value
+    fb = FB(cx, args, ret, fun_type=orig.type.value)
+    b = B(fb)
+    res = fb.reg(ret)
+    g = fb.try_()
+    fb.op('JNull', reg=0, offset='orig')
+    fb.op('JNull', reg=1, offset='orig')
+    ri, ti = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('EnumIndex', dst=ri, value=1)
+    fb.op('JNotEq', a=ri, b=b.const('i32', CANCEL), offset='orig')
+    fb.op('JNotEq', a=b.field(0, 'phase'), b=b.const('i32', 1), offset='orig')
+    fb.op('EnumIndex', dst=ti, value=b.field(0, 'type'))
+    fb.op('JEq', a=ti, b=b.const('i32', RESUPPLY), offset='rp')
+    fb.op('JNotEq', a=ti, b=b.const('i32', PATROL), offset='orig')
+    fb.label('rp')
+    # only orders that had armies: vanilla's fight retreat re-issues an empty Resupply (n 0) every tick, cancelled at
+    # once (REVERSING "Fight retreat order spam"): counting those marked Harkonnen's own Qad-Al'nit / Sand-bat dead
+    hu = b.field(0, 'units')
+    fb.op('JNull', reg=hu, offset='orig')
+    fb.op('JSLte', a=b.field(hu, 'length'), b=b.const('i32', 0), offset='orig')
+    tg = b.cast(b.call('logic.ai.AIOrder.getTarget', 0), 'ent.Structure')
+    fb.op('JNull', reg=tg, offset='orig')
+    te = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=te, src=tg)
+    now = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=now, src=b.field(_state(fb, b, cx), 'time'))
+    hdc, hdt = _global_map(fb, b, cx, 'hdc'), _global_map(fb, b, cx, 'hdt')
+    n, q = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=n, src=b.const('f64', 0))
+    tv = b.call('haxe.ds.ObjectMap.get', hdt, fb.dyn(te))
+    fb.op('JNull', reg=tv, offset='fresh')
+    fb.op('SafeCast', dst=q, src=tv)
+    fb.op('Sub', dst=q, a=now, b=q)
+    fb.op('JSGt', a=q, b=b.const('f64', HDEAD_W), offset='fresh')
+    cv = b.call('haxe.ds.ObjectMap.get', hdc, fb.dyn(te))
+    fb.op('JNull', reg=cv, offset='cnt')
+    fb.op('SafeCast', dst=n, src=cv)
+    fb.op('JAlways', offset='cnt')
+    fb.label('fresh')
+    b.call('haxe.ds.ObjectMap.set', hdt, fb.dyn(te), fb.dyn(now))
+    fb.label('cnt')
+    fb.op('Add', dst=n, a=n, b=b.const('f64', 1))
+    b.call('haxe.ds.ObjectMap.set', hdc, fb.dyn(te), fb.dyn(n))
+    fb.op('JSLt', a=n, b=b.const('f64', HDEAD_N), offset='orig')
+    fb.op('Add', dst=q, a=now, b=b.const('f64', HDEAD_T))
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'hbad'), fb.dyn(te), fb.dyn(q))
+    b.call('haxe.ds.ObjectMap.remove', hdc, fb.dyn(te))
+    b.call('haxe.ds.ObjectMap.remove', hdt, fb.dyn(te))
+    _log_ev(fb, b, cx, helpers, 'hdead', [('f', fb.get(b.call('ent.Entity.get_owner', b.cast(fb.dyn(b.call('hl.types.ArrayObj.getDyn', hu, b.const('i32', 0))), 'ent.Entity')), 'kind')), ('s', te), ('n', n)])
+    fb.label('orig')
+    fb.end_try(g)
+    fb.op('Call2', dst=res, fun=orig.findex.value, arg0=0, arg1=1)
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    new_ids.add(w)
+    nred = 0
+    for f in cx.code.functions:
+        if f.findex.value == w:
+            continue
+        for op in f.ops:
+            if op.op.startswith('Call') and op.df.get('fun') is not None and op.df['fun'].value == orig.findex.value:
+                op.df['fun'].value = w
+                nred += 1
+    if nred == 0:
+        raise ValueError('heal-dead: no AIOrder.stop call sites')
+    return {'heal-dead': nred}

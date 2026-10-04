@@ -4,7 +4,8 @@ Vanilla's operation use is off for every military op (rules/ops.py: launch block
 faction buys comes from its loadout (`opsbuy`), what it casts and where from the triggers here.
 
 - `opsbuy` (checkMissions' getAllPossibleMissions call -> wrapper): candidates = the faction's wanted ops (WANTS,
-  conditions: 'war' at war with anyone, 'war3' at war with Atreides / Harkonnen / Fremen) + OPS_VANILLA (Cell
+  bought at peace too (user: a peace can be cancelled or betrayed at any time); conditions 'war' / 'war3' remain
+  available for a want that should wait for a war, none uses them) + OPS_VANILLA (Cell
   Search, Infiltration Cells, Assassination, Marauders Raid, CB_*). Vanilla buys only when Intel >= the largest
   Intel cost among its candidates: an unwanted 500-intel op no longer holds back a cheap one. Scores
   (spyingMissions wrapper, sdrop-buy): a wanted op scores OPS_W - OPS_W_STEP x its rank.
@@ -15,8 +16,11 @@ faction buys comes from its loadout (`opsbuy`), what it casts and where from the
     cast on the zone, cancel the order, walk our armies in the zone into the circle (radius 29), target into
     lost-siege memory (`slost`).
   2 ceasefire (Atreides' Cease Fire): an at-war faction occupies / besieges our village, capture progress below
-    OPS_LATE, our power within RALLY_R (+ our cover) < OPS_CF_HOPE x theirs within LOCAL.
-  3 thumper (Decoy Thumper): our army on sand off our own land (there it just walks on: user) targeted by a worm
+    OPS_LATE (and at least OPS_CF_MIN; an occupation under way, never a Pillage: user), our power within RALLY_R (+
+    our cover) < OPS_CF_HOPE x theirs within LOCAL.
+  3 thumper (Decoy Thumper): our army on sand off our own land (there it just walks on: user) targeted by a worm,
+    called into a neighbour zone holding a visible at-war faction army (user: only against player armies, never
+    militia / rebels)
     (Unit.isWormTarget): a neighbour zone of its zone, never one of ours (the worm comes there), with worm activity and none of our armies (an at-war faction's zone first) gets the worm; ours is then
     protected (Zone_NoSandworm).
   3b deny (Decoy Thumper, user): a big visible at-war group (>= OPS_THUMP_PW in its zone) on sand, off its own land,
@@ -25,7 +29,8 @@ faction buys comes from its loadout (`opsbuy`), what it casts and where from the
   4 combat (fights: State.warzones we are in against an at-war faction, total power >= OPS_BIGFIGHT, their visible side >= OPS_FIGHT_H,
     B = ours / theirs in [OPS_B_LO, OPS_B_HI], theirs = max(visible warzone enemies, aimod_threat at our first army there)): Harkonnen Sleeper Agent + Combat Drugs (Drugs alone at
     B <= OPS_DRUG_HI), Fremen Hiding Tracks, Smugglers Poison the Reserves (>= 2 enemy armies there losing supply),
-    Smugglers Communication Jamming on an enemy op in that zone (Combat Drugs / Sleeper / Hiding Tracks trait),
+    Smugglers Communication Jamming on JAM_MIN_OPS enemy ops at once in that zone (Combat Drugs / Sleeper / Hiding
+    Tracks / Toxic Vapors traits) or an Orbital Strike there (user: never for a single op),
     Scavenger Team at B >= OPS_SCAV_B with their side >= OPS_SCAV_H.
   5 siege (our Military orders on structures): Scavenger Team (+ Harkonnen Combat Drugs while the order's armies hold OPS_DRUG_SITE x the
     garrison side) on a sietch / renegade base in Action; Defense Sabotage on an at-war village with turret cover >= OPS_SAB_SHARE of its side at Engage /
@@ -48,13 +53,14 @@ OPS_ABILITY = {
     'MCommunicationJamming': 'CommunicationJamming', 'MPoisonReserves': 'PoisonReserves',
     'MSmugglingOperation': 'ExtractionNetwork', 'MSandCloak': 'SandCloak', 'MAwakePeople': 'CrowdManipulation',
 }
-# loadouts: (mission id, condition) in rank order; MSupplyDrop is cast by rules/sdrop.py
+# loadouts: (mission id, condition) in rank order, all held at peace too (user: peace can be cancelled or
+# betrayed any time); MSupplyDrop is cast by rules/sdrop.py
 WANTS = {
-    'Atreides': [('MCeaseFire', 'war'), ('MSupplyDrop', None), ('MScavengerTeam', None), ('MDecoyThumper', None),
+    'Atreides': [('MCeaseFire', None), ('MSupplyDrop', None), ('MScavengerTeam', None), ('MDecoyThumper', None),
                  ('MGearSabotage', None)],
     'Harkonnen': [('MSleeperAgents', None), ('MCombatDrugs', None), ('MScavengerTeam', None), ('MDecoyThumper', None),
                   ('MSupplyDrop', None), ('MGearSabotage', None)],
-    'Smugglers': [('MSmugglingOperation', None), ('MSupplyDrop', None), ('MCommunicationJamming', 'war3'),
+    'Smugglers': [('MSmugglingOperation', None), ('MSupplyDrop', None), ('MCommunicationJamming', None),
                   ('MScavengerTeam', None), ('MPoisonReserves', None), ('MGearSabotage', None)],
     'Fremen': [('MDecoyThumper', None), ('MSandCloak', None), ('MSupplyDrop', None), ('MAwakePeople', None),
                ('MGearSabotage', None)],
@@ -67,6 +73,7 @@ OPS_VANILLA = ('CellSearch', 'InfiltrationCells', 'Assassination', 'MMaraudersRa
 WAR3 = ('Atreides', 'Harkonnen', 'Fremen')
 ATTR_NOFIGHT = 626     # attribute NoFight (Cease Fire)
 ATTR_OPBLOCK = 75      # attribute Operation_Block (Communication Jamming)
+JAM_MIN_OPS = 2        # Communication Jamming in a fight: at least this many enemy op traits in the zone (user)
 EXTRACT_R = 29         # Extraction Network circle radius around the village (trait TExtractionNetwork, attr 1403)
 
 
@@ -611,7 +618,14 @@ def build_ops(cx, helpers, pw, threat, own, cover, militia, land):
     fb.label('c_bf')
     fb.op('JEq', a=bf, b=fac, offset='c_s')
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, fac, bf), offset='c_s')
+    # only an occupation under way, never a Pillage (user): the militia fight and a pillage aren't worth it; and
+    # delayed to OPS_CF_MIN progress (user): the attacker commits and spends first (both casts of match 2026-10-04
+    # 14:2x went out at progress 0)
+    cak = b.call('ent.comp.SiegeComponent.getOccupationActionKind', sg)
+    fb.op('JNull', reg=cak, offset='c_s')
+    fb.op('JEq', a=b.call('String.__compare', cak, fb.dyn(fb.string('Pillage'))), b=b.const('i32', 0), offset='c_s')
     pr = b.call('ent.comp.SiegeComponent.getOccupationActionProgress', sg)
+    fb.op('JSLt', a=pr, b=_ratio(fb, b, OPS_CF_MIN), offset='c_s')
     fb.op('JSGte', a=pr, b=_ratio(fb, b, OPS_LATE), offset='c_s')
     fb.op('Mov', dst=se, src=s)
     fb.op('Mov', dst=z, src=b.call('ent.Entity.get_zone', se))
@@ -674,6 +688,20 @@ def build_ops(cx, helpers, pw, threat, own, cover, militia, land):
     fb.op('JEq', a=b.call('ent.Entity.get_zone', ye), b=nz, offset='t_n')
     fb.op('JAlways', offset='t_m')
     fb.label('t_md')
+    # only onto a player's army (user: never against militia / rebels: Harkonnen called a worm for an H_Elite on a
+    # Discovery walk): a visible army of a faction at war with us stands in it
+    tsa = b.field(state, 'armies')
+    fb.op('JNull', reg=tsa, offset='t_n')
+    jt = fb.reg(cx.t('i32'))
+    w5 = _army_loop(fb, b, tsa, b.field(tsa, 'length'), jt, 't_w', 't_n')
+    wo5 = b.call('ent.Entity.get_owner', w5)
+    fb.op('JNull', reg=wo5, offset='t_w')
+    fb.op('JEq', a=wo5, b=fac, offset='t_w')
+    fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', state, fac, wo5), offset='t_w')
+    fb.op('JFalse', cond=b.call('ent.Entity.isVisibleForFaction', w5, fac), offset='t_w')
+    w5e = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=w5e, src=w5)
+    fb.op('JNotEq', a=b.call('ent.Entity.get_zone', w5e), b=nz, offset='t_w')
     fb.op('Mov', dst=sc, src=b.const('i32', 0))
     no_ = b.field(nz, 'owner')
     fb.op('JNull', reg=no_, offset='t_sc')
@@ -908,12 +936,29 @@ def build_ops(cx, helpers, pw, threat, own, cover, militia, land):
     fb.op('Mov', dst=xa0e, src=xa0)
     fb.op('Call2', dst=d, fun=land, arg0=fac, arg1=xa0e)
     fb.op('JSLt', a=d, b=b.const('f64', OPS_EXTRACT_LAND), offset='f_xn')
-    o_.cast('MSmugglingOperation', mxf, 'flee', 'f_xn', zone=z, extra=[('B%', rv), ('M', mpow), ('H', hpow)])
     xve = fb.reg(cx.t('ent.Entity'))
     fb.op('Mov', dst=xve, src=xvz)
     xvx, xvy = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     fb.op('Mov', dst=xvx, src=b.field(xve, 'posx'))
     fb.op('Mov', dst=xvy, src=b.field(xve, 'posy'))
+    # worth it only for armies that would use the circle (user: cast for one S_Trooper at 91% walking home, 100 from
+    # Ayn-Al'dalus): our armies of the fight still fighting within 3 x EXTRACT_R of the village, at least
+    # OPS_EXTRACT_MIN power together
+    xu = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=xu, src=b.const('f64', 0))
+    jx0 = fb.reg(cx.t('i32'))
+    xu0 = _army_loop(fb, b, oa, b.field(oa, 'length'), jx0, 'f_xu', 'f_xud')
+    xu0e = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=xu0e, src=xu0)
+    fb.op('JFalse', cond=b.call('ent.Entity.isFighting', xu0e), offset='f_xu')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', xu0e, xve), b=b.const('f64', 3 * EXTRACT_R), offset='f_xu')
+    xup = fb.reg(cx.t('f64'))
+    fb.op('Call1', dst=xup, fun=pw, arg0=xu0)
+    fb.op('Add', dst=xu, a=xu, b=xup)
+    fb.op('JAlways', offset='f_xu')
+    fb.label('f_xud')
+    fb.op('JSLt', a=xu, b=b.const('f64', OPS_EXTRACT_MIN), offset='f_xn')
+    o_.cast('MSmugglingOperation', mxf, 'flee', 'f_xn', zone=z, extra=[('B%', rv), ('M', mpow), ('H', hpow), ('U', xu)])
     jx = fb.reg(cx.t('i32'))
     xx = _army_loop(fb, b, oa, b.field(oa, 'length'), jx, 'f_xa', 'f_cast')
     xxe = fb.reg(cx.t('ent.Entity'))
@@ -963,8 +1008,19 @@ def build_ops(cx, helpers, pw, threat, own, cover, militia, land):
     # Smugglers: Comm Jamming on an enemy op there, Poison the Reserves on supply-losing enemies
     is_kind('Smugglers', 'f_sm')
     mj = o_.held(lst, 'MCommunicationJamming', 'f_po')
+    # only on JAM_MIN_OPS enemy ops there at once, or an Orbital Strike (user: the jam is expensive, never for one
+    # op; Cease Fire is jammed below)
+    o_.ztrait(z, 'OrbitalStrike', 'f_jam')
+    jn = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=jn, src=b.const('i32', 0))
     for tid in ('TCombatDrugs', 'TSleeperAgents', 'TFremenHiddingTracks', 'TToxicVapors'):
-        o_.ztrait(z, tid, 'f_jam')
+        jy, jx = _uid('jy'), _uid('jx')
+        o_.ztrait(z, tid, jy)
+        fb.op('JAlways', offset=jx)
+        fb.label(jy)
+        fb.op('Incr', dst=jn)
+        fb.label(jx)
+    fb.op('JSGte', a=jn, b=b.const('i32', JAM_MIN_OPS), offset='f_jam')
     fb.op('JAlways', offset='f_po')
     fb.label('f_jam')
     # cost: our own drop there (removed by the jam) while it runs
@@ -1158,6 +1214,7 @@ AGENT_CATS = {
 }  # ICounterIntel last: every faction sat at level 0 there (match 00:25), Atreides needed 7 Cell Searches in 10 min
 AG_W = 10000   # score of the first wanted category with a free slot (vanilla's weights are far below)
 AG_STEP = 1000  # ... minus this per rank
+AG_AUTH_N = 2   # opening: Arrakis (IField, +1 Authority per agent) first until it holds this many agents (user)
 
 
 def build_agent_steer(cx, helpers, new_ids):
@@ -1186,8 +1243,23 @@ def build_agent_steer(cx, helpers, new_ids):
             fb.op('JFalse', cond=b.call('haxe.ds.StringMap.exists', res, fb.string(cat)), offset=sk)
             b.call('haxe.ds.StringMap.set', res, fb.string(cat), fb.dyn(b.const('f64', AG_W - rank * AG_STEP)))
             fb.label(sk)
-        fb.op('JAlways', offset='end')
+        fb.op('JAlways', offset='auth')
         fb.label(nxt)
+    # opening (user): the first AG_AUTH_N agents go to Arrakis (IField: +1 Authority each) before any loadout
+    # category, so early Authority buys more villages; every faction
+    fb.label('auth')
+    fb.op('JFalse', cond=b.call('haxe.ds.StringMap.exists', res, fb.string('IField')), offset='end')
+    gaf = cx.fn('$HSpying.getAssignmentFromInfiltration')
+    gaf_a = [a_.value for a_ in cx.code.types[gaf.type.value].definition.args]
+    tnul = fb.reg(gaf_a[1])
+    fb.op('Null', dst=tnul)
+    asg = fb.reg(cx.code.types[gaf.type.value].definition.ret.value)
+    fb.op('Call2', dst=asg, fun=gaf.findex.value, arg0=fb.string('IField'), arg1=tnul)
+    spm = b.call('ent.Faction.get_spyManager', 1)
+    fb.op('JNull', reg=spm, offset='end')
+    nf = b.call('logic.faction.SpyManager.getNbAgentsAssignedOnSlot', spm, asg)
+    fb.op('JSGte', a=nf, b=b.const('i32', AG_AUTH_N), offset='end')
+    b.call('haxe.ds.StringMap.set', res, fb.string('IField'), fb.dyn(b.const('f64', AG_W + AG_STEP)))
     fb.label('end')
     fb.end_try(guard)
     fb.op('Ret', ret=res)

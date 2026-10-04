@@ -1,5 +1,5 @@
 """AI rules built on the enemy army awareness scan (testbed patch `aware-ai`, installed with `ai-log`): wiring only.
-The code lives in tools/rules/: common (thresholds, bytecode helpers), world (shared queries), heal, hunt, siege, raid, strat, strand (+ patrol gate), memory, deploy, peace (+ treaty scope, force peace), build (turret steering), uhq (Underworld HQ cap, placement, extensions), army (army size: CP overflow, Manpower pick gate).
+The code lives in tools/rules/: common (thresholds, bytecode helpers), world (shared queries), heal, hunt, siege, raid, strat, strand (+ patrol gate), memory, deploy, peace (+ treaty scope, force peace), build (turret steering), uhq (Underworld HQ cap, placement, extensions), orni (ornithopter count, harvester escorts, safe mode), army (army size: CP overflow, Manpower pick gate).
 Thresholds and rationale: docs/AI-POLICY.md §4; mechanics and hook points: docs/REVERSING.md "AI rules".
 
 Shared queries (appended functions): aimod_pw, aimod_threat(fac, p, r) (at-war power + neutral raiders targeting fac
@@ -46,12 +46,16 @@ from rules.build import *  # noqa: F401,F403
 from rules.uhq import *  # noqa: F401,F403
 from rules.sdiag import *  # noqa: F401,F403
 from rules.release import *  # noqa: F401,F403
+from rules.bunker import *  # noqa: F401,F403
 from rules.pannex import *  # noqa: F401,F403
 from rules.sdrop import *  # noqa: F401,F403
 from rules.intel import build_intel
 from rules.opsbrain import build_ops, build_ops_buy, build_agent_steer
 from rules.drain import build_drain
 from rules.sqlaw import build_sqr
+from rules.orni import build_orni
+from rules.rsguard import build_rsguard
+from rules.ride import build_wplan, build_wride, build_ride_tick
 from rules.ops import *  # noqa: F401,F403
 from rules.fopen import *  # noqa: F401,F403
 from rules.isai import *  # noqa: F401,F403
@@ -141,6 +145,8 @@ def _install(cx, helpers, new_ids):
     helpers['tension'] = build_tension(cx)  # contact tension query (rules/tension.py): scoring, hunt, strat
     new_ids.add(helpers['tension'])
     helpers['dmzv'] = build_dmzv(cx)  # DMZ village test (rules/dmz.py): scoring, raid, strat
+    helpers['dmzin'] = build_dmzin(cx)  # DMZ village inside our side (rules/dmz.py): annex, else liberate
+    helpers['encl'] = build_encl(cx)  # enclave test (rules/dmz.py): dmzv, strat press
     new_ids.add(helpers['dmzv'])
     react = build_threat(cx, pw, reach=REACT_R)
     helpers['fclaim'] = build_fclaim(cx, own, react)  # free Annex gate (rules/claim.py): scoring
@@ -167,12 +173,14 @@ def _install(cx, helpers, new_ids):
                         short, neutral, threat, threat_in)
     report.update(strat_levers(cx, new_ids))
     dmz = build_dmz(cx, helpers, fpow, defend)  # rules/dmz.py: border counts, truce break
+    pguard = build_pguard(cx, helpers, fpow, defend, pw)  # rules/dmz.py: truce break over our next Annex
     report.update(build_peace_gate(cx, helpers, defend, new_ids))
     report.update(build_treaty_scope(cx, helpers, new_ids))
     # Underworld HQs (rules/uhq.py): cap, placement, extension scores (under turret-steer on the same scoring call)
     uhqval, uhqgain = build_uhq_value(cx), build_uhq_best_gain(cx)
     new_ids.update({uhqval, uhqgain})
     report.update(build_uhq_cap(cx, helpers, new_ids))
+    report.update(build_orni(cx, helpers, new_ids, land))  # rules/orni.py: 4+ ornithopters, harvester escorts in safe mode
     report.update(build_uhq_place(cx, helpers, uhqgain, new_ids))
     uhqx = build_uhq_ext(cx, helpers, uhqval, new_ids)
     report['uhq-ext'] = 1
@@ -216,6 +224,9 @@ def _install(cx, helpers, new_ids):
     sdrop = build_sdrop(cx, helpers, pw, land, supok, own, threat)  # rules/sdrop.py: our Supply Drop use (task lock, emergency)
     report.update(build_sdrop_buy(cx, helpers, new_ids))  # rules/sdrop.py: no second unlocked drop bought
     report.update(build_sdrop_trip(cx, helpers, new_ids))  # rules/sdrop.py: a locked drop lifts vanilla's InsufficientSupply cancel
+    report.update(build_wplan(cx, helpers, new_ids))  # rules/ride.py: worm or walk plan (thumpers claimed at once)
+    report.update(build_wride(cx, helpers, new_ids))  # rules/ride.py: ride results, stalled Worm steps walk
+    ride = build_ride_tick(cx, helpers)  # rules/ride.py: map `wfree` (reach, trip budgets, contest ETA), `tstk`
     danger = build_danger(cx)
     memory = build_memory(cx, helpers, danger, threat, own)
     report.update(harvest_fields(cx, danger, helpers, new_ids))
@@ -238,16 +249,18 @@ def _install(cx, helpers, new_ids):
     report.update(gather_busy(cx, new_ids))
     sact = build_sact(cx, helpers, pw, militia)  # diagnostics only (rules/sdiag.py)
     release = build_release(cx, helpers, relunits, threat, neutral, cover)  # rules/release.py
+    bunker = build_bunker(cx, helpers, pw, militia)  # rules/bunker.py: silence a capture's bunker partner
     sweep = sweep_stub(cx)  # the map sweep: swapped for the real one at the end (every map exists by then)
     new_ids.add(sweep)
     # next Annex choices kept from raid and vanilla's Pillage gauge (rules/raid.py; before raid, which reads them)
     akeep = build_annex_keep(cx, helpers, helpers['scores'])
     new_ids.add(akeep)
     ops = build_ops(cx, helpers, pw, threat, own, cover, militia, land)  # rules/opsbrain.py: our operation casts
-    drain = build_drain(cx, helpers, militia)  # rules/drain.py: worn-down sieges called off
+    drain = build_drain(cx, helpers, militia, cover)  # rules/drain.py: worn-down sieges called off
+    rsguard = build_rsguard(cx, helpers)  # rules/rsguard.py: a resupply walk away from its target turned around
     intel = build_intel(cx, helpers, pw, land)  # rules/intel.py: fog of war, sightings first
-    tick = build_chain(cx, [intel, memory, wormflee, ttick, dmz, strat, hunt, akeep, sdrop, raid, rally, ops, drain, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, sact, sweep])
-    new_ids.update({drain, sdrop, dmz, sact, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
+    tick = build_chain(cx, [intel, ride, memory, wormflee, ttick, dmz, pguard, strat, hunt, akeep, sdrop, raid, rally, ops, drain, rsguard, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, bunker, sact, sweep])
+    new_ids.update({bunker, drain, rsguard, ride, sdrop, dmz, pguard, sact, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
                     memory, intel, ops, tick})
     report['strand'] = 1
     report['worm-flee'] = 1
@@ -257,6 +270,9 @@ def _install(cx, helpers, new_ids):
     report.update(build_wind_fallback(cx, helpers, new_ids))  # last: also redirects our own rules' calls
     report['undeploy'] = 1
     report['raid'] = 1
+    report['bunker-split'] = 1
+    report['annex-wait'] = build_annex_wait(cx, helpers, new_ids)
+    report.update(build_heal_dead(cx, helpers, new_ids))
     report['strat'] = 1
     report.update(install_sweep(cx, helpers, new_ids, tick, sweep))  # last: sees every added map
     return report, tick

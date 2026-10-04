@@ -12,7 +12,9 @@ seen. Model:
   assumed up to min(GHOST_SPD x age, GHOST_R_MAX) closer to the query point than where it was seen (a player
   expects a stack near where it was, not marching straight at him: the uncapped walk read every army seen in 3 min
   within ~800 as present, rallies x4 and no en-route strike passed in a whole match), at its remembered power (x BUSY_W while it was last seen busy, less than
-  BUSY_SEEN_T ago, where the caller discounts busy armies); no record or a stale one: not counted.
+  BUSY_SEEN_T ago, where the caller discounts busy armies); no record or a stale one: not counted. An army in transit
+  (worm ride, shuttle) always takes this path: it counts where it was seen boarding, never tracked to its landing
+  (user: a ride's surprise stays; it must not vanish either); the recorder skips riders, so that sighting stays.
 - Owned siege targets (rules/siege.py getEnemyCombatStats): the owner's armies by what we know, unknown ones at
   the owner's main base (a player assumes the unseen army is home), never fewer than vanilla's zone weights say.
 Logs nothing itself; `aw` rows carry `vis` / `kn`."""
@@ -128,7 +130,12 @@ def _ghost(fb, b, cx, fac, mp, now, x, live, skip, px=None, py=None, r=None, dis
     Falls through (ghost path) with the remembered power, x BUSY_W when busy=True and x was last seen busy less than
     BUSY_SEEN_T ago (busy='skip': such an army jumps to `skip`). Returns the power register (only valid on the ghost path)."""
     gp = fb.reg(cx.t('f64'))
+    # in transit (worm ride, shuttle; loops with _army_loop(transported=True)): never judged live, only where it was
+    # last seen (boarding): it neither vanishes nor is tracked to its landing point (user: the surprise stays)
+    rl = _uid('grl')
+    fb.op('JTrue', cond=b.call('ent.Entity.isTransported', x), offset=rl)
     fb.op('JTrue', cond=b.call('ent.Entity.isVisibleForFaction', x, fac), offset=live)
+    fb.label(rl)
     rec = _rec_of(fb, b, cx, mp, x, skip)
     age = fb.reg(cx.t('f64'))
     fb.op('Sub', dst=age, a=now, b=_rec_get(fb, b, cx, rec, 't'))

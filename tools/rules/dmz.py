@@ -1,7 +1,8 @@
 """DMZ: the border with a neighbour is taken, not burnt (AI-POLICY §5d).
 
 Border region of E (for us): a region (zone) E owns that neighbours a region we own (territory: village-less regions
-count); border village: a village of E (not a main base) in such a region. aimod_dmz(mil, dt), tick chain every DMZ_T
+count); border village: a village of E (not a main base, not within DMZ_BASE_R of E's active main base: E's home) in such
+a region. aimod_dmz(mil, dt), tick chain every DMZ_T
 s per faction: for every other faction E, the count of its border regions is cached (map `dmz` faction -> ObjectMap
 E -> count; read by aimod_dmzv inside vanilla's scoring, and by strat_levers' getTargetStatus wrapper, which lists
 such an at-war E for vanilla's Annex / Liberate scans despite desiredStatus 0).
@@ -22,6 +23,8 @@ period, with our units in E's land, ...; no treason), then the contest hunt and 
 defend (aimod_defend), not against a stronger side (our army power >= DMZ_B x E's; Fremen DMZ_B_FREMEN: no Standing
 to lose, treason is nearly free for them, so they also accept a slightly stronger E), at most once per DMZ_COOL s
 per pair. Logs `dmz` act=war (r = EReason index, 1 Success) and act=on (DMZ active, once per DMZ_LOG s per pair).
+Enclave (aimod_encl, user): E's village (not E's home) whose region borders >= ENCL_N of ours: a DMZ village at war
+whatever E's border count, pressable against a stronger E (strat), and one breaks a truce like DMZ_PEACE.
 Fails safe: in a trap."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
 
@@ -61,6 +64,132 @@ def _borders(fb, b, cx, z, fac, yes):
     fb.label(no)
 
 
+def _near_base(fb, b, cx, e, v, yes):
+    """Jump to `yes` when village v stands within DMZ_BASE_R of an active main base of faction e."""
+    no, lo = _uid('nbn'), _uid('nbl')
+    mbs = b.field(e, 'mainBases')
+    fb.op('JNull', reg=mbs, offset=no)
+    k = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=k, src=b.const('i32', 0))
+    b.loop_head(lo)
+    fb.op('JSGte', a=k, b=b.field(mbs, 'length'), offset=no)
+    mb = b.cast(b.call('hl.types.ArrayObj.getDyn', mbs, k), 'ent.Structure')
+    fb.op('Incr', dst=k)
+    fb.op('JNull', reg=mb, offset=lo)
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', mb), offset=lo)
+    ve, me = fb.reg(cx.t('ent.Entity')), fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=ve, src=v)
+    fb.op('Mov', dst=me, src=mb)
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', ve, me), b=b.const('f64', DMZ_BASE_R), offset=yes)
+    fb.op('JAlways', offset=lo)
+    fb.label(no)
+
+
+def _enclave(fb, b, cx, z, fac, yes):
+    """Jump to `yes` when at least ENCL_N neighbour regions of zone z are owned by fac (a village there sits between
+    our regions: an enclave); fall through otherwise."""
+    no, lo = _uid('enn'), _uid('enl')
+    nb = b.field(z, 'neighbors')
+    fb.op('JNull', reg=nb, offset=no)
+    k, c = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=k, src=b.const('i32', 0))
+    fb.op('Mov', dst=c, src=b.const('i32', 0))
+    b.loop_head(lo)
+    fb.op('JSGte', a=k, b=b.field(nb, 'length'), offset=no)
+    nz = b.cast(b.call('hl.types.ArrayObj.getDyn', nb, k), 'ent.Zone')
+    fb.op('Incr', dst=k)
+    fb.op('JNull', reg=nz, offset=lo)
+    fb.op('JNotEq', a=b.field(nz, 'owner'), b=fac, offset=lo)
+    fb.op('Incr', dst=c)
+    fb.op('JSGte', a=c, b=b.const('i32', ENCL_N), offset=yes)
+    fb.op('JAlways', offset=lo)
+    fb.label(no)
+
+
+def build_encl(cx):
+    """aimod_encl(fac, v) -> v is an enclave village of another faction E: not a main base, not within DMZ_BASE_R of
+    E's active main base, and its region borders >= ENCL_N regions of fac (user: Harkonnen's Wal-po sat between
+    Atreides' Tuodalus and Aynnit; the side that surrounds it should take it, liberate or annex)."""
+    fb = FB(cx, [cx.t('ent.Faction'), cx.t('ent.Structure')], cx.t('bool'))
+    b = B(fb)
+    res = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=res, value=False)
+    guard = fb.try_()
+    fb.op('JNull', reg=0, offset='end')
+    fb.op('JNull', reg=1, offset='end')
+    e = b.call('ent.Entity.get_owner', 1)
+    fb.op('JNull', reg=e, offset='end')
+    fb.op('JEq', a=e, b=0, offset='end')
+    fb.op('JTrue', cond=b.call('ent.Structure.get_isMainBase', 1), offset='end')
+    _near_base(fb, b, cx, e, 1, 'end')
+    z = b.call('ent.Entity.get_zone', 1)
+    fb.op('JNull', reg=z, offset='end')
+    _enclave(fb, b, cx, z, 0, 'yes')
+    fb.op('JAlways', offset='end')
+    fb.label('yes')
+    fb.op('Bool', dst=res, value=True)
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=res)
+    return fb.build()
+
+
+def build_dmzin(cx):
+    """aimod_dmzin(fac, v) -> v sits inside our side: an enclave (ENCL_N of its neighbour regions ours), or it lies
+    between our active main base B and one of our villages W (d(B, v) < d(B, W) and d(B, v) + d(v, W) <= DMZ_BETWEEN_K
+    x d(B, W): it cuts into our land). Such a DMZ village is annexed; any other is liberated (user: the DMZ leans to
+    liberation, a neutral buffer, not to capture)."""
+    fb = FB(cx, [cx.t('ent.Faction'), cx.t('ent.Structure')], cx.t('bool'))
+    b = B(fb)
+    res = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=res, value=False)
+    guard = fb.try_()
+    fb.op('JNull', reg=0, offset='end')
+    fb.op('JNull', reg=1, offset='end')
+    z = b.call('ent.Entity.get_zone', 1)
+    fb.op('JNull', reg=z, offset='end')
+    _enclave(fb, b, cx, z, 0, 'yes')
+    ve, me, we = (fb.reg(cx.t('ent.Entity')) for _ in range(3))
+    fb.op('Mov', dst=ve, src=1)
+    dbv, dbw, dvw, q = (fb.reg(cx.t('f64')) for _ in range(4))
+    mbs = b.field(0, 'mainBases')
+    fb.op('JNull', reg=mbs, offset='end')
+    vl = b.field(_state(fb, b, cx), 'villages')
+    fb.op('JNull', reg=vl, offset='end')
+    k, j = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=k, src=b.const('i32', 0))
+    b.loop_head('mb')
+    fb.op('JSGte', a=k, b=b.field(mbs, 'length'), offset='end')
+    mb = b.cast(b.call('hl.types.ArrayObj.getDyn', mbs, k), 'ent.Structure')
+    fb.op('Incr', dst=k)
+    fb.op('JNull', reg=mb, offset='mb')
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', mb), offset='mb')
+    fb.op('Mov', dst=me, src=mb)
+    fb.op('Mov', dst=dbv, src=b.call('ent.Entity.getDistTo', me, ve))
+    fb.op('Mov', dst=j, src=b.const('i32', 0))
+    b.loop_head('w')
+    fb.op('JSGte', a=j, b=b.field(vl, 'length'), offset='mb')
+    w = b.cast(b.call('hl.types.ArrayObj.getDyn', vl, j), 'ent.Structure')
+    fb.op('Incr', dst=j)
+    fb.op('JNull', reg=w, offset='w')
+    fb.op('Mov', dst=we, src=w)
+    fb.op('JNotEq', a=b.call('ent.Entity.get_owner', we), b=0, offset='w')
+    fb.op('JTrue', cond=b.call('ent.Structure.get_isMainBase', w), offset='w')
+    fb.op('Mov', dst=dbw, src=b.call('ent.Entity.getDistTo', me, we))
+    fb.op('JSGte', a=dbv, b=dbw, offset='w')
+    fb.op('Mov', dst=dvw, src=b.call('ent.Entity.getDistTo', ve, we))
+    fb.op('Add', dst=q, a=dbv, b=dvw)
+    fb.op('Mul', dst=dbw, a=dbw, b=_ratio(fb, b, DMZ_BETWEEN_K))
+    fb.op('JSLte', a=q, b=dbw, offset='yes')
+    fb.op('JAlways', offset='w')
+    fb.label('yes')
+    fb.op('Bool', dst=res, value=True)
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=res)
+    return fb.build()
+
+
 def build_dmzv(cx):
     """aimod_dmzv(fac, v) -> v is a border village of an at-war E holding >= DMZ_WAR border regions (cached count)."""
     fb = FB(cx, [cx.t('ent.Faction'), cx.t('ent.Structure')], cx.t('bool'))
@@ -75,6 +204,11 @@ def build_dmzv(cx):
     fb.op('JEq', a=e, b=0, offset='end')
     fb.op('JTrue', cond=b.call('ent.Structure.get_isMainBase', 1), offset='end')
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', _state(fb, b, cx), 0, e), offset='end')
+    # an enclave (ENCL_N of its neighbour regions ours, not E's home) is a DMZ village whatever E's border count
+    _near_base(fb, b, cx, e, 1, 'end')
+    z0 = b.call('ent.Entity.get_zone', 1)
+    fb.op('JNull', reg=z0, offset='end')
+    _enclave(fb, b, cx, z0, 0, 'yes')
     cv = b.call('haxe.ds.ObjectMap.get', _pair_map(fb, b, cx, 'dmz', 0), fb.dyn(e))
     fb.op('JNull', reg=cv, offset='end')
     n = fb.reg(cx.t('i32'))
@@ -82,8 +216,12 @@ def build_dmzv(cx):
     fb.op('JSLt', a=n, b=b.const('i32', DMZ_WAR), offset='end')
     z = b.call('ent.Entity.get_zone', 1)
     fb.op('JNull', reg=z, offset='end')
-    _borders(fb, b, cx, z, 0, 'yes')
+    _borders(fb, b, cx, z, 0, 'bord')
     fb.op('JAlways', offset='end')
+    fb.label('bord')
+    # a village under E's main base (DMZ_BASE_R) is E's home, not a border to take: its defense is the base's
+    # (Fremen kept picking Atreides' Tsimron, 118 from Arrakeen: 8 armies lost, no other Annex for 5 min, user)
+    _near_base(fb, b, cx, e, 1, 'end')
     fb.label('yes')
     fb.op('Bool', dst=res, value=True)
     fb.label('end')
@@ -119,7 +257,7 @@ def build_dmz(cx, helpers, fpow, defend):
     fb.op('JNotEq', a=b.call('String.__compare', fk, fb.dyn(fb.string('Fremen'))), b=b.const('i32', 0), offset='nfr')
     fb.op('Bool', dst=fremen, value=True)
     fb.label('nfr')
-    k, i, n, cap, nz, zi_ = (fb.reg(cx.t('i32')) for _ in range(6))
+    k, i, n, cap, nz, zi_, enc = (fb.reg(cx.t('i32')) for _ in range(7))
     mp, ep, q = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
     fb.op('Call2', dst=mp, fun=fpow, arg0=fac, arg1=fac)
     fb.op('Mov', dst=k, src=b.const('i32', 0))
@@ -132,6 +270,7 @@ def build_dmz(cx, helpers, fpow, defend):
     # E's border villages; neutral border villages E is capturing
     fb.op('Mov', dst=n, src=b.const('i32', 0))
     fb.op('Mov', dst=cap, src=b.const('i32', 0))
+    fb.op('Mov', dst=enc, src=b.const('i32', 0))
     fb.op('Mov', dst=i, src=b.const('i32', 0))
     b.loop_head('v')
     fb.op('JSGte', a=i, b=vn, offset='vdone')
@@ -157,7 +296,12 @@ def build_dmz(cx, helpers, fpow, defend):
     _borders(fb, b, cx, vz, fac, 'owny')
     fb.op('JAlways', offset='v')
     fb.label('owny')
+    _near_base(fb, b, cx, e, v, 'v')  # E's home villages don't count as border villages (dmzv likewise)
     fb.op('Incr', dst=n)
+    _enclave(fb, b, cx, vz, fac, 'ency')
+    fb.op('JAlways', offset='v')
+    fb.label('ency')
+    fb.op('Incr', dst=enc)
     fb.op('JAlways', offset='v')
     fb.label('vdone')
     # E's regions next to ours (territory: village-less regions too); the cache holds this count
@@ -181,6 +325,7 @@ def build_dmz(cx, helpers, fpow, defend):
     # peace / truce: two border villages are tolerable; a third (held or being captured) breaks it
     # (an ally: declareWar refuses with IsAlly; DMZ_COOL keeps that to one try per pair)
     fb.op('JSGte', a=n, b=b.const('i32', DMZ_PEACE), offset='trig')
+    fb.op('JSGt', a=enc, b=b.const('i32', 0), offset='trig')  # an enclave of E between our regions (user)
     fb.op('JSLt', a=n, b=b.const('i32', DMZ_PEACE - 1), offset='f')
     fb.op('JSLte', a=cap, b=b.const('i32', 0), offset='f')
     fb.label('trig')
@@ -225,6 +370,123 @@ def build_dmz(cx, helpers, fpow, defend):
     _log_ev(fb, b, cx, helpers, 'dmz', [('f', fb.get(fac, 'kind')), ('act', 'on'), ('vs', fb.get(e, 'kind')),
                                         ('n', nz), ('nv', n)])
     fb.op('JAlways', offset='f')
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=void)
+    return fb.build()
+
+
+PG_R = 600        # our armies this close to the village count for the local side
+PG_LOCAL = 1.5    # ... and must hold this x the besieger's visible armies within LOCAL of it
+
+
+def build_pguard(cx, helpers, fpow, defend, pw):
+    """aimod_pguard(mil, dt), tick chain every DMZ_T s per faction (user: Harkonnen pillaged Hulsan, Fremen's next
+    Annex, three times in 25 min under a truce; a pillage leaves it Devastated, untargetable for 20 days): one of our
+    next Annex choices (map `akeep`, rules/raid.py annex-keep, within AKEEP_T) besieged / occupied by E we are not at
+    war with breaks the truce (declareWar, as the DMZ break) when we are stronger: our army power >= DMZ_B x E's
+    (Fremen DMZ_B_FREMEN) and our armies within PG_R of the village >= PG_LOCAL x E's armies we see within LOCAL of it
+    (none seen: no break). Not while we defend; one try per pair per DMZ_COOL (shared with the DMZ break). The contest
+    hunt then stops the siege (it contests an Annex choice however far: rules/hunt.py). Logs `pguard` act war (r =
+    EReason index, 1 Success; 16 MissingResources = Influence), M / E global, m / e local. Fails safe: in a trap."""
+    fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
+    b = B(fb)
+    void = fb.reg(cx.t('void'))
+    guard = fb.try_()
+    fac = b.field(b.field(0, 'controller'), 'owner')
+    fb.op('JNull', reg=fac, offset='end')
+    state = _state(fb, b, cx)
+    t = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=t, src=b.field(state, 'time'))
+    _tick(fb, b, cx, t, DMZ_T, 'end')
+    dfs = fb.reg(cx.t('ent.Structure'))
+    fb.op('Call1', dst=dfs, fun=defend, arg0=fac)
+    fb.op('JNotNull', reg=dfs, offset='end')
+    keep = _fac_map(fb, b, cx, 'akeep', fac)
+    cool = _pair_map(fb, b, cx, 'dmzt', fac)
+    villages = b.field(state, 'villages')
+    fb.op('JNull', reg=villages, offset='end')
+    fremen = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=fremen, value=False)
+    fk = b.field(fac, 'kind')
+    fb.op('JNull', reg=fk, offset='nfr')
+    fb.op('JNotEq', a=b.call('String.__compare', fk, fb.dyn(fb.string('Fremen'))), b=b.const('i32', 0), offset='nfr')
+    fb.op('Bool', dst=fremen, value=True)
+    fb.label('nfr')
+    i, j = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    q, mp, ep, ml, el, p = (fb.reg(cx.t('f64')) for _ in range(6))
+    e = fb.reg(cx.t('ent.Faction'))
+    ve = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=i, src=b.const('i32', 0))
+    b.loop_head('v')
+    fb.op('JSGte', a=i, b=b.field(villages, 'length'), offset='end')
+    v = b.cast(b.call('hl.types.ArrayObj.getDyn', villages, i), 'ent.Structure')
+    fb.op('Incr', dst=i)
+    fb.op('JNull', reg=v, offset='v')
+    akt = b.call('haxe.ds.ObjectMap.get', keep, fb.dyn(v))
+    fb.op('JNull', reg=akt, offset='v')
+    fb.op('SafeCast', dst=q, src=akt)
+    fb.op('Sub', dst=q, a=t, b=q)
+    fb.op('JSGte', a=q, b=b.const('f64', AKEEP_T), offset='v')
+    sg = b.field(v, 'siege')
+    fb.op('JNull', reg=sg, offset='v')
+    fb.op('Mov', dst=e, src=b.field(sg, 'besiegingFaction'))
+    fb.op('JNotNull', reg=e, offset='have')
+    fb.op('Mov', dst=e, src=b.call('ent.comp.SiegeComponent.getOccupierFaction', sg))
+    fb.op('JNull', reg=e, offset='v')
+    fb.label('have')
+    fb.op('JEq', a=e, b=fac, offset='v')
+    fb.op('JTrue', cond=b.call('logic.state.State.areAtWar', state, fac, e), offset='v')
+    # stronger overall
+    fb.op('Call2', dst=mp, fun=fpow, arg0=fac, arg1=fac)
+    fb.op('Call2', dst=ep, fun=fpow, arg0=e, arg1=fac)
+    fb.op('Mov', dst=q, src=_ratio(fb, b, DMZ_B))
+    fb.op('JFalse', cond=fremen, offset='bq')
+    fb.op('Mov', dst=q, src=_ratio(fb, b, DMZ_B_FREMEN))
+    fb.label('bq')
+    fb.op('Mul', dst=q, a=q, b=ep)
+    fb.op('JSLt', a=mp, b=q, offset='v')
+    # ... and there: ours within PG_R vs E's we see within LOCAL (none seen: no break)
+    fb.op('Mov', dst=ve, src=v)
+    fb.op('Mov', dst=el, src=b.const('f64', 0))
+    arr, alen = _my_armies(fb, b, e, 'v')
+    a = _army_loop(fb, b, arr, alen, j, 'ea', 'ead')
+    fb.op('JFalse', cond=b.call('ent.Entity.isVisibleForFaction', a, fac), offset='ea')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', a, ve), b=b.const('f64', LOCAL), offset='ea')
+    fb.op('Call1', dst=p, fun=pw, arg0=a)
+    fb.op('Add', dst=el, a=el, b=p)
+    fb.op('JAlways', offset='ea')
+    fb.label('ead')
+    fb.op('JSLte', a=el, b=b.const('f64', 0), offset='v')
+    fb.op('Mov', dst=ml, src=b.const('f64', 0))
+    arr2, alen2 = _my_armies(fb, b, fac, 'v')
+    a2 = _army_loop(fb, b, arr2, alen2, j, 'ma', 'mad')
+    fb.op('JNotNull', reg=b.field(a2, 'harvestComponent'), offset='ma')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', a2, ve), b=b.const('f64', PG_R), offset='ma')
+    fb.op('Call1', dst=p, fun=pw, arg0=a2)
+    fb.op('Add', dst=ml, a=ml, b=p)
+    fb.op('JAlways', offset='ma')
+    fb.label('mad')
+    fb.op('Mul', dst=q, a=el, b=_ratio(fb, b, PG_LOCAL))
+    fb.op('JSLt', a=ml, b=q, offset='v')
+    # one try per pair per DMZ_COOL
+    cv = b.call('haxe.ds.ObjectMap.get', cool, fb.dyn(e))
+    fb.op('JNull', reg=cv, offset='go')
+    fb.op('SafeCast', dst=q, src=cv)
+    fb.op('Sub', dst=q, a=t, b=q)
+    fb.op('JSLt', a=q, b=b.const('f64', DMZ_COOL), offset='v')
+    fb.label('go')
+    b.call('haxe.ds.ObjectMap.set', cool, fb.dyn(e), fb.dyn(t))
+    dm = b.field(state, 'diplomacy')
+    fb.op('JNull', reg=dm, offset='end')
+    rr = b.call('logic.state.DiplomacyManager.declareWar', dm, fac, e)
+    ri = fb.reg(cx.t('i32'))
+    fb.op('Int', dst=ri, ptr=cx.code.add_i32(-1).value)
+    fb.op('JNull', reg=rr, offset='rlog')
+    fb.op('EnumIndex', dst=ri, value=rr)
+    fb.label('rlog')
+    _log_ev(fb, b, cx, helpers, 'pguard', [('f', fb.get(fac, 'kind')), ('act', 'war'), ('vs', fb.get(e, 'kind')),
+                                           ('s', ve), ('r', ri), ('M', mp), ('E', ep), ('m', ml), ('e', el)])
     fb.label('end')
     fb.end_try(guard)
     fb.op('Ret', ret=void)

@@ -421,6 +421,7 @@ def summarize(events, faction=None, all_orders=False):
     acands = []
     standoff = []                           # treaty / patrol / turret rows (rules/peace.py, strand.py, build.py)
     opsev = []                              # operations (rules/ops.py, opsbrain.py)
+    rides = []                              # worm rides (rules/ride.py)
     for e in events:
         k, f, t = e.get('e'), e.get('f'), when(e, t0)
         e['_t'] = t
@@ -520,6 +521,8 @@ def summarize(events, faction=None, all_orders=False):
             gathers.append(e)
         elif k in ('opcast', 'opfail', 'opveto', 'opvan', 'opcell', 'ophold', 'opgate', 'opbuy', 'opfz', 'drain', 'opcf'):
             opsev.append(e)
+        elif k in ('wplan', 'wreq', 'wride', 'wstall', 'tstk'):
+            rides.append(e)
         elif k in ('treaty', 'patrol', 'turret', 'tveto', 'aring', 'pkeep', 'odead', 'okeep', 'fpeace', 'pannex', 'pagate', 'sdrop', 'airpick', 'rejoin', 'dall', 'uhqcap',
                    'uhqres', 'uhqp', 'uhqx', 'dmz', 'wsteer', 'wveto', 'afield', 'afveto', 'aagate', 'undeploy', 'bkeep', 'tkeep', 'tdem',
                    'rpoint', 'rfaf', 'bpick', 'trippick'):
@@ -709,6 +712,31 @@ def summarize(events, faction=None, all_orders=False):
                 continue
             out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {ent(e.get('a'))[:20]:<20} -> {ent(e.get('tgt'))[:20]:<20} "
                        f"d{e.get('d')} dmax{e.get('dmax')} n{e.get('n')}")
+
+    if rides:
+        out.append('\n## Worm rides (rules/ride.py; docs/WORMRIDE-PLAN.md): plan = worm / walk chosen at addOrder (why: ride, '
+                   'near < RIDE_MIN, stock = no free thumper, spare = short trip with the last free one, chase / grp = group fight not a contest; van = vanilla would '
+                   'have ridden), ride = granted, req = refused (why = EReason, w = s waiting), stall = Worm steps turned to '
+                   'Walk (n armies; why land = touched down off the landing point: walks the rest, off = not on it after 15 s, short = ride < 100 walked), tstk = thumper stock / claims')
+
+        def _yes(v):
+            return str(v).lower() == 'true'
+        c = Counter((e.get('f'), 'worm' if _yes(e.get('worm')) else 'walk', e.get('why'), _yes(e.get('van')))
+                    for e in rides if e['e'] == 'wplan')
+        out.append('  plans: ' + ', '.join(f'{f}:{w}:{y} van={int(v)} x{n}' for (f, w, y, v), n in sorted(c.items(), key=str)))
+        c = Counter((e.get('f'), e['e']) for e in rides if e['e'] in ('wride', 'wreq', 'wstall'))
+        out.append('  results: ' + ', '.join(f'{f}:{k} x{n}' for (f, k), n in sorted(c.items(), key=str)))
+        stk = defaultdict(list)
+        for e in rides:
+            if e['e'] == 'tstk':
+                stk[e.get('f')].append(e)
+        for f, es in sorted(stk.items(), key=str):
+            out.append(f"  stock {str(f):<10} " + ' '.join(f"{clock(e['_t'])}:{num(e.get('n'), 1)}/{e.get('cl')}"
+                                                          for e in es[::max(1, len(es) // 12)]))
+        for e in [e for e in rides if e['e'] != 'tstk' and (e['e'] != 'wplan' or _yes(e.get('worm')) or _yes(e.get('van')))][-40:]:
+            out.append(f"  {clock(e['_t'])} {str(e.get('f')):<10} {e['e'][1:]:<5} {ent(e.get('tgt'))[:22]:<22} "
+                       f"{str(e.get('why') or ''):<14} {e.get('sa') or e.get('act') or ''} d{e.get('d')} n{e.get('n', '')} "
+                       f"stock{num(e.get('stock'), 1)} cl{e.get('cl', '')} w{e.get('w', '')} van{e.get('van', '')}")
 
     if opsev:
         out.append('\n## Operations (rules/ops.py, opsbrain.py; docs/OPERATIONS-PLAN.md): cast = ours (why: trigger), '

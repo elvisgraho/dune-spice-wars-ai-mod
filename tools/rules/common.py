@@ -116,6 +116,15 @@ DEF_HOPE_COMMIT = 0.7  # ... and within RALLY_COOL of a rally commit (map `rlyc`
                    # 9:05 dstop at 362k vs 363k: all armies fled, the 6 freed ones left for an Annex)
 BUNKER_MB = 1.5    # Annex score x this for a neutral village within BUNKER_R of our main base (was a hard redirect:
                    # Fremen took 3 such villages before any deep-desert ring village); lost ones are still redirected
+ANNEX_EBASE_R = 200  # Annex score x ANNEX_EBASE_W for another faction's village this close to its owner's active main base
+ANNEX_EBASE_W = 0.5  # ... (its home under the base guns: Zayras 110 from Tuek ranked over Had-fir 183 out; = DMZ_BASE_R)
+RENEG_HOPS = 2     # a renegade base this many zones or fewer from our main base (one village between) is a home threat ...
+RENEG_ADD = 100    # ... its Dismantle score max(vanilla, 0) + this: the first strike target when the gauge fires
+OPER_ATB = 1534    # attribute Village_NotAdjacentToSelfRegion_GainTTrait (Smugglers' Stakkanov, OperativePassive): a village
+                   # with no region of ours next to it gets +20% production, enemy sieges there take x2
+OPER_ADD = 25      # ... with it: Annex score + this for a candidate with no neighbour region of ours or next to our main base
+                   # (flat, ~one more resource field: a top special still outranks it, user)
+OPER_LOSS = 15     # ... and - this for one next to an isolated village of ours (that village loses its +20% production)
 BUNKER_R = 110     # villages this close to our main base are its bunker (guns reach 80, + a 30 margin; 200 counted
                    # Ur-Al'nun, 181 away, as under the guns): a lost one is the Annex target first
 MILITARY, DEFENSE, RESUPPLY, DISCOVERY, PATROL = 1, 2, 4, 5, 6  # AIOrderType: Basic Military Defense Protect Resupply Discovery Patrol ...
@@ -169,6 +178,11 @@ WORM_NEAR = 150    # an army moved off the sand waits there (out of vanilla's Re
                    # this close, at most WORM_HOLD s; worm-flee moves the order's other armies on sand this close to it
 WORM_STEP = 20     # rock search: ring step ...
 WORM_R = 200       # ... up to this radius (none found: this far straight away from the worm)
+WORM_DETOUR = 30   # ... rings up to this much beyond the nearest land ring count when the army has a destination and
+                   # the worm is >= WORM_LET_D away: the land point with the least escape + onward walk wins (user: the
+                   # map's rocky middle on the way beats the nearest rock behind)
+WORM_DEST_MIN = 30 # a path end at least this far is the army's destination for that choice
+WORM_DEST_T = 60   # s: ... remembered per army this long (map `wdest`): after one flee its path ends at our flee point
 WORM_DIRS = 16     # ... directions per ring
 ZONE_NO_WORM = 1641  # attribute Zone_NoSandworm (trait WormCalling_Neighbors: regions next to a Decoy Thumper; vanilla
                      # canBeWormTarget: no worm target there)
@@ -181,6 +195,8 @@ HOME_MIN_H = RALLY_MIN_H  # aimod_home: hostile power free to strike our land be
 SWEEP_T = 60        # s: map sweep (rules/sweep.py): dead armies / ended orders / ended fights leave our maps
 STRIKE_T = 2        # s: en-route strike tick (rules/strike.py): our siege armies on the march ...
 STRIKE_R = 90       # ... react to an at-war army this close, like a turret (MissileBattery range 80 + a little; user)
+STRIKE_JOIN_R = 2 * STRIKE_R  # a strike counts and sends only order armies this close to the target (user: per army;
+                   # Sad-po: 5 armies 220 back were sent at a target that ran 2 s later and turned back)
 STRIKE_RATIO = 1.0  # ... and fight it when the order's armies within LOCAL are at least this x (its side + cover):
                     # even or better starts the fight (user), the vanilla fight retreat still judges it after 5 s
 STRIKE_MAX = 30     # s: ... a strike ends after this, then the march goes on
@@ -226,6 +242,11 @@ CAP_EST = 90       # s: hunt contest: an occupation's full length before its pro
 CAP_STALE = 300    # s: a progress record older than this is restarted
 CONTEST_SPD = 6    # units/s: army speed for a contest's arrival time (aw spd 6-8.4)
 CONTEST_SLACK = 10 # s: a contest still starts when it arrives this late (the capture may stall in the fight)
+CONTEST_R = 600    # contest candidates: an at-war capture this close to our land (DEFEND_R + a short run; user: Atreides
+                   # annexed Tab-riyah / Aegkus / Ars-sud 496-548 from Fremen's villages unopposed)
+CONTEST_RIDE_R = 800  # ... up to this far while a thumper is free (the contest rides, rules/ride.py); our armies
+                   # within HUNT_R + RIDE_LEG of it may join
+CONTEST_LEASH = CONTEST_RIDE_R + 50  # abort `leash` of a running contest (LEASH for chases); contests never `drift`
 RING_IN = 10       # contest ring step: an army farther than village radius + this walks in (code: contenders stand within
                    # radius + Siege_Occupation_Distance 20; edge or centre distance *unverified*: 10 keeps a margin)
 RING_K = 0.5       # ... to the point radius x this from the village centre, on its own side
@@ -244,7 +265,10 @@ OPS_W = 100        # opsbuy: a wanted op scores this minus OPS_W_STEP x its load
 OPS_W_STEP = 15
 OPS_EXTRACT_B = 0.45  # Extraction Network: our armies at the siege below this x their side there ...
 OPS_EXTRACT_LAND = 300  # ... and the target at least this far from our land (a long walk home)
+OPS_EXTRACT_MIN = 80000  # ... and the armies that would use its circle (still fighting, within 3 x EXTRACT_R of the village)
+                         # worth this much (user: cast for one 29k S_Trooper walking home, out of the circle's reach)
 OPS_LATE = 0.75    # Cease Fire: only while the enemy capture of our village is below this progress
+OPS_CF_MIN = 0.3   # ... and at least this (delay: the attacker commits first); never on a Pillage (user)
 OPS_CF_HOPE = 0.9  # ... and our power within RALLY_R (+ cover) is below this x theirs within LOCAL
 OPS_BIGFIGHT = 120000  # fight ops: both sides' power together at least this (~3 armies; 250k skipped every Harkonnen-Fremen fight of match 23:36: 2-3 armies a side, 169-181k)
 OPS_B_LO = 0.7     # combat ops in fights with balance (ours / theirs) in [OPS_B_LO, OPS_B_HI]: they swing it
@@ -333,12 +357,19 @@ DMZ_B_FREMEN = 0.8 # ... Fremen (no Standing: breaking a truce costs them least)
 DMZ_COOL = 120     # s: at most one declaration attempt per faction pair
 DMZ_LOG = 60       # s: `dmz` act=on log period per pair
 DMZ_W = 1.5        # vanilla Annex / Liberate score x this for a DMZ village
+DMZ_ANNEX_OUT = 0.7   # ... but its Annex score x this when it isn't inside our side (aimod_dmzin): the DMZ leans to Liberate
+DMZ_BETWEEN_K = 1.2   # aimod_dmzin: v between our main base B and our village W when d(B,v) + d(v,W) <= this x d(B,W)
 DMZ_PREF = 0.5     # press: a DMZ village's distance x this (ranks first)
+DMZ_BASE_R = 200   # a village of E this close to E's active main base is E's home, never a DMZ village (base guns
+                   # COVER_R 130 + its defenders' reach; Tsimron 118 from Arrakeen; Fon-Al'lulah 233 was taken)
+ENCL_N = 2         # enclave (rules/dmz.py aimod_encl): another faction's village whose region borders this many of ours is
+                   # a DMZ village at war (any border count), pressable against a stronger owner, and breaks a truce
 CROSS_R = RALLY_MIN  # a heal / strand / rally walk passing this close to our structure under at-war siege (or the
                      # rally's danger structure) goes through the enemy (Harkonnen walked past Fremen at Tsimlat)
 RALLY_SAFE = 150   # ... and has no at-war power within this
 RALLY_MB = 150     # the main base counts this much closer (its guns fight with us)
 RALLY_AT = 60      # a defender this close to the rally point has arrived (no move, not held)
+RALLY_OFF = 40     # the gather point lies this far outside the rally structure's radius, on the danger side
 RALLY_MOVE_T = 5   # s: a defender is re-sent at most this often
 RALLY_HOLD = 5     # s: a rallying army stays out of vanilla's picks this long after the last pass saw it walking
 RALLY_HYST = 1.15  # a running rally ends only at ENTER x this (no on / off flicker at the threshold)
@@ -356,6 +387,20 @@ SPOS_IN = 80       # Engage: only armies already this close (walkers aren't pull
 SPOS_OFF = 25      # the safe point: this far from the target's centre, away from the nearest enemy structure (inside
                    # the occupation range: occupiers seen up to ~30 from the village)
 SPOS_T = 4         # s: an army is re-sent at most this often (micro re-engages in between)
+SPOS_FIGHT_R = 60  # an army this close to an at-war army stays in its fight (no step away)
+CAPL_R = 60        # capture leash (rules/spos.py): an Action occupier this far from the target with only fleeing
+                   # at-war armies near it (moving, farther from the target) walks back to SPOS_OFF from it
+CAPS_MIN = 100     # capture side fight (rules/heal.py): a losing fight this far (..LOCAL) from a capture of ours in Action
+                   # whose armies at the target outweigh ours in it doesn't retreat (its cancel would end the capture)
+BSPLIT_CHECK = 5   # s: bunker split pass (rules/bunker.py)
+BSPLIT_K = 1.5     # ... armies sent to silence the bunker partner: until this x its militia (>= 1 army, <= half the order)
+BSPLIT_R = 200     # ... only order armies within this of B (at the fight, not stragglers walking in)
+HDEAD_N = 5        # heal-dead (rules/orders.py): this many Resupply / Patrol orders to one structure cancelled in Waiting ...
+HDEAD_W = 30       # ... within this many s mark it dead ...
+HDEAD_T = 300      # ... for this long: heal keys and strand skip it (Fremen's Sha-dad: 745 cancels, armies stuck at Wallon)
+BSPLIT_PRIO = 4    # ... split order priority: above the capture's (Annex 3), so addOrder moves the armies itself
+BSPLIT_KEEP_MIN = 4   # = orders.KEEP_MIN: before Action a split needs an order this big ...
+BSPLIT_KEEP_SHARE = 4 # = orders.KEEP_SHARE: ... and takes at most 1 / this of it (take-keep; more cancels the capture)
 SCOUT_NEED = {1: (2, 0), 2: (3, 2), 3: (2, 2)}  # scout wait (rules/annex.py): structures owned (main base included) ->
                    # Annex candidates needed (Fremen / Vernius, others) before an early village is taken ...
 SCOUT_WAIT = 120   # s: ... at most this long, then take it
@@ -375,6 +420,9 @@ DISC_RELAUNCH = 30  # s: a world event vanilla launched a Discovery on isn't lau
 RAID_GAUGE = 85    # a raid doesn't start while our Annexation gauge is this full: vanilla's Annex fires within seconds
                    # and takes the raid's armies (Fremen raid on Damrekh cancelled 8 s after start)
 RAID_GAUGE_T = 20  # ... unless it stayed that full this many s: the Annex isn't coming (unaffordable, no army, ...)
+RAID_ANNEX_FRESH = 15  # s: ... but an Annex that ended NotEnoughArmies / ArmyNotStrongEnough / NoAvailableArmy this recently
+                   # holds raids (its armies are coming free) ...
+RAID_ANNEX_MAX = 150   # s: ... for at most this long per failure streak (until an Annex succeeds): then raids go again
 HRUN_T = 20        # s: an outgunned harvester under fire is sent to a safe field (or home) at most this often
 INTEL_T = 1        # s: fog of war (rules/intel.py): sighting pass per AI faction
 SEEN_T = 90        # s: a hostile army unseen this long is no longer counted by the local queries (aimod_fpow keeps it)
@@ -390,6 +438,22 @@ OUT_W = 0.5        # ... a query point on our land: an idle at-war army standing
                    # must walk in first; movers heading in count fully)
 OUT_R = 100        # ... only beyond this from the query point (an idle army at the border is a threat as is)
 RIDE_MAX = 60      # s: hunt / raid judgement is held at most this long while an army is in transit / hidden
+# worm rides (rules/ride.py, docs/WORMRIDE-PLAN.md; user: Fremen ride offensively and reach farther)
+RIDE_RES = 15      # resource sheet index of Thumper (vanilla addOrder's hasAccessToRes(15) / getResource(15))
+RIDE_MIN = 200     # a trip at least this long rides (cdb AI_WormRiding_MinDist, read by no vanilla code); shorter walks
+RIDE_FAR = 350     # ... a trip this long (reach), a contest or a Defense may take the last free thumper; shorter ones ride
+RIDE_SPARE = 2     # ... only while this many are free (stock 3 at start, none back before 5k hegemony: 3 short early
+                   # Annex rides spent the whole stock by 6 min)
+RIDE_LEG = 400     # the ride's part of a trip (WormRiding_MaxTravelDist without the range bonus): no supply spent on it
+RIDE_SPD = 25      # TransportWorm speed (x2 with TruePeople): contest arrival time of a ride
+RIDE_OVER = 15     # s: walk to the thumper point + pickup + arrival of a ride (contest arrival time)
+RIDE_STALL_T = 40  # s: a Worm step vanilla keeps re-requesting without success becomes a Walk step (vanilla: forever;
+                   # one worm per faction at a time, a ride lasts ~20 s)
+RIDE_GAP = 5       # s: refusals further apart than this restart the stall clock (the order wasn't waiting meanwhile)
+RIDE_CHECK = 3     # s: ride tick (map `wfree` refresh, `tstk` stock log)
+RIDE_FRESH = RIDE_CHECK * 2 + 1  # s: `wfree` counts this long
+RIDE_ZONES = 1     # extra zones of military target reach while a ride is available (like SD_ZONES)
+RIDE_LOG_T = 60    # s: `tstk` thumper stock row per faction
 OCC_W = 0.5        # aimod_react: an at-war army within REACT_R busy occupying / contesting a structure counts this much
                    # (it can break off: Fremen left Ars-ha and hunted Atreides at their harvester)
 DANGER_KEY = 600 * 600  # harvester field choice: squared-distance penalty at full danger (a field up to ~600 farther wins)
@@ -407,7 +471,9 @@ NEUTRAL_REQ = 1.25 # siege launch: required ratio on a neutral target (vanilla 1
 EARLY_VILLAGES = 2  # opening: while we own fewer villages than this, a neutral target needs only EARLY_REQ (vanilla)
 OWNED_REQ = 1.3    # siege launch: required ratio on an owned (at-war) village (vanilla's own often 1.05-1.2: those lost)
 OWNED_D0 = 200     # ... raised x (1 + (distance from our land - OWNED_D0) / OWNED_DK) beyond that distance
-OWNED_DK = 600     # (415 away: x1.36 = 1.77; 877 away: x2.13 = 2.77)
+OWNED_DK = 600     # (415 away: x1.36 = 1.77; 600+ away: the cap)
+OWNED_REQ_MAX = 1.8  # ... never above this (user: double their side must still attack, however far)
+OWNED_REQ_TOP = 2.0  # ... and vanilla's own random draw (Insane 1.0-3.5) never above this on an owned target (user: double their army attacks)
 EARLY_REQ = 1.0    # ... at launch and at the target: the 2 armies of a normal start vs a 2-defense village fall between
                    # 1.0 and NEUTRAL_REQ, and the AI waited instead of taking its first villages
 JOIN_R = HUNT_R    # siege launch: idle armies this close to the target may join (vanilla sends the minimum) ...
@@ -435,6 +501,8 @@ SQ_MIN = 1.5       # square law vs militia (rules/sqlaw.py): (our dps sum x hp s
 DRAIN_HP = 0.45    # siege drain (rules/drain.py): a siege in Action whose armies' mean life fell below this ...
 DRAIN_DROP = 0.25  # ... and at least this much since Action began ...
 DRAIN_PR = 0.15    # ... with the capture there below this progress (a capture under way: the fight was won; 0.6 cancelled two won pillages at 40%): cancelled, target into lost-siege memory
+NBUMP_K = 1.25     # a neutral village whose militia beat us (no lost-siege block, user): the next siege / raid there
+NBUMP_T = 900      # brings this much more (launch ratio and square law) for this long
 LOST_WIN = 600     # s: ... judged only within this of that launch (a capture that succeeded and was lost later stays a target)
 FAIL_N = 3         # stuck: this many vanilla launches on one target ending without an order (ArmyNotStrongEnough,
 FAIL_WIN = 120     # NotEnoughArmies, ...) within this many s drop it from the target scores for FAIL_BLOCK s, doubled
@@ -468,6 +536,8 @@ AKEEP_T = 240      # s: a top-RAID_KEEP Annex choice stays protected this long a
                    # Ya-lab; raid hit Haywaz just after it left the top 3: Devastated + our Annex cost doubled)
 BEHIND_E = 0.25    # raid: a village is behind another faction's main base M (seen from our nearest main base B) when
                    # M is nearer B than it and d(B,M) + d(M,v) <= d(B,v) x (1 + this): never raided
+RAID_GROW_N = 3    # raid: while we own fewer villages, no neutral village within our Annex reach + RAID_GROW_ZONES (user:
+RAID_GROW_ZONES = 1  # expansion room first; Harkonnen pillaged its 4 neighbours twice and sat at 1 village)
 RAID_RETRY = 60    # s: a village our raid left (aborted, or cancelled at once by vanilla) isn't raided again this soon
 FRONT_R = 600      # director: enemy villages this close to our land are the front (policy §5b)
 PRESS = KILL       # ... soft = the spare armies in reach have this x (armies in reach + cover + militia) / terrain
@@ -483,6 +553,7 @@ ANNEX_SPICE1 = 4    # Annex score x this for a spice village while we own none (
                     # ratio: the opening takes a spice field first. Not for SPICE_ANY factions (harvest anywhere)
 AF_NONE = ('Fremen',)  # cdb building Airfield notForFactions: they never get one (worm rides instead)
 SPICE_ANY = ('Fremen', 'Vernius')  # their first-spice bonus (vanilla +100) is removed
+ANNEX_SPICE_VAN = 40  # ... and vanilla's SpiceArea field value (+40) is removed for them too (they don't need spice fields)
 ANNEX_ZONES = 1    # Annex target reach: vanilla's 1 zone from our territory + this (every faction; Smugglers get FAR_ZONES
                    # too): vanilla offered 1-2 candidates per pick, so scores had nothing to choose from
 VAN_HOPS_CAP = 3   # vanilla's -10 per zone from our main base (AI_StructureScore_PerZone_Distance_Weight) counts at most
@@ -501,12 +572,13 @@ ANNEX_SP_SMUG_CAP = 40  # Smugglers' special bonus at most this (no distance cos
 # Strategy GENERAL "Specials" table (T). Unlisted specials (aiWeight >= 20) keep ANNEX_SPECIAL; Desolation is unownable
 _SP_FREMEN = {'Fremen': 50}
 ANNEX_SPECIALS = {
-    'Pit': (50, {'Corrino': 70}), 'Pit_Polar': (50, {'Corrino': 70}), 'Pit_Volcanic': (50, {'Corrino': 70}),
-    'SandFall': (50, {}), 'WormNest': (50, {}),
+    'Pit': (50, {'Corrino': 70, 'Fremen': 40}), 'Pit_Polar': (50, {'Corrino': 70, 'Fremen': 40}),
+    'Pit_Volcanic': (50, {'Corrino': 70, 'Fremen': 40}),
+    'SandFall': (50, {'Fremen': 40}), 'WormNest': (50, {'Fremen': 40}),  # Fremen 40: their deep desert first (user)
     'Pole': (20, {'Atreides': 50, 'Harkonnen': 50}),
     'ImperialBasin': (20, {'Smugglers': 50}),
-    'MoonDewVale': (20, {'Fremen': 50, 'Smugglers': 50}), 'MoonDewVale_Volcanic': (20, {'Fremen': 50, 'Smugglers': 50}),
-    'Volcano': (20, {'Fremen': 50, 'Corrino': 50, 'Vernius': 50}),
+    'MoonDewVale': (20, {'Fremen': 40, 'Smugglers': 50}), 'MoonDewVale_Volcanic': (20, {'Fremen': 40, 'Smugglers': 50}),
+    'Volcano': (20, {'Fremen': 40, 'Corrino': 50, 'Vernius': 50}),
     'SpaceCruiserWreck': (20, _SP_FREMEN), 'SpaceCruiserWreck_Red': (20, _SP_FREMEN),
     'SpaceCruiserWreck_Polar': (20, _SP_FREMEN), 'SpaceCruiserWreck_Volcanic': (20, _SP_FREMEN),
     'CrescentRidge': (20, _SP_FREMEN), 'CrescentRidge_Red': (20, _SP_FREMEN), 'CrescentRidge_Idaho': (20, _SP_FREMEN),
@@ -520,10 +592,12 @@ NEAR_REF = 400      # nearest structure on our land: compact land, short walks t
                     # annex costs only: Smugglers (Outpost_DistanceCost_MRatio 0) cap far villages by design)
 DD_ATB = 969       # attribute DeepDesert_Surounded_GainControl (Fremen_HegemonyBonus1): Zone.updateOwner gives a deep
                    # desert to the single owner of all its neighbours with a village or a main base
-DD_W = 1.0         # Annex score x (1 + DD_W x sum over adjacent unowned deep deserts of chance / (1 + still missing
-DD_W_PRE = 1.0     # after this one)), DD_W with the attribute, DD_W_PRE for Fremen before it (plan ahead: at 0.5
+DD_W = 1.25        # Annex score x (1 + DD_W x sum over adjacent unowned deep deserts of chance / (1 + still missing
+DD_W_PRE = 1.25    # after this one)), DD_W with the attribute, DD_W_PRE for Fremen before it (plan ahead: at 0.5
                    # the opening took a special and a spice village before the ring villages next door)
-DD_ADD = 40        # + this x the best ring chance (contest-adjusted, x DD_LINK, x weight, x cmin / cost) for a ring
+DD_ADD = 50        # + this x the best ring chance (contest-adjusted, x DD_LINK, x weight, x cmin / cost) for a ring
+DD_ADD_UC = 100    # ... for an uncontested ring (no other faction's village / main base / at-war stack at its missing villages)
+DD_MISS_K = 0.25   # uncontested ring: chance / (1 + this x (missing - 1)) instead of / missing (5 missing: 0.5, was 0.2)
                    # village: a flat bonus like ANNEX_SPECIAL (the multiplier alone shrinks to ~x1 on big rings)
 DD_FAR = 0.5       # a deep desert more zone hops from our main base than the nearest ringable one: its ring chance x this
 DD_LINK = 0.5      # ring bonus x this when the candidate touches none of our zones except deep desert: reaching it
@@ -597,8 +671,10 @@ def _state(fb, b, cx):
     return b.field(b.field(gs, 'inst'), 'state')
 
 
-def _army_loop(fb, b, arr, alen, i, name, done):
-    """Loop head: next live ent.Army from arr (skips null, militia, transported, dead). Returns the army register."""
+def _army_loop(fb, b, arr, alen, i, name, done, transported=False):
+    """Loop head: next live ent.Army from arr (skips null, militia, transported, dead). Returns the army register.
+    transported=True keeps armies in transit (worm ride, shuttle): the hostile-army queries judge them by the fog
+    memory only (rules/intel._ghost), where they were last seen boarding."""
     fb.op('Int', dst=i, ptr=b.code.add_i32(0).value)
     b.loop_head(name)
     fb.op('JSGte', a=i, b=alen, offset=done)
@@ -606,7 +682,8 @@ def _army_loop(fb, b, arr, alen, i, name, done):
     fb.op('Incr', dst=i)
     fb.op('JNull', reg=a, offset=name)
     fb.op('JTrue', cond=b.field(a, 'isMilitia'), offset=name)
-    fb.op('JTrue', cond=b.call('ent.Entity.isTransported', a), offset=name)
+    if not transported:
+        fb.op('JTrue', cond=b.call('ent.Entity.isTransported', a), offset=name)
     fb.op('JTrue', cond=b.call('ent.Entity.isDead', a), offset=name)
     return a
 
@@ -703,12 +780,69 @@ def _unreach(fb, b, cx, s_e, t, yes, fac=None):
     # make this trip, no waiver
     fb.op('JNotNull', reg=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'asd'), fb.dyn(s_e)), offset=yes)
     sv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'sdfree'), fb.dyn(pfac))
-    fb.op('JNull', reg=sv, offset=yes)
+    fb.op('JNull', reg=sv, offset=no + 'w')
     sq = fb.reg(cx.t('f64'))
     fb.op('SafeCast', dst=sq, src=sv)
     fb.op('Sub', dst=sq, a=t, b=sq)
-    fb.op('JSGt', a=sq, b=b.const('f64', SD_FRESH), offset=yes)
+    fb.op('JSLte', a=sq, b=b.const('f64', SD_FRESH), offset=no)
+    # a worm ride available (rules/ride.py map `wfree`): the worm plan has no supply check and rides most of the way
+    fb.label(no + 'w')
+    _ride_free(fb, b, cx, pfac, t, yes)
     fb.label(no)
+
+
+def _heal_dead(fb, b, cx, s, skip):
+    """Jump to `skip` when structure s (entity reg) is a dead heal / home target (map `hbad` s -> until, set by
+    rules/orders.build_heal_dead: Move orders to it keep being cancelled in Waiting)."""
+    hv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'hbad'), fb.dyn(s))
+    no = _uid('hdn')
+    fb.op('JNull', reg=hv, offset=no)
+    hq = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=hq, src=hv)
+    fb.op('JSGt', a=hq, b=b.field(_state(fb, b, cx), 'time'), offset=skip)
+    fb.label(no)
+
+
+def _box_true(fb, cx, dst):
+    """dst (a Null<Bool> register, e.g. Zone.getDistanceToPlayerTerritory's considerAirfields) = boxed true. A raw
+    Bool op into a Null<Bool> register leaves a non-pointer the callee dereferences: it threw inside our traps, and
+    the rules calling it (Annex scores, the Supply Drop / worm reach in isInSupplyRange, raid expansion room, the
+    sdrop trip lock) silently fell back to vanilla (bcheck `Bool ptr`)."""
+    tb = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=tb, value=True)
+    fb.op('ToDyn', dst=dst, src=tb)
+
+
+def _ride_free(fb, b, cx, fac, t, no):
+    """Jump to `no` unless fac can ride a worm now (rules/ride.py map `wfree`: a thumper not claimed by another
+    order, refreshed every RIDE_CHECK s, fresh within RIDE_FRESH)."""
+    rv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'wfree'), fb.dyn(fac))
+    fb.op('JNull', reg=rv, offset=no)
+    rq = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=rq, src=rv)
+    fb.op('Sub', dst=rq, a=t, b=rq)
+    fb.op('JSGt', a=rq, b=b.const('f64', RIDE_FRESH), offset=no)
+
+
+def _ride_leg(fb, b, cx, fac, t, d, critical=False):
+    """d (f64 reg) -> the walking part of a trip d long when fac's plan gate (rules/ride.py) would ride it, in place:
+    a thumper free (_ride_free), d >= RIDE_MIN, and d >= RIDE_FAR or RIDE_SPARE free (map `wfreen`; critical=True: a
+    contest, the last free one is enough). The ride covers RIDE_LEG of it at no supply. Unchanged otherwise."""
+    u = _uid('rleg')
+    fb.op('JSLt', a=d, b=b.const('f64', RIDE_MIN), offset=u)
+    _ride_free(fb, b, cx, fac, t, u)
+    if not critical:
+        fb.op('JSGte', a=d, b=b.const('f64', RIDE_FAR), offset=u + 'f')
+        fv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'wfreen'), fb.dyn(fac))
+        fb.op('JNull', reg=fv, offset=u)
+        fq = fb.reg(cx.t('f64'))
+        fb.op('SafeCast', dst=fq, src=fv)
+        fb.op('JSLt', a=fq, b=b.const('f64', RIDE_SPARE), offset=u)
+        fb.label(u + 'f')
+    fb.op('Sub', dst=d, a=d, b=b.const('f64', RIDE_LEG))
+    fb.op('JSGte', a=d, b=b.const('f64', 0), offset=u)
+    fb.op('Mov', dst=d, src=b.const('f64', 0))
+    fb.label(u)
 
 
 def _my_armies(fb, b, fac, fail):
@@ -1286,6 +1420,35 @@ def _af_spaced(fb, b, cx, s, se, fac, airfield, gk, gkn, ku):
     return spaced
 
 
+def _neutral_village(fb, b, cx, s_e, no):
+    """Jump to `no` unless s_e is a neutral village (no owner; not a sietch / renegade base, which keep the lost-siege
+    memory and SITE_REQ: their garrison spawns harass units mid-strike)."""
+    fb.op('JNotNull', reg=b.call('ent.Entity.get_owner', s_e), offset=no)
+    ss = b.cast(fb.dyn(s_e), 'ent.Structure')
+    fb.op('JNull', reg=ss, offset=no)
+    _strong_site(fb, b, ss, no)
+
+
+def _nbump_mark(fb, b, cx, fac, s_e, t):
+    """Our siege of neutral village s_e lost to its militia: map `nbump` (per faction) s_e -> t (read by _nbump)."""
+    b.call('haxe.ds.ObjectMap.set', _fac_map(fb, b, cx, 'nbump', fac), fb.dyn(s_e), fb.dyn(t))
+
+
+def _nbump(fb, b, cx, fac, s_e, r):
+    """r (f64 reg) x NBUMP_K in place while fac's siege of s_e lost to its militia within NBUMP_T (user: a neutral
+    village that beat us gets a little more next time, no fear memory)."""
+    u = _uid('nbp')
+    fb.op('JNull', reg=fac, offset=u)
+    v = b.call('haxe.ds.ObjectMap.get', _fac_map(fb, b, cx, 'nbump', fac), fb.dyn(s_e))
+    fb.op('JNull', reg=v, offset=u)
+    q = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=q, src=v)
+    fb.op('Sub', dst=q, a=b.field(_state(fb, b, cx), 'time'), b=q)
+    fb.op('JSGt', a=q, b=b.const('f64', NBUMP_T), offset=u)
+    fb.op('Mul', dst=r, a=r, b=_ratio(fb, b, NBUMP_K))
+    fb.label(u)
+
+
 def _recent_launch(fb, b, cx, s_e, t, recent, fac=None, helpers=None):
     """Jump to `recent` if vanilla launched a siege on s_e less than its block ago (map 'alaunch', set by the
     tryArmyAction wrapper; block = map 'ablk', RETRY doubling up to RETRY_MAX for a target relaunched right after
@@ -1349,6 +1512,14 @@ def _recent_launch(fb, b, cx, s_e, t, recent, fac=None, helpers=None):
         aq = fb.reg(cx.t('i32'))
         fb.op('Mul', dst=aq, a=ad, b=b.const('i32', LOST_SHARE_DEN))
         fb.op('JSLt', a=aq, b=an, offset=old + 'n')
+        # a neutral village (militia only) is no fear memory (user: we always bring enough for a neutral village; if
+        # we got it wrong, a little more next time): `nbump`, no block
+        _neutral_village(fb, b, cx, s_e, old + 'nn')
+        _nbump_mark(fb, b, cx, fac, s_e, t)
+        if helpers is not None:
+            _log_ev(fb, b, cx, helpers, 'slost', [('f', fb.get(fac, 'kind')), ('tgt', s_e), ('why', 'bump')])
+        fb.op('JAlways', offset=old + 'n')
+        fb.label(old + 'nn')
         b.call('haxe.ds.ObjectMap.set', slm, fb.dyn(s_e), fb.dyn(t))
         b.call('haxe.ds.ObjectMap.set', slf, fb.dyn(s_e), fb.dyn(fac))
         if helpers is not None:

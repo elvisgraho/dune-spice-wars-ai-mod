@@ -382,7 +382,7 @@ def build_sdrop_trip(cx, helpers, new_ids):
     gdt = [x.value for x in cx.code.types[gd.type.value].definition.args]
     pf, tr = fb.reg(gdt[1]), fb.reg(gdt[2])
     fb.op('Mov', dst=pf, src=own)
-    fb.op('Bool', dst=tr, value=True)
+    _box_true(fb, cx, tr)  # considerAirfields is Null<Bool>: box it (a raw Bool there threw in the trap)
     zd = fb.reg(cx.t('i32'))
     fb.op('Call3', dst=zd, fun=gd.findex.value, arg0=tz, arg1=pf, arg2=tr)
     fb.op('JSLte', a=zd, b=b.field(mil, 'maxSupplyDistZones'), offset='end')

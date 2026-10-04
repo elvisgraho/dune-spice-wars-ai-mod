@@ -36,7 +36,9 @@ doesn't go out) and the entry test is RAID_TO instead of ENTER (overwhelming, sh
   BUNKER_R of our main base (the bunker redirect annexes them first), villages on an uncontested deep-desert ring
   we are closing (aimod_ddclean, Fremen), villages with our own Underworld HQ (our
   income there), villages our raid launched on less than RAID_RETRY s ago (aborted / cancelled at once: no loop)
-  and villages behind another faction's main base (`_behind`, BEHIND_E: counted as bh in the start / refuse rows);
+  and villages behind another faction's main base (`_behind`, BEHIND_E: counted as bh in the start / refuse rows),
+  and while we own fewer than RAID_GROW_N villages every neutral village within our Annex reach + RAID_GROW_ZONES
+  (expansion room, user);
 - force: our armies within RAID_R, not fighting (micro holds them; as a mission they'd escape the `pursuit` exit),
   that are free for a raid (aimod_free variant: life >= RAID_LIFE, any supply, a
   Resupply order doesn't count as busy) and pass the raid supply budget (aimod_raidsup);
@@ -205,6 +207,9 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('JNotEq', a=idx, b=b.const('i32', T_STRUCT), offset='ord')
     sa = b.cast(fb.get(o, 'siegeAction'), 'String')
     fb.op('JNull', reg=sa, offset='ord')
+    # a bunker split (rules/bunker.py, map `bspo`) is part of its capture, not a raid: the defenders fighting the
+    # capture next door read as its side (Harkonnen's Liberate of Lar-dah aborted `weak` 0.27 s after the split)
+    fb.op('JNotNull', reg=b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'bspo'), fb.dyn(o)), offset='ord')
     # our Annex orders too, for `defend` only (a capture next door outweighs a new village: Harkonnen annexed Gurlab
     # while Smugglers took Zadak 177 from Carthag); never the defended village itself
     fb.op('Bool', dst=anx, value=False)
@@ -278,8 +283,12 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('JSLt', a=lim, b=q, offset='ord')
     fb.label('dfwin')
     fb.op('JSLt', a=r, b=q, offset='ab_defend')
-    # home: hostile armies closer to our land than the raid, and too few of ours at home without it
+    # home: hostile armies closer to our land than the raid, and too few of ours at home without it. Off (user: react
+    # to an attack on our structures only, `defend` above, which leaves one army to finish an occupation under way;
+    # armies merely near our land don't recall a raid: Harkonnen's 9 armies left by Atreides' Cease Fire at Qal-val
+    # never took Anna-ram next door, 360k hostile near home vs 66k there)
     fb.label('a_home')
+    fb.op('JAlways', offset='a_weak')
     fb.op('JTrue', cond=anx, offset='ord')  # an Annex yields for `defend` only
     fb.op('Add', dst=lim, a=sd, b=home_m)
     fb.op('Call2', dst=hh, fun=home, arg0=fac, arg1=lim)
@@ -404,6 +413,25 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('SafeCast', dst=gv, src=rgv)
     fb.op('Sub', dst=gv, a=t, b=gv)
     fb.op('JSLt', a=gv, b=b.const('f64', RAID_GAUGE_T), offset='end')
+    # ... but an Annex failing for lack of armies (map `anea`, rules/raid.build_annex_wait: NotEnoughArmies /
+    # ArmyNotStrongEnough / NoAvailableArmy within RAID_ANNEX_FRESH s) is coming once armies are free: no raid takes
+    # them, for at most RAID_ANNEX_MAX s of that failure streak (user: Fremen's Zayras Annex found 2-3 free armies
+    # 11:03-12:50 while raids on Hamah / Eydah / Larnih held 6-9 each; 11 of 30 raids launched within 30 s of such a
+    # failure; then the Annex went to Had-fir with 8 armies walking 338)
+    anv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'anea'), fb.dyn(fac))
+    fb.op('JNull', reg=anv, offset='gaugeok')
+    fb.op('SafeCast', dst=gv, src=anv)
+    fb.op('Sub', dst=gv, a=t, b=gv)
+    fb.op('JSGt', a=gv, b=b.const('f64', RAID_ANNEX_FRESH), offset='gaugeok')
+    an0 = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'anea0'), fb.dyn(fac))
+    fb.op('JNull', reg=an0, offset='gaugeok')
+    fb.op('SafeCast', dst=gv, src=an0)
+    fb.op('Sub', dst=gv, a=t, b=gv)
+    fb.op('JSGt', a=gv, b=b.const('f64', RAID_ANNEX_MAX), offset='gaugeok')
+    _throttle(fb, b, cx, 'rawait', fac, 30, 'end')
+    _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', 'refuse'), ('why', 'annexwait'),
+                                         ('st', gv)])
+    fb.op('JAlways', offset='end')
     fb.label('gaugeok')
     # director RECOVER (rules/strat.py, posture in map `spost`, set earlier in this tick): only a raid that IS a
     # recovery: every raid army has the village nearer than our land (the pillage refill replaces the walk home)
@@ -559,6 +587,26 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('Call2', dst=rcl, fun=helpers['ddclean'], arg0=fac, arg1=vz)
     fb.op('JTrue', cond=rcl, offset='v')
     fb.label('noring')
+    # expansion room (user): while we own fewer than RAID_GROW_N villages, no neutral village within our Annex reach
+    # + RAID_GROW_ZONES (vanilla's maxSupplyDistZones + ANNEX_ZONES + 1): a pillage leaves it Devastated 20 days and
+    # doubles our Annex cost there (Harkonnen raided its 4 neutral neighbours at 2:30-4:20 and again the moment they
+    # recovered, 14:10-16:00, and sat at 1 village); from RAID_GROW_N on, only our Annex choices are kept (above)
+    fb.op('JNotNull', reg=vo, offset='grow_ok')
+    fb.op('JSGte', a=b.field(b.call('ent.Faction.getVillages', fac), 'length'), b=b.const('i32', RAID_GROW_N),
+          offset='grow_ok')
+    fb.op('JNull', reg=vz, offset='grow_ok')
+    gd = cx.fn('ent.Zone.getDistanceToPlayerTerritory')
+    gdt = [x.value for x in cx.code.types[gd.type.value].definition.args]
+    gpf, gtr = fb.reg(gdt[1]), fb.reg(gdt[2])
+    fb.op('Mov', dst=gpf, src=fac)
+    _box_true(fb, cx, gtr)  # considerAirfields is Null<Bool>: box it (a raw Bool there threw in the trap)
+    gzd = fb.reg(cx.t('i32'))
+    fb.op('Call3', dst=gzd, fun=gd.findex.value, arg0=vz, arg1=gpf, arg2=gtr)
+    gmx = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=gmx, src=b.field(0, 'maxSupplyDistZones'))
+    fb.op('Add', dst=gmx, a=gmx, b=b.const('i32', ANNEX_ZONES + RAID_GROW_ZONES))
+    fb.op('JSLte', a=gzd, b=gmx, offset='v')
+    fb.label('grow_ok')
     fb.op('Mov', dst=j, src=zi)
     b.loop_head('mb')
     fb.op('JSGte', a=j, b=sn, offset='mbdone')
@@ -696,7 +744,8 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     # home race: hostile armies nearer our land than the raid must be held by what stays home. The raid takes
     # about RAID_TO x their side (the launch sizing), at most the raid-ready power standing at home (mh); the
     # launch re-checks with the armies actually picked
-    fb.op('Call2', dst=hh, fun=home, arg0=fac, arg1=lim)
+    # off (user): only an attack on our structures holds raids back (the `defend` gate at the start pass)
+    fb.op('Mov', dst=hh, src=zero)
     fb.op('JSLte', a=hh, b=zero, offset='pass')
     fb.op('Mul', dst=need, a=h, b=raid_to)
     fb.op('SDiv', dst=need, a=need, b=tf)
@@ -789,12 +838,17 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('Mov', dst=bst, src=b.cast(fb.dyn(best), 'ent.Structure'))
     sqv = fb.reg(cx.t('f64'))
     fb.op('Call2', dst=sqv, fun=sqr, arg0=arr, arg1=bst)
-    fb.op('JSLt', a=sqv, b=_ratio(fb, b, SQ_MIN), offset='sel')
+    sqm = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=sqm, src=_ratio(fb, b, SQ_MIN))
+    _nbump(fb, b, cx, fac, best, sqm)  # a neutral village whose militia beat us lately: a little more
+    fb.op('JSLt', a=sqv, b=sqm, offset='sel')
     fb.label('seldone')
     fb.op('JSLte', a=b.field(arr, 'length'), b=zi, offset='end')
     fb.op('Mov', dst=bst, src=b.cast(fb.dyn(best), 'ent.Structure'))
     fb.op('Call2', dst=sqv, fun=sqr, arg0=arr, arg1=bst)
-    fb.op('JSGte', a=sqv, b=_ratio(fb, b, SQ_MIN), offset='sq_ok')
+    fb.op('Mov', dst=sqm, src=_ratio(fb, b, SQ_MIN))
+    _nbump(fb, b, cx, fac, best, sqm)
+    fb.op('JSGte', a=sqv, b=sqm, offset='sq_ok')
     b.call('haxe.ds.ObjectMap.set', retrymap, fb.dyn(best), fb.dyn(t))  # not this village again for RAID_RETRY
     _throttle(fb, b, cx, 'raidx', fac, RAID_GAP, 'end')
     _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', 'refuse'), ('why', 'sq'), ('tgt', best),
@@ -948,3 +1002,56 @@ def build_annex_keep(cx, helpers, scores):
     fb.end_try(guard)
     fb.op('Ret', ret=fb.reg(cx.t('void')))
     return fb.build()
+
+
+def build_annex_wait(cx, helpers, new_ids):
+    """Annex waiting for armies: every call of AIMilitary.onActionEnd (vanilla's, ours, the ai-log trace) -> wrapper.
+    k "Annexation" ending NotEnoughArmies / ArmyNotStrongEnough / NoAvailableArmy -> map `anea` faction -> now (and
+    `anea0` -> start of that failure streak, kept until a Success); Success -> both cleared. Read by raid's gauge
+    hold. Then the original. In a trap. Returns the number of redirected call sites."""
+    orig = cx.fn('logic.ai.AIMilitary.onActionEnd')
+    args = [a.value for a in cx.code.types[orig.type.value].definition.args]
+    fb = FB(cx, args, cx.t('void'), fun_type=orig.type.value)
+    b = B(fb)
+    void = fb.reg(cx.t('void'))
+    names = [c.name.resolve(cx.code) for c in cx.code.types[args[2]].definition.constructs]
+    g = fb.try_()
+    fb.op('JNull', reg=1, offset='orig')
+    fb.op('JNull', reg=2, offset='orig')
+    fb.op('JNotEq', a=b.call('String.__compare', 1, fb.dyn(fb.string('Annexation'))), b=b.const('i32', 0),
+          offset='orig')
+    fac = b.field(b.field(0, 'controller'), 'owner')
+    fb.op('JNull', reg=fac, offset='orig')
+    ri = fb.reg(cx.t('i32'))
+    fb.op('EnumIndex', dst=ri, value=2)
+    am, a0 = _global_map(fb, b, cx, 'anea'), _global_map(fb, b, cx, 'anea0')
+    fb.op('JEq', a=ri, b=b.const('i32', names.index('Success')), offset='clr')
+    for nm in ('NotEnoughArmies', 'ArmyNotStrongEnough', 'NoAvailableArmy'):
+        fb.op('JEq', a=ri, b=b.const('i32', names.index(nm)), offset='rec')
+    fb.op('JAlways', offset='orig')
+    fb.label('rec')
+    now = b.field(_state(fb, b, cx), 'time')
+    b.call('haxe.ds.ObjectMap.set', am, fb.dyn(fac), fb.dyn(now))
+    fb.op('JNotNull', reg=b.call('haxe.ds.ObjectMap.get', a0, fb.dyn(fac)), offset='orig')
+    b.call('haxe.ds.ObjectMap.set', a0, fb.dyn(fac), fb.dyn(now))
+    fb.op('JAlways', offset='orig')
+    fb.label('clr')
+    b.call('haxe.ds.ObjectMap.remove', am, fb.dyn(fac))
+    b.call('haxe.ds.ObjectMap.remove', a0, fb.dyn(fac))
+    fb.label('orig')
+    fb.end_try(g)
+    fb.op('Call4', dst=void, fun=orig.findex.value, arg0=0, arg1=1, arg2=2, arg3=3)
+    fb.op('Ret', ret=void)
+    w = fb.build()
+    new_ids.add(w)
+    n = 0
+    for f in cx.code.functions:
+        if f.findex.value == w:
+            continue
+        for op in f.ops:
+            if op.op.startswith('Call') and op.df.get('fun') is not None and op.df['fun'].value == orig.findex.value:
+                op.df['fun'].value = w
+                n += 1
+    if n == 0:
+        raise ValueError('annex-wait: no onActionEnd call sites')
+    return n

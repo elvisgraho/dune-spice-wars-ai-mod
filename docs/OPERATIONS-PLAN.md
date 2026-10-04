@@ -37,9 +37,9 @@ What every AI faction buys, when and where it casts, and how it reacts to enemy 
 
 | Faction | Always | Context |
 |---|---|---|
-| Atreides | Cease Fire (once at war), Supply Drop | Scavenger Team; Decoy Thumper; EMP vs a ≥ 40% mech enemy; Arrakis Diplomacy while at peace with all |
+| Atreides | Cease Fire (held always, peace too), Supply Drop | Scavenger Team; Decoy Thumper; EMP vs a ≥ 40% mech enemy; Arrakis Diplomacy while at peace with all |
 | Harkonnen | Sleeper Agent, Combat Drugs | Scavenger Team; Decoy Thumper; Toxic Vapors when rich |
-| Smugglers | Extraction Network, Supply Drop | Communication Jamming when at war with Atreides, Harkonnen or Fremen; Scavenger Team; Poison the Reserves |
+| Smugglers | Extraction Network, Supply Drop | Communication Jamming (held always: peace can be cancelled or betrayed); Scavenger Team; Poison the Reserves |
 | Fremen | Decoy Thumper, Hiding Tracks | Awaken the People when liberating; Supply Drop |
 | Corrino | Orbital Strike (when rich), Consolidation | Supply Drop; Interdiction Zone |
 | Ecaz / Vernius | Supply Drop / Hidden Backdoor vs mech | Elacca Fog, Epic Quest / Ambient Connection |

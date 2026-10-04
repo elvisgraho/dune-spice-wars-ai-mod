@@ -8,10 +8,10 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     resource fields in the zone (SpiceArea 40, others 10), region aiWeight (specials 20, Pole 40), main-base
     proximity x Outpost_DistanceCost_MRatio, owned neighbours x 10, +100 for a spice village while we own none; no
     annex cost at all, and tryAction then reserves Authority and waits when the pick is unaffordable). For each
-    positive score: vanilla's per-zone distance counts VAN_HOPS_CAP zones at most (the rest added back); + the special
+    positive score: vanilla's per-zone distance counts only the zones from our territory (a village bordering our land: 1), VAN_HOPS_CAP at most (the rest added back); + the special
     table (ANNEX_SPECIALS by region id x faction, ANNEX_SPECIALS_EARLY while we own < ANNEX_SP_EARLY_N villages,
     ANNEX_SPECIAL for an unlisted special, Smugglers capped at ANNEX_SP_SMUG_CAP), + ANNEX_SIETCH with a sietch in
-    the zone (Zone.getSietch); SPICE_ANY factions lose vanilla's first-spice +100; x (1 + CENTER_W x closeness to the
+    the zone (Zone.getSietch); SPICE_ANY factions lose vanilla's first-spice +100 and its SpiceArea +ANNEX_SPICE_VAN; x (1 + CENTER_W x closeness to the
     map centre = mean village position, 0 at the farthest village; none within CENTER_BASE_R of another faction's main
     base; not for factions without Annex distance cost: Smugglers); factions with distance annex costs x the NEAR_W compactness factor (distance to our nearest structure on our
     land; applied after the ring terms, never below 1 for a feasible ring village: aimod_ddhold); x cmin / cost (real Authority cost: siege.getOccupationActionCost("Annex"), cmin = cheapest candidate:
@@ -22,7 +22,8 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     attribute, DD_W_PRE for Fremen before it; chance x DD_ENEMY per missing neighbour owned by another faction and
     per one within DD_BASE_R of another faction's main base; 0 when another faction's main base zone borders it;
     x DD_LINK when the candidate borders none of our non-deep-desert zones (reaching it means crossing desert);
-    then + DD_ADD x best chance x w (x DD_LINK, x cmin / cost): a flat bonus like ANNEX_SPECIAL. floor ANNEX_FLOOR.
+    then + DD_ADD x best chance x w (x DD_LINK, x cmin / cost): a flat bonus like ANNEX_SPECIAL; an uncontested ring
+    (chance still 1) divides by 1 + DD_MISS_K x (missing - 1) instead of missing, and its flat bonus is DD_ADD_UC (user). floor ANNEX_FLOOR.
     Focus ring: lowest rank = villages missing (one within DD_BASE_R of another faction's main base or with an at-war
     stack at it, aimod_threat within LOCAL, counts twice) + hops from our main base; the nearer on a tie. A missing
     village under at-war threat also halves the ring's chance (DD_ENEMY), like one held by another faction. Logs `acand` per candidate (v0, hops, sp, cf, cen, dd, c, cmin, s) once per ASCORE_T per faction.
@@ -96,6 +97,18 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     brs, brc, brdd, trq = (fb.reg(cx.t('f64')) for _ in range(4))
     for r in (brs, brc, brdd):
         fb.op('Mov', dst=r, src=b.const('f64', 0))
+    # Smugglers' councillor Stakkanov (trait OperativePassive, attribute OPER_ATB Village_NotAdjacentToSelfRegion_
+    # GainTTrait): a village with no region of ours next to it gets +20% production and enemy sieges there take twice
+    # as long (user: make sure they get the bonus)
+    oper = fb.reg(cx.t('bool'))
+    _ohas = cx.fn('ent.Object.hasAttribute')
+    _oat = [a_.value for a_ in cx.code.types[_ohas.type.value].definition.args]
+    _oobj, _oref, _ofac = fb.reg(_oat[0]), fb.reg(_oat[2]), fb.reg(_oat[3])
+    fb.op('Mov', dst=_oobj, src=fac)
+    fb.op('Null', dst=_oref)
+    fb.op('Null', dst=_ofac)
+    fb.op('Call4', dst=oper, fun=_ohas.findex.value, arg0=_oobj, arg1=b.const('i32', OPER_ATB), arg2=_oref,
+          arg3=_ofac)
     has = cx.fn('ent.Object.hasAttribute')
     hat = [a.value for a in cx.code.types[has.type.value].definition.args]
     href, hfac = fb.reg(hat[2]), fb.reg(hat[3])
@@ -356,8 +369,27 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JSLte', a=dcr, b=zero, offset='an_hcap')
     fb.op('Call3', dst=hz2, fun=gdb.findex.value, arg0=z, arg1=fac, arg2=gnull)
     fb.op('JSGte', a=hz2, b=b.const('i32', 99), offset='an_hcap')
-    fb.op('JSLte', a=hz2, b=b.const('i32', VAN_HOPS_CAP), offset='an_hcap')
-    fb.op('Sub', dst=hzx, a=hz2, b=b.const('i32', VAN_HOPS_CAP))
+    # ... and it counts the hops from our territory, not from our main base (user: Asw-anim / Sandrekh bordered our
+    # zones, 2+ hops from Tabr, and lost to Grimpo / Alif-tar on vanilla's -10 per zone): a village bordering our land
+    # counts 1 zone like one next to the main base; at most VAN_HOPS_CAP; the rest is added back
+    gtd = cx.fn('ent.Zone.getDistanceToPlayerTerritory')
+    gtt = [x.value for x in cx.code.types[gtd.type.value].definition.args]
+    tpf, ttr = fb.reg(gtt[1]), fb.reg(gtt[2])
+    fb.op('Mov', dst=tpf, src=fac)
+    # considerAirfields is Null<Bool> (Dynamic): a raw Bool stored there was read as a pointer and threw inside the
+    # scoring trap, so every Annex score of every faction with distance costs was lost (no `acand` / `ascore` rows,
+    # Annexation ended Invalid: Fremen made no Annex for 5 min at 500 authority). Null = false: territory hops only
+    fb.op('Null', dst=ttr)
+    tz = fb.reg(cx.t('i32'))
+    fb.op('Call3', dst=tz, fun=gtd.findex.value, arg0=z, arg1=tpf, arg2=ttr)
+    fb.op('JSGte', a=tz, b=b.const('i32', 1), offset='an_tz1')
+    fb.op('Mov', dst=tz, src=b.const('i32', 1))
+    fb.label('an_tz1')
+    fb.op('JSLte', a=tz, b=b.const('i32', VAN_HOPS_CAP), offset='an_tzc')
+    fb.op('Mov', dst=tz, src=b.const('i32', VAN_HOPS_CAP))
+    fb.label('an_tzc')
+    fb.op('JSLte', a=hz2, b=tz, offset='an_hcap')
+    fb.op('Sub', dst=hzx, a=hz2, b=tz)
     fb.op('ToSFloat', dst=hcf, src=hzx)
     fb.op('Mul', dst=hcf, a=hcf, b=b.const('f64', 10))
     fb.op('Add', dst=sc, a=sc, b=hcf)
@@ -423,6 +455,12 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JFalse', cond=exempt, offset='an_nsp1')
     fb.op('Sub', dst=sc, a=sc, b=b.const('f64', 100))
     fb.label('an_nsp1')
+    # ... and vanilla's spice field value (SpiceArea +40) too: they don't need spice fields (user: Fremen took Lardad,
+    # a far spice village, on it)
+    fb.op('JFalse', cond=hs, offset='an_nsp2')
+    fb.op('JFalse', cond=exempt, offset='an_nsp2')
+    fb.op('Sub', dst=sc, a=sc, b=b.const('f64', ANNEX_SPICE_VAN))
+    fb.label('an_nsp2')
     # compactness (factions with distance annex costs): factor cf, applied after the deep-desert block (a feasible
     # Fremen ring isn't penalised for distance)
     fb.op('Mov', dst=cf, src=one_f)
@@ -533,6 +571,80 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JSGt', a=b.call('ent.Entity.getDistTo', se, te), b=b.const('f64', BUNKER_R), offset='an_mbl')
     fb.op('Mul', dst=sc, a=sc, b=_ratio(fb, b, BUNKER_MB))
     fb.label('an_mb')
+    # another faction's village within ANNEX_EBASE_R of its owner's active main base: its home under the base guns,
+    # x ANNEX_EBASE_W (user: Fremen's top Annex was Smugglers' Zayras, 110 from Tuek, picked 10+ times without the
+    # 9-12 armies the guns ask for while Had-fir, 183 out, waited; DMZ_BASE_R likewise drops the DMZ bonus there)
+    eo = b.call('ent.Entity.get_owner', se)
+    fb.op('JNull', reg=eo, offset='an_eb')
+    fb.op('JEq', a=eo, b=fac, offset='an_eb')
+    embs = b.field(eo, 'mainBases')
+    fb.op('JNull', reg=embs, offset='an_eb')
+    fb.op('Mov', dst=j, src=zi)
+    b.loop_head('an_ebl')
+    fb.op('JSGte', a=j, b=b.field(embs, 'length'), offset='an_eb')
+    emb = b.cast(b.call('hl.types.ArrayObj.getDyn', embs, j), 'ent.Structure')
+    fb.op('Incr', dst=j)
+    fb.op('JNull', reg=emb, offset='an_ebl')
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', emb), offset='an_ebl')
+    fb.op('Mov', dst=te, src=emb)
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', se, te), b=b.const('f64', ANNEX_EBASE_R), offset='an_ebl')
+    fb.op('Mul', dst=sc, a=sc, b=_ratio(fb, b, ANNEX_EBASE_W))
+    fb.label('an_eb')
+    # Stakkanov (oper): an isolated candidate (no neighbour region ours) or one next to our main base (user: good
+    # practice anyway) + OPER_ADD; one next to an isolated village of ours (its neighbours hold no other region of
+    # ours) - OPER_LOSS: taking it ends that village's bonus. Flat, not a factor: a top special still wins (user)
+    fb.op('JFalse', cond=oper, offset='an_op')
+    onb = b.field(z, 'neighbors')
+    fb.op('JNull', reg=onb, offset='an_op')
+    ok1, ok2 = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    obrk = fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=obrk, value=False)
+    fb.op('Mov', dst=ok1, src=zi)
+    b.loop_head('an_onl')
+    fb.op('JSGte', a=ok1, b=b.field(onb, 'length'), offset='an_oiso')
+    oz = b.cast(b.call('hl.types.ArrayObj.getDyn', onb, ok1), 'ent.Zone')
+    fb.op('Incr', dst=ok1)
+    fb.op('JNull', reg=oz, offset='an_onl')
+    fb.op('JNotEq', a=b.field(oz, 'owner'), b=fac, offset='an_onl')
+    # a region of ours next to the candidate: not isolated; is that region's village isolated now?
+    fb.op('JNull', reg=b.call('ent.Zone.getVillage', oz), offset='an_onx')
+    onb2 = b.field(oz, 'neighbors')
+    fb.op('JNull', reg=onb2, offset='an_onx')
+    fb.op('Mov', dst=ok2, src=zi)
+    b.loop_head('an_on2')
+    fb.op('JSGte', a=ok2, b=b.field(onb2, 'length'), offset='an_obrk')
+    oz2 = b.cast(b.call('hl.types.ArrayObj.getDyn', onb2, ok2), 'ent.Zone')
+    fb.op('Incr', dst=ok2)
+    fb.op('JNull', reg=oz2, offset='an_on2')
+    fb.op('JEq', a=b.field(oz2, 'owner'), b=fac, offset='an_onl')  # not isolated: no bonus to lose there
+    fb.op('JAlways', offset='an_on2')
+    fb.label('an_obrk')
+    fb.op('Bool', dst=obrk, value=True)
+    fb.op('JAlways', offset='an_onl')
+    fb.label('an_onx')
+    fb.op('JAlways', offset='an_onl')
+    fb.label('an_oiso')
+    # isolated: no neighbour of ours seen? (obrk tracks a broken bonus; a neighbour of ours at all is checked below)
+    fb.op('JTrue', cond=obrk, offset='an_obk')
+    fb.op('Mov', dst=ok1, src=zi)
+    b.loop_head('an_oc')
+    fb.op('JSGte', a=ok1, b=b.field(onb, 'length'), offset='an_oyes')
+    oz3 = b.cast(b.call('hl.types.ArrayObj.getDyn', onb, ok1), 'ent.Zone')
+    fb.op('Incr', dst=ok1)
+    fb.op('JNull', reg=oz3, offset='an_oc')
+    fb.op('JNotEq', a=b.field(oz3, 'owner'), b=fac, offset='an_oc')
+    # touches our main base's region: still worth taking (user: main base adjacency is good practice), as isolated
+    omb = fb.reg(cx.t('bool'))
+    fb.op('Call2', dst=omb, fun=hmb.findex.value, arg0=oz3, arg1=hnull)
+    fb.op('JTrue', cond=omb, offset='an_oyes')
+    fb.op('JAlways', offset='an_op')  # touches our village land: no bonus, nothing broken
+    fb.op('JAlways', offset='an_oc')
+    fb.label('an_oyes')
+    fb.op('Add', dst=sc, a=sc, b=b.const('f64', OPER_ADD))
+    fb.op('JAlways', offset='an_op')
+    fb.label('an_obk')
+    fb.op('Sub', dst=sc, a=sc, b=b.const('f64', OPER_LOSS))
+    fb.label('an_op')
     # opening: a spice field first
     fb.op('JFalse', cond=hs, offset='an_s1')
     fb.op('JSGte', a=nsp, b=b.const('i32', 1), offset='an_s1')
@@ -612,6 +724,14 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JAlways', offset='an_e')  # once per missing neighbour
     fb.label('an_ed')
     fb.op('Add', dst=miss, a=miss, b=one_f)
+    # uncontested ring (no missing village owned by another faction, near another main base or under at-war threat:
+    # chance still 1): the villages still missing divide softly, 1 + DD_MISS_K x (missing - 1) (user: Fremen expanded
+    # east past an empty deep desert whose 5-missing ring gave its villages 12-20%)
+    ucr, ddiv = fb.reg(cx.t('bool')), fb.reg(cx.t('f64'))
+    fb.op('Bool', dst=ucr, value=False)
+    fb.op('JSLt', a=con, b=one_f, offset='an_ucn')
+    fb.op('Bool', dst=ucr, value=True)
+    fb.label('an_ucn')
     # the candidate's own extras, as the focus measure counts them for every missing village (the loop above skips
     # its zone): an at-war stack at it, and within DD_BASE_R of another faction's main base (once)
     fb.op('Call3', dst=hthr, fun=threat, arg0=fac, arg1=se, arg2=local_r)
@@ -651,7 +771,13 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('JSLte', a=con, b=cmx, offset='an_cmx')  # best ring chance (flat bonus)
     fb.op('Mov', dst=cmx, src=con)
     fb.label('an_cmx')
-    fb.op('SDiv', dst=con, a=con, b=miss)
+    fb.op('Mov', dst=ddiv, src=miss)
+    fb.op('JFalse', cond=ucr, offset='an_udv')
+    fb.op('Sub', dst=ddiv, a=miss, b=one_f)
+    fb.op('Mul', dst=ddiv, a=ddiv, b=_ratio(fb, b, DD_MISS_K))
+    fb.op('Add', dst=ddiv, a=ddiv, b=one_f)
+    fb.label('an_udv')
+    fb.op('SDiv', dst=con, a=con, b=ddiv)
     fb.op('Add', dst=dd, a=dd, b=con)
     fb.op('JAlways', offset='an_d')
     fb.label('an_ddx')
@@ -692,7 +818,13 @@ def _annex_value(fb, b, cx, helpers, res, mine, mn):
     fb.op('Mul', dst=sc, a=sc, b=q)
     # flat ring bonus: DD_ADD x best chance x weight, per cost like the rest
     fb.op('Mul', dst=q, a=cmx, b=ddw)
+    # an uncontested focus ring (best chance still 1): DD_ADD_UC instead of DD_ADD
+    fb.op('JSLt', a=cmx, b=one_f, offset='an_dadd')
+    fb.op('Mul', dst=q, a=q, b=b.const('f64', DD_ADD_UC))
+    fb.op('JAlways', offset='an_daddd')
+    fb.label('an_dadd')
     fb.op('Mul', dst=q, a=q, b=b.const('f64', DD_ADD))
+    fb.label('an_daddd')
     fb.op('JSLte', a=c, b=zero, offset='an_dda')
     fb.op('Mul', dst=q, a=q, b=cmin)
     fb.op('SDiv', dst=q, a=q, b=c)
@@ -1162,6 +1294,39 @@ def build_scoring(cx, new_ids, helpers):
     b.call('haxe.ds.ObjectMap.remove', res, fb.dyn(ase))
     fb.op('JAlways', offset='akl')
     fb.label('akdone')
+    # renegade base next to our home (user): one within RENEG_HOPS zones of our active main base (one village between)
+    # is a standing raid source (its raids spawn at the base nearest the faction): Dismantle score max(vanilla, 0) +
+    # RENEG_ADD, the first strike target whenever the Dismantle gauge fires
+    fb.op('JNotEq', a=b.call('String.__compare', 2, fb.dyn(fb.string('Dismantle'))), b=b.const('i32', 0),
+          offset='rgdone')
+    rgd = cx.fn('ent.Zone.getDistanceToPlayerBase')
+    rgn = fb.reg(cx.code.types[rgd.type.value].definition.args[2].value)
+    fb.op('Null', dst=rgn)
+    ri_, rh = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    rq, rse = fb.reg(cx.t('f64')), fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=ri_, src=b.const('i32', 0))
+    b.loop_head('rgl')
+    fb.op('JSGte', a=ri_, b=n, offset='rgdone')
+    rst = b.cast(b.call('hl.types.ArrayObj.getDyn', 0, ri_), 'ent.Structure')
+    fb.op('Incr', dst=ri_)
+    fb.op('JNull', reg=rst, offset='rgl')
+    fb.op('Mov', dst=rse, src=rst)
+    rz = b.call('ent.Entity.get_zone', rse)
+    fb.op('JNull', reg=rz, offset='rgl')
+    fb.op('Call3', dst=rh, fun=rgd.findex.value, arg0=rz, arg1=1, arg2=rgn)
+    fb.op('JSGt', a=rh, b=b.const('i32', RENEG_HOPS), offset='rgl')
+    rv0 = b.call('haxe.ds.ObjectMap.get', res, fb.dyn(rse))
+    fb.op('JNull', reg=rv0, offset='rgl')
+    fb.op('SafeCast', dst=rq, src=rv0)
+    fb.op('JSGte', a=rq, b=b.const('f64', 0), offset='rgpos')
+    fb.op('Mov', dst=rq, src=b.const('f64', 0))
+    fb.label('rgpos')
+    fb.op('Add', dst=rq, a=rq, b=b.const('f64', RENEG_ADD))
+    b.call('haxe.ds.ObjectMap.set', res, fb.dyn(rse), fb.dyn(rq))
+    _throttle(fb, b, cx, 'rghome', rse, 60, 'rgl')
+    _log_ev(fb, b, cx, helpers, 'rghome', [('f', fb.get(1, 'kind')), ('s', rse), ('hops', fb.dyn(rh)), ('sc', rq)])
+    fb.op('JAlways', offset='rgl')
+    fb.label('rgdone')
     # DMZ (rules/dmz.py): a border village of an at-war neighbour holding >= DMZ_WAR of them is taken, not burnt:
     # no Pillage target; its Annex / Liberate score x DMZ_W
     dmode = fb.reg(cx.t('i32'))  # 0 other, 1 pillage, 2 annex / liberate
@@ -1169,6 +1334,7 @@ def build_scoring(cx, new_ids, helpers):
     fb.op('JEq', a=b.call('String.__compare', 2, fb.dyn(fb.string('Pillage'))), b=b.const('i32', 0), offset='dmk')
     fb.op('Int', dst=dmode, ptr=cx.code.add_i32(2).value)
     fb.op('JEq', a=b.call('String.__compare', 2, fb.dyn(fb.string('Annex'))), b=b.const('i32', 0), offset='dmk')
+    fb.op('Int', dst=dmode, ptr=cx.code.add_i32(3).value)
     fb.op('JEq', a=b.call('String.__compare', 2, fb.dyn(fb.string('Liberate'))), b=b.const('i32', 0), offset='dmk')
     fb.op('JAlways', offset='dmdone')
     fb.label('dmk')
@@ -1193,6 +1359,16 @@ def build_scoring(cx, new_ids, helpers):
     fb.op('JNull', reg=dv0, offset='dml')
     fb.op('SafeCast', dst=dsc, src=dv0)
     fb.op('JSLte', a=dsc, b=b.const('f64', 0), offset='dml')
+    # Annex x DMZ_W only for a village inside our side (aimod_dmzin: enclave, or between our base and our village),
+    # any other x DMZ_ANNEX_OUT: the DMZ leans to Liberate (x DMZ_W), a neutral buffer (user)
+    fb.op('JNotEq', a=dmode, b=b.const('i32', 2), offset='dmlib')
+    din = fb.reg(cx.t('bool'))
+    fb.op('Call2', dst=din, fun=helpers['dmzin'], arg0=1, arg1=dst_)
+    fb.op('JTrue', cond=din, offset='dmlib')
+    fb.op('Mul', dst=dsc, a=dsc, b=_ratio(fb, b, DMZ_ANNEX_OUT))
+    b.call('haxe.ds.ObjectMap.set', res, fb.dyn(dse), fb.dyn(dsc))
+    fb.op('JAlways', offset='dml')
+    fb.label('dmlib')
     fb.op('Mul', dst=dsc, a=dsc, b=_ratio(fb, b, DMZ_W))
     b.call('haxe.ds.ObjectMap.set', res, fb.dyn(dse), fb.dyn(dsc))
     fb.op('JAlways', offset='dml')
