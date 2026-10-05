@@ -13,6 +13,7 @@ the order waits in Regroup for good). Fremen armies were in transit 5 times in 3
   and raids, Raze, sietch / renegade strikes), our contest hunts (map `wcon` set by hunt around its addOrder; a
   chase never rides: a moving prey isn't where the worm lands) and Defense orders: worm when the trip (order armies'
   centroid -> order position) is >= RIDE_MIN and a thumper is free (stock - claims >= 1), any order size; else walk.
+  A Pillage of a neutral village always walks (why npil, user: a thumper on militia loot is wasted).
   The last free thumper only for a trip >= RIDE_FAR, a contest or a Defense; shorter trips ride while RIDE_SPARE are
   free (3 at start, none back before 5k hegemony: 3 short early Annex rides spent them all by 6 min).
   A worm plan claims a thumper at once (map `wres` order -> time): it counts against the stock while the order is in
@@ -134,7 +135,20 @@ def _build_decide(cx, helpers):
     tt = b.field(1, 'targetType')
     fb.op('JNull', reg=tt, offset='end')
     fb.op('EnumIndex', dst=ix, value=tt)
-    fb.op('JEq', a=ix, b=b.const('i32', T_STRUCT), offset='go')
+    fb.op('JNotEq', a=ix, b=b.const('i32', T_STRUCT), offset='nst')
+    # a Pillage of a neutral village walks (user: a thumper spent on loot from a militia village is wasted; rides are
+    # for reach against enemies and contests)
+    fb.op('Mov', dst=why, src=fb.string('npil'))
+    psa = b.cast(fb.get(1, 'siegeAction'), 'String')
+    fb.op('JNull', reg=psa, offset='go')
+    fb.op('JNotEq', a=b.call('String.__compare', psa, fb.dyn(fb.string('Pillage'))), b=b.const('i32', 0), offset='go')
+    pst = b.cast(b.call('logic.ai.AIOrder.getTarget', 1), 'ent.Structure')
+    fb.op('JNull', reg=pst, offset='go')
+    pse = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=pse, src=pst)
+    fb.op('JNull', reg=b.call('ent.Entity.get_owner', pse), offset='walk')
+    fb.op('JAlways', offset='go')
+    fb.label('nst')
     fb.op('Mov', dst=why, src=fb.string('grp'))
     fb.op('JNotEq', a=ix, b=b.const('i32', T_GROUP), offset='walk')
     fb.op('Mov', dst=why, src=fb.string('chase'))
@@ -240,6 +254,14 @@ def build_wplan(cx, helpers, new_ids):
     fac = b.call('logic.ai.AIModule.get_aiOwner', ao)
     _log_ev(fb, b, cx, helpers, 'wstall', [('f', fb.get(fac, 'kind')), ('tgt', _otgt(fb, b, cx, o)), ('why', 'plan'),
                                            ('r', 1)])
+    # remember the target (map `wbad` target -> now): a ride there can't be planned from where our armies gather, the
+    # supply waiver for a free thumper (common._unreach) no longer applies to it (Fremen's Annex of Ashfir across the
+    # desert: InvalidThumperSlots, the walk failed the supply check, match 2026-10-04 22:0x)
+    wbt = b.cast(b.call('logic.ai.AIOrder.getTarget', o), 'ent.Entity')
+    fb.op('JNull', reg=wbt, offset='wb_no')
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'wbad'), fb.dyn(wbt),
+           fb.dyn(b.field(_state(fb, b, cx), 'time')))
+    fb.label('wb_no')
     r2 = fb.reg(cx.code.types[walk.type.value].definition.ret.value)
     fb.op('Call3', dst=r2, fun=walk.findex.value, arg0=ao, arg1=o, arg2=d)
     fb.op('Bool', dst=fell, value=True)

@@ -427,13 +427,139 @@ def build_term_probe(cx, helpers, new_ids):
     return {'term-probe': len(sites)}
 
 
+def build_empty_resupply(cx, helpers, new_ids):
+    """empty-resupply: the fight retreat in unitMicroManagement drops armies without safe regen or already in a
+    Resupply order, then calls addOrder(Resupply(1,1), units) even with none left, every tick the retreat holds
+    (REVERSING "Fight retreat order spam": 1194 of 2052 Resupply orders in match 2026-10-04 19:14 had n 0). The call
+    goes through a wrapper returning null for an empty list (the result is unused; forceFlee is set from its own
+    copy of the units); otherwise the original call."""
+    add = cx.fn('logic.ai.AIOrders.addOrder')
+    ids = {add.findex.value, helpers.get('addOrder', add.findex.value)}
+    sites = [op for op in cx.fn('logic.ai.AIUnits.unitMicroManagement').ops
+             if op.op.startswith('Call') and op.df.get('fun') is not None and op.df['fun'].value in ids]
+    if len(sites) != 1:
+        raise ValueError(f'empty-resupply: expected 1 addOrder call in unitMicroManagement, found {len(sites)}')
+    at = cx.code.types[add.type.value].definition
+    fb = FB(cx, [a.value for a in at.args], at.ret.value, fun_type=add.type.value)
+    b = B(fb)
+    res = fb.reg(at.ret.value)
+    fb.op('Null', dst=res)
+    fb.op('JNull', reg=3, offset='end')
+    fb.op('JSLte', a=b.field(3, 'length'), b=b.const('i32', 0), offset='end')
+    # full: every army at full life and supply, so Resupply(1,1) ends Success in Waiting and the retreat re-asks
+    # next tick (Harkonnen -> Kultah x157 every 0.15 s after `disengage` at Larfir, match 2026-10-05 04:38)
+    i = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=i, src=b.field(3, 'length'))
+    zi, one = b.const('i32', 0), b.const('i32', 1)
+    full = _ratio(fb, b, 1)
+    b.loop_head('fl')
+    fb.op('JSLte', a=i, b=zi, offset='full')
+    fb.op('Sub', dst=i, a=i, b=one)
+    a = b.cast(b.call('hl.types.ArrayObj.getDyn', 3, i), 'ent.Army')
+    fb.op('JNull', reg=a, offset='go')
+    fb.op('JSLt', a=b.call('ent.Entity.get_lifeRatio', a), b=full, offset='go')
+    fb.op('JFalse', cond=b.call('ent.Army.hasSupply', a), offset='fl')
+    fb.op('JSLt', a=b.call('ent.Army.get_supply', a), b=b.call('ent.Army.get_maxSupply', a), offset='go')
+    fb.op('JAlways', offset='fl')
+    fb.label('full')
+    _throttle(fb, b, cx, 'rsfull', 0, 30, 'end')
+    _log_ev(fb, b, cx, helpers, 'rsfull', [('a', a), ('n', b.field(3, 'length'))])
+    fb.op('JAlways', offset='end')
+    fb.label('go')
+    # busy: addOrder returns null when one of the units sits in an order of priority >= p (after taking units out
+    # of lower ones): the retreat re-asks every tick and only the ai-log `order` row is written (Harkonnen -> Haltar
+    # x90 in one minute, match 2026-10-05 05:22). Skipped when no unit is in a lower order, so nothing changes
+    busy, low = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
+    fb.op('Bool', dst=busy, value=False)
+    fb.op('Bool', dst=low, value=False)
+    ords = b.field(0, 'orders')
+    fb.op('JNull', reg=ords, offset='call')
+    k, j = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=k, src=b.field(ords, 'length'))
+    b.loop_head('bo')
+    fb.op('JSLte', a=k, b=zi, offset='bdone')
+    fb.op('Sub', dst=k, a=k, b=one)
+    o = b.cast(b.call('hl.types.ArrayObj.getDyn', ords, k), 'logic.ai.AIOrder')
+    fb.op('JNull', reg=o, offset='bo')
+    ou = b.field(o, 'units')
+    fb.op('JNull', reg=ou, offset='bo')
+    fb.op('Mov', dst=j, src=b.field(3, 'length'))
+    b.loop_head('bu')
+    fb.op('JSLte', a=j, b=zi, offset='bo')
+    fb.op('Sub', dst=j, a=j, b=one)
+    bu = b.call('hl.types.ArrayObj.getDyn', 3, j)
+    fb.op('JFalse', cond=b.call('hl.types.ArrayObj.contains', ou, bu), offset='bu')
+    fb.op('JSLt', a=b.field(o, 'priority'), b=2, offset='blow')
+    fb.op('Bool', dst=busy, value=True)
+    fb.op('JAlways', offset='bo')
+    fb.label('blow')
+    fb.op('Bool', dst=low, value=True)
+    fb.op('JAlways', offset='bo')
+    fb.label('bdone')
+    fb.op('JTrue', cond=low, offset='call')
+    fb.op('JFalse', cond=busy, offset='call')
+    _throttle(fb, b, cx, 'rsbusy', 0, 30, 'end')
+    _log_ev(fb, b, cx, helpers, 'rsbusy', [('n', b.field(3, 'length'))])
+    fb.op('JAlways', offset='end')
+    fb.label('call')
+    fb.op('CallN', dst=res, fun=sites[0].df['fun'].value, args=list(range(len(at.args))))
+    fb.label('end')
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    sites[0].df['fun'].value = w
+    new_ids.add(w)
+    return {'empty-resupply': 1}
+
+
+def build_dead_resupply(cx, helpers, new_ids):
+    """dead-resupply: checkUnits sends each army needing supply / life to healingStructures[0] by the safe-heal key;
+    when every candidate carries a penalty a dead heal target (map `hbad`, build_heal_dead) can still win, and its
+    Resupply dies in Waiting again (Harkonnen -> neutral sietch Aynrekh x40 cancels in Waiting, 16:28-18:29, while
+    marked dead 7 times, match 2026-10-05 05:48). The checkUnits addOrder call goes through a wrapper returning null
+    for a dead target (the army waits for the next check); log `rsdead` (s, n) once per structure per 30 s."""
+    add = cx.fn('logic.ai.AIOrders.addOrder')
+    ids = {add.findex.value, helpers.get('addOrder', add.findex.value)}
+    sites = [op for op in cx.fn('logic.ai.AIUnits.checkUnits').ops
+             if op.op.startswith('Call') and op.df.get('fun') is not None and op.df['fun'].value in ids]
+    if len(sites) != 1:
+        raise ValueError(f'dead-resupply: expected 1 addOrder call in checkUnits, found {len(sites)}')
+    at = cx.code.types[add.type.value].definition
+    fb = FB(cx, [a.value for a in at.args], at.ret.value, fun_type=add.type.value)
+    b = B(fb)
+    res = fb.reg(at.ret.value)
+    fb.op('Null', dst=res)
+    te = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=te, src=4)
+    fb.op('JNull', reg=te, offset='go')
+    _heal_dead(fb, b, cx, te, 'dead')
+    fb.op('JAlways', offset='go')
+    fb.label('dead')
+    _throttle(fb, b, cx, 'rsdead', te, 30, 'end')
+    n = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=n, src=b.const('i32', 0))
+    fb.op('JNull', reg=3, offset='lg')
+    fb.op('Mov', dst=n, src=b.field(3, 'length'))
+    fb.label('lg')
+    _log_ev(fb, b, cx, helpers, 'rsdead', [('s', te), ('n', n)])
+    fb.op('JAlways', offset='end')
+    fb.label('go')
+    fb.op('CallN', dst=res, fun=sites[0].df['fun'].value, args=list(range(len(at.args))))
+    fb.label('end')
+    fb.op('Ret', ret=res)
+    w = fb.build()
+    sites[0].df['fun'].value = w
+    new_ids.add(w)
+    return {'dead-resupply': 1}
+
+
 def build_heal_dead(cx, helpers, new_ids):
     """Heal-dead: every AIOrder.stop call -> wrapper. A Resupply / Patrol order on a structure stopped with Cancel in
-    Waiting (phase 1: it never got going) counts against that structure (maps `hdc` s -> count, `hdt` s -> window
+    Waiting (phase 1: it never got going) or Regroup (3: a jammed walk, the stalled-army cancel) counts against that structure (maps `hdc` s -> count, `hdt` s -> window
     start); HDEAD_N of them within HDEAD_W s mark it dead for HDEAD_T s (map `hbad` s -> until; read by
     common._heal_dead in the safe-heal keys and strand). Fremen's Resupply / Patrol orders to the sietch Sha-dad were
     cancelled in Waiting 868 times in one match (1 success) while 9 armies stood 320 away at Wallon. Logs `hdead`
-    (s, n). In a trap; the original stop always runs."""
+    (s, n). A Defense cancelled in Waiting stamps its armies in map `dwf` (retreat lock). In a trap; the original stop
+    always runs."""
     orig = cx.fn('logic.ai.AIOrder.stop')
     args = [a.value for a in cx.code.types[orig.type.value].definition.args]
     ret = cx.code.types[orig.type.value].definition.ret.value
@@ -446,8 +572,17 @@ def build_heal_dead(cx, helpers, new_ids):
     ri, ti = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
     fb.op('EnumIndex', dst=ri, value=1)
     fb.op('JNotEq', a=ri, b=b.const('i32', CANCEL), offset='orig')
-    fb.op('JNotEq', a=b.field(0, 'phase'), b=b.const('i32', 1), offset='orig')
+    # Waiting (1) or Regroup (3, checkRegroupOrder's stalled-army cancel / rsguard: the walk there jams; vanilla
+    # re-issued the same Resupply x14-24 per faction a match, match 2026-10-04 23:14); a Defense: Waiting only
+    phv = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=phv, src=b.field(0, 'phase'))
+    fb.op('JSLt', a=phv, b=b.const('i32', 1), offset='orig')
+    fb.op('JSGt', a=phv, b=b.const('i32', REGROUP), offset='orig')
     fb.op('EnumIndex', dst=ti, value=b.field(0, 'type'))
+    fb.op('JNotEq', a=ti, b=b.const('i32', DEFENSE), offset='hd_nd')
+    fb.op('JEq', a=phv, b=b.const('i32', 1), offset='dfw')
+    fb.op('JAlways', offset='orig')
+    fb.label('hd_nd')
     fb.op('JEq', a=ti, b=b.const('i32', RESUPPLY), offset='rp')
     fb.op('JNotEq', a=ti, b=b.const('i32', PATROL), offset='orig')
     fb.label('rp')
@@ -458,6 +593,12 @@ def build_heal_dead(cx, helpers, new_ids):
     fb.op('JSLte', a=b.field(hu, 'length'), b=b.const('i32', 0), offset='orig')
     tg = b.cast(b.call('logic.ai.AIOrder.getTarget', 0), 'ent.Structure')
     fb.op('JNull', reg=tg, offset='orig')
+    # an active main base only for Waiting cancels (no path at all: one Harkonnen army's Resupply to Carthag was cancelled
+    # in Waiting 860 times, 10:28-18:40, match 2026-10-05 03:55); a Regroup jam never marks it (Carthag was marked by
+    # jams and its armies healed elsewhere, match 2026-10-04 23:58)
+    fb.op('JFalse', cond=b.call('ent.Structure.get_isActiveMainBase', tg), offset='hd_mbok')
+    fb.op('JNotEq', a=phv, b=b.const('i32', 1), offset='orig')
+    fb.label('hd_mbok')
     te = fb.reg(cx.t('ent.Entity'))
     fb.op('Mov', dst=te, src=tg)
     now = fb.reg(cx.t('f64'))
@@ -485,15 +626,70 @@ def build_heal_dead(cx, helpers, new_ids):
     b.call('haxe.ds.ObjectMap.remove', hdc, fb.dyn(te))
     b.call('haxe.ds.ObjectMap.remove', hdt, fb.dyn(te))
     _log_ev(fb, b, cx, helpers, 'hdead', [('f', fb.get(b.call('ent.Entity.get_owner', b.cast(fb.dyn(b.call('hl.types.ArrayObj.getDyn', hu, b.const('i32', 0))), 'ent.Entity')), 'kind')), ('s', te), ('n', n)])
+    fb.op('JAlways', offset='orig')
+    # a Defense cancelled in Waiting (vanilla's walk check, e.g. the supply estimate, refused it at once): its armies
+    # are stamped in map `dwf` (army -> now); the retreat lock keeps them out of Defense picks for DWF_T s (Fremen
+    # 47:01 / Atreides 52:33, match 2026-10-04 20:00: re-picked and cancelled every ~0.5 s)
+    fb.label('dfw')
+    dwu = b.field(0, 'units')
+    fb.op('JNull', reg=dwu, offset='orig')
+    dwm = _global_map(fb, b, cx, 'dwf')
+    dwt = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=dwt, src=b.field(_state(fb, b, cx), 'time'))
+    dwi = fb.reg(cx.t('i32'))
+    dwa = _army_loop(fb, b, dwu, b.field(dwu, 'length'), dwi, 'dwl', 'orig')
+    b.call('haxe.ds.ObjectMap.set', dwm, fb.dyn(dwa), fb.dyn(dwt))
+    fb.op('JAlways', offset='dwl')
     fb.label('orig')
     fb.end_try(g)
     fb.op('Call2', dst=res, fun=orig.findex.value, arg0=0, arg1=1)
     fb.op('Ret', ret=res)
     w = fb.build()
     new_ids.add(w)
+    # retreat stamp: unitMicroManagement's stop calls are its fight retreat (cancel the fight's related orders): every
+    # army of the cancelled order goes into map `fled` (army -> now) before the stop; the retreat lock (heal.py) keeps
+    # them out of Defense picks. Vanilla gives Resupply only to safe-regen armies and force-flees the rest (no order;
+    # their Flee micro came too late for the lock: Smugglers' 15-army Defense vs Fremen re-picked every 2 s with 11-13
+    # armies, 42:03-42:58, match 2026-10-04 21:00)
+    def stamp_wrapper(callee):
+        fb = FB(cx, args, ret, fun_type=orig.type.value)
+        b = B(fb)
+        res2 = fb.reg(ret)
+        g2 = fb.try_()
+        fb.op('JNull', reg=0, offset='rs_go')
+        ru = b.field(0, 'units')
+        fb.op('JNull', reg=ru, offset='rs_go')
+        rnow = fb.reg(cx.t('f64'))
+        fb.op('Mov', dst=rnow, src=b.field(_state(fb, b, cx), 'time'))
+        rmap = _global_map(fb, b, cx, 'fled')
+        ri2 = fb.reg(cx.t('i32'))
+        ra = _army_loop(fb, b, ru, b.field(ru, 'length'), ri2, 'rs_l', 'rs_go')
+        b.call('haxe.ds.ObjectMap.set', rmap, fb.dyn(ra), fb.dyn(rnow))
+        fb.op('JAlways', offset='rs_l')
+        fb.label('rs_go')
+        fb.end_try(g2)
+        fb.op('Call2', dst=res2, fun=callee, arg0=0, arg1=1)  # what the site called (the ai-log wrapper when traced)
+        fb.op('Ret', ret=res2)
+        return fb.build()
+    umm = cx.fn('logic.ai.AIUnits.unitMicroManagement')
+    ftypes = {f.findex.value: f.type.value for f in cx.code.functions}
+    stamps = {}
+    nret = 0
+    for op in umm.ops:  # direct, or through the ai-log per-caller wrapper (same signature)
+        if (op.op.startswith('Call') and op.df.get('fun') is not None
+                and ftypes.get(op.df['fun'].value) == orig.type.value):
+            callee = op.df['fun'].value
+            if callee not in stamps:
+                stamps[callee] = stamp_wrapper(callee)
+                new_ids.add(stamps[callee])
+            op.df['fun'].value = stamps[callee]
+            nret += 1
+    if not nret:
+        raise ValueError('retreat-stamp: no AIOrder.stop call in unitMicroManagement')
     nred = 0
+    ours = set(new_ids) - helpers.get('log_ids', set())  # our rules' own stops (rsguard, dstop, raid aborts, ...) are no evidence against a target
     for f in cx.code.functions:
-        if f.findex.value == w:
+        if f.findex.value == w or f.findex.value in stamps.values() or f.findex.value in ours:
             continue
         for op in f.ops:
             if op.op.startswith('Call') and op.df.get('fun') is not None and op.df['fun'].value == orig.findex.value:
@@ -501,4 +697,4 @@ def build_heal_dead(cx, helpers, new_ids):
                 nred += 1
     if nred == 0:
         raise ValueError('heal-dead: no AIOrder.stop call sites')
-    return {'heal-dead': nred}
+    return {'heal-dead': nred, 'retreat-stamp': nret}

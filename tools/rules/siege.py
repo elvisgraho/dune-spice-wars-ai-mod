@@ -5,14 +5,17 @@ from rules.intel import _seen_map, _rec_get, _rec_of
 
 
 
-OWNER_F = (1, 0.75, 0.5, 0.25, 0.1, 0)   # data AI_PowerScore_EnemyAdditionalArmy_Factor: an owner's army by zones away
+OWNER_F = (1, 0.5, 0.25, 0.1, 0, 0)   # an owner's army by zones away (data AI_PowerScore_EnemyAdditionalArmy_Factor
+# 1 / .75 / .5 / .25 / .1 / 0: user, an army zones away gets seen coming and the capture retreats if it returns; Fremen
+# never started on Zayur with Harkonnen's stack 360 away, match 2026-10-04 21:4x); main bases keep vanilla's table
 OWNER_MB_F = (1, 0.8, 0.65, 0.5, 0.2)    # ... _MainBase_Factor (the target is a main base)
 
 
 def _owner_armies(fb, b, cx, pw, ai, s, res, fac=None, acc=None):
     """Vanilla getEnemyCombatStats' owner-army part with fog of war: each combat army of s's owner by what the asking
     faction knows: seen now -> its zone (busy fighting / capturing: x BUSY_W); seen within SEEN_T -> the zone of its
-    sighting (busy then and less than BUSY_SEEN_T ago: x BUSY_W); unknown -> the owner's main base (a player assumes
+    sighting (busy then and less than BUSY_SEEN_T ago: x BUSY_W); seen now in a Military order of its owner on another
+    structure (on a mission elsewhere): x MISSION_W; unknown -> the owner's main base (a player assumes
     the unseen army is home). Weight = vanilla's factor by zones from s; pushed into res as
     unitSimulatedCombatStats(army, s's zone) with that externalFactor, as vanilla does. With `acc` (f64 reg) and
     `fac` (the asking faction): power x weight summed into acc instead (aimod_owner_pw)."""
@@ -45,12 +48,13 @@ def _owner_armies(fb, b, cx, pw, ai, s, res, fac=None, acc=None):
     i, dz, zid = fb.reg(cx.t('i32')), fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
     z = fb.reg(cx.t('ent.Zone'))
     f, p, age = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
-    bz = fb.reg(cx.t('bool'))
+    bz, bm = fb.reg(cx.t('bool')), fb.reg(cx.t('bool'))
     x = _army_loop(fb, b, arr, alen, i, 'oa_l', 'oa_end')
     fb.op('JNotNull', reg=b.field(x, 'harvestComponent'), offset='oa_l')
     fb.op('Call1', dst=p, fun=pw, arg0=x)
     fb.op('JSLte', a=p, b=b.const('f64', 0), offset='oa_l')
     fb.op('Bool', dst=bz, value=False)
+    fb.op('Bool', dst=bm, value=False)
     fb.op('JTrue', cond=b.call('ent.Entity.isVisibleForFaction', x, fac), offset='oa_vis')
     rec = _rec_of(fb, b, cx, mp, x, 'oa_unk')
     fb.op('Sub', dst=age, a=now, b=_rec_get(fb, b, cx, rec, 't'))
@@ -68,7 +72,24 @@ def _owner_armies(fb, b, cx, pw, ai, s, res, fac=None, acc=None):
     fb.op('Mov', dst=z, src=b.call('ent.Entity.get_zone', x))
     fb.op('JTrue', cond=b.call('ent.Entity.isFighting', x), offset='oa_vb')
     fb.op('JNotNull', reg=b.field(x, 'occupiedStructure'), offset='oa_vb')
-    fb.op('JNull', reg=b.field(x, 'contestingStructure'), offset='oa_zone')
+    fb.op('JNotNull', reg=b.field(x, 'contestingStructure'), offset='oa_vb')
+    # on a mission elsewhere: a Military order of its owner on another structure (walking to a capture / liberation)
+    # counts x MISSION_W (user: Harkonnen's stack 360 away was out liberating, Fremen's Liberate of Zayur needed
+    # 13-16 of 19 armies at 2x and never went, match 2026-10-04 21:4x)
+    xo = fb.reg(cx.t('logic.ai.AIOrder'))
+    _order_of(fb, b, cx, so, x, xo, 'oa_zone')
+    xix = fb.reg(cx.t('i32'))
+    fb.op('EnumIndex', dst=xix, value=b.field(xo, 'type'))
+    fb.op('JNotEq', a=xix, b=b.const('i32', MILITARY), offset='oa_zone')
+    xtt = b.field(xo, 'targetType')
+    fb.op('JNull', reg=xtt, offset='oa_zone')
+    fb.op('EnumIndex', dst=xix, value=xtt)
+    fb.op('JNotEq', a=xix, b=b.const('i32', T_STRUCT), offset='oa_zone')
+    xts = b.cast(b.call('logic.ai.AIOrder.getTarget', xo), 'ent.Entity')
+    fb.op('JNull', reg=xts, offset='oa_zone')
+    fb.op('JEq', a=xts, b=s, offset='oa_zone')
+    fb.op('Bool', dst=bm, value=True)
+    fb.op('JAlways', offset='oa_zone')
     fb.label('oa_vb')
     fb.op('Bool', dst=bz, value=True)
     fb.label('oa_zone')
@@ -95,6 +116,9 @@ def _owner_armies(fb, b, cx, pw, ai, s, res, fac=None, acc=None):
     fb.op('JFalse', cond=bz, offset='oa_nb')
     fb.op('Mul', dst=f, a=f, b=_ratio(fb, b, BUSY_W))
     fb.label('oa_nb')
+    fb.op('JFalse', cond=bm, offset='oa_nm')
+    fb.op('Mul', dst=f, a=f, b=_ratio(fb, b, MISSION_W))
+    fb.label('oa_nm')
     if acc is not None:
         fb.op('Mul', dst=p, a=p, b=f)
         fb.op('Add', dst=acc, a=acc, b=p)

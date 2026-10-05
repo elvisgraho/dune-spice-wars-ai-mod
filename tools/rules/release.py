@@ -36,6 +36,7 @@ from rules.worm import _do_on
 
 RELEASE_CHECK = 5   # s: scan period
 REJOIN_T = 10       # s: at most one rejoin per order this often (the walk in takes a few seconds)
+MCLR_T = 8          # s: militia clear: an army gets ArmyFight on another faction's militia at most this often
 RELEASE_KINDS = ('Annex', 'Pillage', 'Liberate')  # not sietch / renegade-base strikes: the sietch deploys its
 # harass units mid-strike (SITE_REQ), a thinned force loses to them
 
@@ -197,6 +198,48 @@ def build_release(cx, helpers, relunits, threat, neutral, cover):
     fb.op('Mov', dst=ve, src=s)
     sg = b.field(s, 'siege')
     fb.op('JNull', reg=sg, offset='o')
+    # militia clear: the village's militia was raised by another faction's siege (spawnMilitia targets
+    # besiegers[0]'s owner): vanilla micro gives us no role against it (the village isn't besieged by us) and Action
+    # re-sends ArmySiege to our idle armies, which can't start while that militia stands (Fremen at O-Al'nit after
+    # Smugglers' Annex, match 2026-10-04 18:5x: progress 0 for 3 min, armies clicking the village). Our idle order
+    # armies attack the nearest militia army (user: the neutrals-fighting-our-enemy exemption doesn't hold once we
+    # want the village ourselves)
+    fb.op('JFalse', cond=b.call('ent.comp.SiegeComponent.hasActiveMilitia', sg), offset='mc_no')
+    fb.op('JEq', a=b.field(sg, 'besiegingFaction'), b=fac, offset='mc_no')
+    mil = b.cast(fb.get(sg, 'activeMilitia', 'array'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=mil, offset='o')
+    mn = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=mn, src=b.field(mil, 'length'))
+    mci, mcj = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    mbd, mq = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    mbest = fb.reg(cx.t('ent.Entity'))
+    ma = _army_loop(fb, b, units, un, mci, 'mcl', 'o')
+    fb.op('JTrue', cond=b.call('ent.Entity.isFighting', ma), offset='mcl')
+    fb.op('JNotNull', reg=b.field(ma, 'harvestComponent'), offset='mcl')
+    fb.op('Null', dst=mbest)
+    fb.op('Mov', dst=mbd, src=b.const('f64', 1 << 30))
+    fb.op('Int', dst=mcj, ptr=cx.code.add_i32(0).value)
+    b.loop_head('mcm')
+    fb.op('JSGte', a=mcj, b=mn, offset='mcmd')
+    mm = b.cast(b.call('hl.types.ArrayObj.getDyn', mil, mcj), 'ent.Army')
+    fb.op('Incr', dst=mcj)
+    fb.op('JNull', reg=mm, offset='mcm')
+    fb.op('JTrue', cond=b.call('ent.Entity.isDead', mm), offset='mcm')
+    fb.op('Mov', dst=mq, src=b.call('ent.Entity.getDistTo', ma, mm))
+    fb.op('JSGte', a=mq, b=mbd, offset='mcm')
+    fb.op('Mov', dst=mbd, src=mq)
+    fb.op('Mov', dst=mbest, src=mm)
+    fb.op('JAlways', offset='mcm')
+    fb.label('mcmd')
+    fb.op('JNull', reg=mbest, offset='mcl')
+    _throttle(fb, b, cx, 'mclr', ma, MCLR_T, 'mcl')
+    mae = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=mae, src=ma)
+    mok = _do_on(fb, b, cx, mae, 'ArmyFight', mbest, fac)
+    _log_ev(fb, b, cx, helpers, 'mclr', [('f', fb.get(fac, 'kind')), ('tgt', ve), ('a', mae), ('m', mbest),
+                                         ('d', mbd), ('ok', mok)])
+    fb.op('JAlways', offset='mcl')
+    fb.label('mc_no')
     fb.op('Mov', dst=pr, src=b.call('ent.comp.SiegeComponent.getOccupationActionProgress', sg))
     # rejoin also when the progress went back to 0 without an occupier: an occupation started in this siege
     # (occupationStartTime > 0), no militia alive and the siege is still ours

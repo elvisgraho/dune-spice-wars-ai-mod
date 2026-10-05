@@ -13,7 +13,8 @@ militia fight, a fight off our land, a stranded army.
      target zone isn't ours; cast on the target zone (Engage or Action) only when it is needed: a non-mech order
      army within SD_CAST_R of the target is losing supply now (a fight: a plain capture / pillage doesn't drain)
      and holds no more than the walk home from the target (SUP_WALK x aimod_land + SUP_RESERVE) + SD_CAST_FIGHT
-     (act cast why lock); otherwise the lock just reserves the drop. Else
+     and the armies passing that test hold >= SD_NEED_SHARE of the order's power within SD_CAST_R (else act hold
+     why share: one straggler doesn't buy it) (act cast why lock); otherwise the lock just reserves the drop. Else
      unlock (act unlock why gone / own). While it waits, a second drop held (sdrop-buy allows one) goes on to the
      emergency step, never to a second lock or the free flag.
   2. No lock: lock the newest Military siege order (structure target, Preparation .. Action) off our zone with a
@@ -175,6 +176,29 @@ def build_sdrop(cx, helpers, pw, land, supok, own, threat):
     fb.op('JFalse', cond=b.call('ent.Army.isLosingSupply', a), offset='lka')
     fb.op('JSGt', a=b.call('ent.Army.get_supply', a), b=cneed, offset='lka')
     _low(a, 'lka')
+    # ... and the short armies (same test) hold >= SD_NEED_SHARE of the order's power at the target: one straggler
+    # doesn't buy the drop (Fremen's 11-army renegade-base strike at 3:1, cast 23 s into Action for one
+    # Discovery_Marauder at 8 supply, the base fell a minute later; match 2026-10-04 19:16, 65:51)
+    sh_tot, sh_need, sh_p = fb.reg(cx.t('f64')), fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=sh_tot, src=zero)
+    fb.op('Mov', dst=sh_need, src=zero)
+    sk = fb.reg(cx.t('i32'))
+    sa_ = _army_loop(fb, b, units, b.field(units, 'length'), sk, 'lks', 'lksd')
+    fb.op('JSGt', a=b.call('ent.Entity.getDistTo', sa_, ve), b=b.const('f64', SD_CAST_R), offset='lks')
+    fb.op('Call1', dst=sh_p, fun=pw, arg0=sa_)
+    fb.op('Add', dst=sh_tot, a=sh_tot, b=sh_p)
+    fb.op('JTrue', cond=b.call('ent.Unit.isMechanical', sa_), offset='lks')
+    fb.op('JFalse', cond=b.call('ent.Army.isLosingSupply', sa_), offset='lks')
+    fb.op('JSGt', a=b.call('ent.Army.get_supply', sa_), b=cneed, offset='lks')
+    fb.op('Add', dst=sh_need, a=sh_need, b=sh_p)
+    fb.op('JAlways', offset='lks')
+    fb.label('lksd')
+    fb.op('Mul', dst=sh_tot, a=sh_tot, b=_ratio(fb, b, SD_NEED_SHARE))
+    fb.op('JSGte', a=sh_need, b=sh_tot, offset='lk_cast')
+    _throttle(fb, b, cx, 'sdshare', fac, 30, 'lk_hold')
+    _log_ev(fb, b, cx, helpers, 'sdrop', [('f', fb.get(fac, 'kind')), ('act', 'hold'), ('why', 'share'), ('tgt', ve),
+                                          ('need', sh_need), ('tot', sh_tot)])
+    fb.op('JAlways', offset='lk_hold')
     fb.label('lk_cast')
     cast_drop('lk_fail')
     b.call('haxe.ds.ObjectMap.remove', lk, fb.dyn(fac))

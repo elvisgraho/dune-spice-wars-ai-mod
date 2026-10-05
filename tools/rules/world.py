@@ -560,13 +560,15 @@ def build_supok(cx):
 
 
 def build_raidsup(cx):
-    """aimod_raidsup(a, d_to, d_home) -> a can raid a village d_to away that lies d_home from our land (a free Supply
+    """aimod_raidsup(a, d_to, d_home, ride) -> a can raid a village d_to away that lies d_home from our land (a free Supply
     Drop, rules/sdrop.py: non-mech armies need only SUP_RESERVE on arrival and get SD_REFILL more): it arrives
     with >= RAID_ARRIVE supply (supply - SUP_U x d_to; fighting the militia drains too), occupying doesn't
     drain (Army.isInHostileZone is false in occupation range), a finished pillage refills OCC_REFILL x max
     (data Army_Supply_Resupply_OccupationRatio), and then it still has the budget home (SUP_U x d_home +
-    SUP_RESERVE). True for armies without supply."""
-    fb = FB(cx, [cx.t('ent.Army'), cx.t('f64'), cx.t('f64')], cx.t('bool'))
+    SUP_RESERVE), and (no free drop) its walk passes vanilla's siege supply check (leg off our land x SUP_U <=
+    SD_VAN_K x supply). True for armies without supply. ride false (a neutral target): no worm leg (ride.py walks a
+    neutral Pillage)."""
+    fb = FB(cx, [cx.t('ent.Army'), cx.t('f64'), cx.t('f64'), cx.t('bool')], cx.t('bool'))
     b = B(fb)
     res = fb.reg(cx.t('bool'))
     fb.op('Bool', dst=res, value=True)
@@ -583,6 +585,7 @@ def build_raidsup(cx):
     fb.op('Mov', dst=rae, src=0)
     rown = b.call('ent.Entity.get_owner', rae)
     fb.op('JNull', reg=rown, offset='rleg_no')
+    fb.op('JFalse', cond=3, offset='rleg_no')  # a neutral village: raids walk there (ride.py `npil`)
     _ride_leg(fb, b, cx, rown, b.field(_state(fb, b, cx), 'time'), dto)
     fb.label('rleg_no')
     fb.op('Mul', dst=q, a=dto, b=su)
@@ -606,6 +609,20 @@ def build_raidsup(cx):
     fb.op('Mov', dst=q, src=_ratio(fb, b, SUP_RESERVE))
     fb.op('Bool', dst=sdok, value=True)
     fb.label('sdno')
+    # vanilla's siege supply check (InsufficientSupply in Waiting when the path cost > SD_VAN_K x the lowest order army's
+    # supply; a free drop lifts it: sdrop-trip): the leg off our land, min(d_to, the target's distance to our land)
+    # x SUP_U (raids died in Waiting 0-1 s after launch 4-8 times a match, Harkonnen relaunched Tabsan 3x, matches
+    # 2026-10-04 21:42 / 22:05)
+    fb.op('JTrue', cond=sdok, offset='vck_ok')
+    vleg, vcap = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=vleg, src=dto)
+    fb.op('JSLte', a=vleg, b=2, offset='vleg_ok')
+    fb.op('Mov', dst=vleg, src=2)
+    fb.label('vleg_ok')
+    fb.op('Mul', dst=vleg, a=vleg, b=su)
+    fb.op('Mul', dst=vcap, a=b.call('ent.Army.get_supply', 0), b=_ratio(fb, b, SD_VAN_K))
+    fb.op('JSGt', a=vleg, b=vcap, offset='end')
+    fb.label('vck_ok')
     fb.op('JSLt', a=arrive, b=q, offset='end')
     fb.op('Mul', dst=q, a=ms, b=_ratio(fb, b, OCC_REFILL))
     fb.op('Add', dst=arrive, a=arrive, b=q)
@@ -910,7 +927,8 @@ def build_defend(cx, sieged, helpers, threat, neutral, own, cover, terrain):
     transit, e.g. a worm ride: those read 0): our armies within GATHER_R (+ our cover) x terrain below DEF_HOPE_IN x (threat +
     other raiders + enemy cover) there, left at DEF_HOPE_OUT (map `dhl` structure -> when last hopeless, 30 s, log `dhope`): a lost
     cause must not freeze every offensive (Atreides at Adnih / Tuonah vs 600-900k Fremen sat 4.5 min doing nothing).
-    Several: the highest stake wins (a capture over a pillage, then the nearest to our active main base).
+    A running Pillage of ours is skipped (user: only captures recall our attacks). Several: the highest stake wins
+    (a capture over a siege not yet occupying, then the nearest to our active main base).
     Non-null = defensive posture: no new offensives (vanilla siege actions, chases) until it is resolved."""
     st_t = cx.t('ent.Structure')
     fb = FB(cx, [cx.t('ent.Faction')], st_t)
@@ -1053,6 +1071,9 @@ def build_defend(cx, sieged, helpers, threat, neutral, own, cover, terrain):
         _renegades_at(fb, b, cx, s, f'{name}f')
         fb.op('JAlways', offset=name)
         fb.label(f'{name}f')
+        # a pillage under way is no reason to recall our attacks / liberations (user: the distinction is pillaging vs
+        # liberating; a pillage costs 20 days of production, a capture the village): not defended by posture
+        _pillaging(fb, b, cx, s, name)
         hopeless(s, name)
         # stake: a capture (Annex / Liberate / Takeover, or a siege whose occupation hasn't started) over a pillage,
         # then the nearest to our active main base (user: Atreides defended Sharas' pillage while Fremen annexed

@@ -7,7 +7,9 @@ faction buys comes from its loadout (`opsbuy`), what it casts and where from the
   bought at peace too (user: a peace can be cancelled or betrayed at any time); conditions 'war' / 'war3' remain
   available for a want that should wait for a war, none uses them) + OPS_VANILLA (Cell
   Search, Infiltration Cells, Assassination, Marauders Raid, CB_*). Vanilla buys only when Intel >= the largest
-  Intel cost among its candidates: an unwanted 500-intel op no longer holds back a cheap one. Scores
+  Intel cost among its candidates: an unwanted 500-intel op no longer holds back a cheap one. While Assassination is a
+  candidate (500 Intel + 1000 Solari) every other candidate is dropped except MSupplyDrop and CellSearch (user: save
+  for it). Scores
   (spyingMissions wrapper, sdrop-buy): a wanted op scores OPS_W - OPS_W_STEP x its rank.
 - `aimod_ops(mil, dt)` (tick chain after rally, every OPS_CHECK s per AI faction holding an op): triggers in order,
   at most one cast per tick (a combo pair casts together):
@@ -346,6 +348,34 @@ def build_ops_buy(cx, helpers, new_ids):
         fb.label(u + 'd')
     _wants_for(fb, b, cx, fac, state, restore)
     fb.label('rs_end')
+    # save for Assassination (user): while it is buyable (500 Intel + 1000 Solari), nothing else is bought except a
+    # Supply Drop (and Cell Search: Solari only, vanilla's answer to an assassination against us)
+    k2 = fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=k2, src=b.const('i32', 0))
+    b.loop_head('as_f')
+    fb.op('JSGte', a=k2, b=b.field(res, 'length'), offset='as_end')
+    ela = b.call('hl.types.ArrayObj.getDyn', res, k2)
+    fb.op('Incr', dst=k2)
+    fb.op('JNull', reg=ela, offset='as_f')
+    ida = b.cast(fb.get(ela, 'inf', 'id'), 'String')
+    fb.op('JNull', reg=ida, offset='as_f')
+    fb.op('JNotEq', a=b.call('String.__compare', ida, fb.dyn(fb.string('Assassination'))), b=b.const('i32', 0),
+          offset='as_f')
+    fb.op('Mov', dst=k2, src=b.field(res, 'length'))
+    b.loop_head('as_d')  # backwards: removal shifts the tail
+    fb.op('JSLte', a=k2, b=b.const('i32', 0), offset='as_end')
+    fb.op('Sub', dst=k2, a=k2, b=b.const('i32', 1))
+    elb = b.call('hl.types.ArrayObj.getDyn', res, k2)
+    fb.op('JNull', reg=elb, offset='as_d')
+    idb = b.cast(fb.get(elb, 'inf', 'id'), 'String')
+    fb.op('JNull', reg=idb, offset='as_d')
+    for keepid in ('Assassination', 'MSupplyDrop', 'CellSearch'):
+        fb.op('JEq', a=b.call('String.__compare', idb, fb.dyn(fb.string(keepid))), b=b.const('i32', 0),
+              offset='as_d')
+    b.call('hl.types.ArrayObj.splice', res, k2, b.const('i32', 1))
+    b.call('hl.types.ArrayObj.push', dids, fb.dyn(idb))
+    fb.op('JAlways', offset='as_d')
+    fb.label('as_end')
     # `opbuy` (OPB_LOG per faction): the candidates vanilla may buy from now
     _throttle(fb, b, cx, 'opbuy', fac, OPB_LOG, 'end')
     ids = _new_array(fb, b, cx)
@@ -866,6 +896,13 @@ def build_ops(cx, helpers, pw, threat, own, cover, militia, land):
     ex = b.cast(b.call('hl.types.ArrayObj.getDyn', ea, j5), 'ent.Army')
     fb.op('Incr', dst=j5)
     fb.op('JNull', reg=ex, offset='f_e')
+    # militia isn't a real fight (user: Harkonnen spent Combat Drugs + Scavenger Team on Fremen's Fondak, militia
+    # only, H 158k, match 2026-10-04 20:5x): only armies count; the capture's militia fight needs no op
+    # ... except a sietch / renegade base's garrison (user: beating those is a real fight)
+    fb.op('JFalse', cond=b.field(ex, 'isMilitia'), offset='f_ecnt')
+    _strong_site(fb, b, b.field(ex, 'militiaSource'), 'f_ecnt')
+    fb.op('JAlways', offset='f_e')
+    fb.label('f_ecnt')
     fb.op('JFalse', cond=b.call('ent.Entity.isVisibleForFaction', ex, fac), offset='f_e')  # fog
     fb.op('Call1', dst=pv, fun=pw, arg0=ex)
     fb.op('Add', dst=hpow, a=hpow, b=pv)

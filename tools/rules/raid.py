@@ -19,10 +19,12 @@ the refill stay, else the weakest; the rest are released; logged act split). Fir
 - home: hostile armies free to strike are closer to our land than the target + HOME_M (aimod_home) and our armies
   at home without the raid's (aimod_homeown) x OWN_T fall below ABORT x them;
 - weak (still walking, phase < Engage): raid power + our cover below the launch test x ABORT / ENTER at the target:
-  ABORT x (armies within LOCAL + enemy cover + militia + raiders), ABORT x RAID_FAR / ENTER x (aimod_react + the
+  ABORT x (armies within LOCAL + enemy cover + militia + raiders), ABORT x RAID_FAR / ENTER (an at-war village:
+  ABORT x RAID_OWNED_FAR / ENTER) x (aimod_react + the
   same) / terrain (relief arrived; in the fight the vanilla fight retreat decides).
 
-Launch pass, every START s per faction, at most one launch per RAID_GAP s, never while defending. While the
+Launch pass, every START s per faction, at most one launch per RAID_GAP s, never while defending (aimod_defend) or
+while a Defense order of ours holds armies (logged act=refuse why=dfn, n its armies). While the
 director's posture is RECOVER (most of our power worn, rules/strat.py) only a raid that is itself a recovery: each
 of its armies has the village nearer than our land (the pillage refill replaces the walk home; a stack at home
 doesn't go out) and the entry test is RAID_TO instead of ENTER (overwhelming, short). Logged rec=true:
@@ -34,7 +36,9 @@ doesn't go out) and the entry test is RAID_TO instead of ENTER (overwhelming, sh
   aggressiveness gate, target scores, pickMapBest top RAID_KEEP) and the villages `annex-keep` listed within AKEEP_T
   (below; also kept out of vanilla's Pillage targets: siege.build_scoring), villages within
   BUNKER_R of our main base (the bunker redirect annexes them first), villages on an uncontested deep-desert ring
-  we are closing (aimod_ddclean, Fremen), villages with our own Underworld HQ (our
+  we are closing (aimod_ddclean, Fremen), neutral villages on the ring of an unowned deep desert next to our land
+  (Fremen / DD_ATB, user) unless another faction's main base is within DD_BASE_R or a hostile army stands at it (log
+  act=skip why=ring), villages with our own Underworld HQ (our
   income there), villages our raid launched on less than RAID_RETRY s ago (aborted / cancelled at once: no loop)
   and villages behind another faction's main base (`_behind`, BEHIND_E: counted as bh in the start / refuse rows),
   and while we own fewer than RAID_GROW_N villages every neutral village within our Annex reach + RAID_GROW_ZONES
@@ -312,7 +316,8 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('Mul', dst=hl, a=hl, b=abort)
     fb.op('Mul', dst=q, a=h, b=_ratio(fb, b, ABORT * RAID_FAR / ENTER))
     fb.op('JNull', reg=b.call('ent.Entity.get_owner', ve), offset='aw_nown')
-    fb.op('Mul', dst=q, a=h, b=abort)  # an at-war village: its whole side (the launch test's ENTER x all of it)
+    fb.op('Mul', dst=q, a=h, b=_ratio(fb, b, ABORT * RAID_OWNED_FAR / ENTER))  # an at-war village: its whole
+    # side at the launch test's RAID_OWNED_FAR, same launch / abort gap as the rest
     fb.label('aw_nown')
     fb.op('JSGte', a=hl, b=q, offset='aw_max')
     fb.op('Mov', dst=hl, src=q)
@@ -382,6 +387,30 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.label('gapok')
     fb.op('Call1', dst=dfs, fun=defend, arg0=fac)
     fb.op('JNotNull', reg=dfs, offset='end')
+    # ... nor while a Defense order of ours holds armies (vanilla checkStructures: a fight at one of our structures,
+    # siege or not): it takes the raid's armies (prio 5 > 1) seconds later, the raid relaunches next pass (Smugglers'
+    # Hakhelon raids 49:40 / 51:00, emptied by Ey-bu Defenses 21 s / 3 s after launch, match 2026-10-04 19:14)
+    dfo = b.field(b.field(b.field(0, 'controller'), 'aiOrders'), 'orders')
+    fb.op('JNull', reg=dfo, offset='dfnok')
+    dk, dix = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=dk, src=b.field(dfo, 'length'))
+    b.loop_head('dfl')
+    fb.op('JSLte', a=dk, b=b.const('i32', 0), offset='dfnok')
+    fb.op('Sub', dst=dk, a=dk, b=b.const('i32', 1))
+    dor = b.cast(b.call('hl.types.ArrayObj.getDyn', dfo, dk), 'logic.ai.AIOrder')
+    fb.op('JNull', reg=dor, offset='dfl')
+    fb.op('EnumIndex', dst=dix, value=b.field(dor, 'type'))
+    fb.op('JNotEq', a=dix, b=b.const('i32', DEFENSE), offset='dfl')
+    dou = b.field(dor, 'units')
+    fb.op('JNull', reg=dou, offset='dfl')
+    fb.op('JSLte', a=b.field(dou, 'length'), b=b.const('i32', 0), offset='dfl')
+    _throttle(fb, b, cx, 'rdfn', fac, RAID_GAP, 'end')
+    dnf = fb.reg(cx.t('f64'))
+    fb.op('ToSFloat', dst=dnf, src=b.field(dou, 'length'))
+    _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', fb.string('refuse')),
+                                         ('why', fb.string('dfn')), ('n', dnf)])
+    fb.op('JAlways', offset='end')
+    fb.label('dfnok')
     # vanilla's Annex fires within seconds (gauge >= RAID_GAUGE) and takes the armies of a raid launched now
     gauges = b.cast(fb.get(0, 'gauges'), 'hl.types.ArrayObj')
     fb.op('JNull', reg=gauges, offset='gaugeok')
@@ -586,6 +615,74 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     rcl = fb.reg(cx.t('bool'))
     fb.op('Call2', dst=rcl, fun=helpers['ddclean'], arg0=fac, arg1=vz)
     fb.op('JTrue', cond=rcl, offset='v')
+    # ... nor any neutral village on the ring of an unowned deep desert next to our land (Fremen / DeepDesert_
+    # Surounded_GainControl; the Annex ring reach's test, strat.py), unless an enemy is too close (user): another
+    # faction's main base within DD_BASE_R of it, or a hostile army at it (aimod_threat within LOCAL). Fremen pillaged
+    # their ring villages Bir-dalus / Hadanim 3x each (match 2026-10-04 20:53)
+    fb.op('JNotNull', reg=vo, offset='noring')
+    rpk = b.cast(fb.get(fac, 'kind'), 'String')
+    fb.op('JNull', reg=rpk, offset='rp_atb')
+    fb.op('JEq', a=b.call('String.__compare', rpk, fb.dyn(fb.string('Fremen'))), b=b.const('i32', 0), offset='rp_go')
+    fb.label('rp_atb')
+    rph = cx.fn('ent.Object.hasAttribute')
+    rpt = [a_.value for a_ in cx.code.types[rph.type.value].definition.args]
+    rpo, rpr, rpf = fb.reg(rpt[0]), fb.reg(rpt[2]), fb.reg(rpt[3])
+    fb.op('Mov', dst=rpo, src=fac)
+    fb.op('Null', dst=rpr)
+    fb.op('Null', dst=rpf)
+    rpb = fb.reg(cx.t('bool'))
+    fb.op('Call4', dst=rpb, fun=rph.findex.value, arg0=rpo, arg1=b.const('i32', DD_ATB), arg2=rpr, arg3=rpf)
+    fb.op('JFalse', cond=rpb, offset='noring')
+    fb.label('rp_go')
+    rpn = b.field(vz, 'neighbors')
+    fb.op('JNull', reg=rpn, offset='noring')
+    rpi, rpj = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=rpi, src=b.const('i32', 0))
+    b.loop_head('rp_d')
+    fb.op('JSGte', a=rpi, b=b.field(rpn, 'length'), offset='noring')
+    rdz = b.cast(b.call('hl.types.ArrayObj.getDyn', rpn, rpi), 'ent.Zone')
+    fb.op('Incr', dst=rpi)
+    fb.op('JNull', reg=rdz, offset='rp_d')
+    fb.op('JFalse', cond=b.call('ent.Zone.isDeepDesert', rdz), offset='rp_d')
+    fb.op('JNotNull', reg=b.field(rdz, 'owner'), offset='rp_d')
+    rdn = b.field(rdz, 'neighbors')
+    fb.op('JNull', reg=rdn, offset='rp_d')
+    fb.op('Mov', dst=rpj, src=b.const('i32', 0))
+    b.loop_head('rp_e')
+    fb.op('JSGte', a=rpj, b=b.field(rdn, 'length'), offset='rp_d')
+    rmz = b.cast(b.call('hl.types.ArrayObj.getDyn', rdn, rpj), 'ent.Zone')
+    fb.op('Incr', dst=rpj)
+    fb.op('JNull', reg=rmz, offset='rp_e')
+    fb.op('JNotEq', a=b.field(rmz, 'owner'), b=fac, offset='rp_e')
+    # on our ring: an enemy too close? (another faction's main base within DD_BASE_R, a hostile army at it)
+    rpq = fb.reg(cx.t('f64'))
+    fb.op('Call3', dst=rpq, fun=threat, arg0=fac, arg1=ve, arg2=b.const('f64', LOCAL))
+    fb.op('JSGt', a=rpq, b=b.const('f64', 0), offset='noring')
+    rfs = b.cast(fb.get(_state(fb, b, cx), 'factions', 'array'), 'hl.types.ArrayObj')
+    fb.op('JNull', reg=rfs, offset='rp_keep')
+    rk, rm = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=rk, src=b.const('i32', 0))
+    b.loop_head('rp_f')
+    fb.op('JSGte', a=rk, b=b.field(rfs, 'length'), offset='rp_keep')
+    rof = b.cast(b.call('hl.types.ArrayObj.getDyn', rfs, rk), 'ent.Faction')
+    fb.op('Incr', dst=rk)
+    fb.op('JNull', reg=rof, offset='rp_f')
+    fb.op('JEq', a=rof, b=fac, offset='rp_f')
+    rmbs = b.field(rof, 'mainBases')
+    fb.op('JNull', reg=rmbs, offset='rp_f')
+    fb.op('Mov', dst=rm, src=b.const('i32', 0))
+    b.loop_head('rp_g')
+    fb.op('JSGte', a=rm, b=b.field(rmbs, 'length'), offset='rp_f')
+    rmb = b.cast(b.call('hl.types.ArrayObj.getDyn', rmbs, rm), 'ent.Entity')
+    fb.op('Incr', dst=rm)
+    fb.op('JNull', reg=rmb, offset='rp_g')
+    fb.op('JSLte', a=b.call('ent.Entity.getDistTo', ve, rmb), b=b.const('f64', DD_BASE_R), offset='noring')
+    fb.op('JAlways', offset='rp_g')
+    fb.label('rp_keep')
+    _throttle(fb, b, cx, 'rring', ve, 60, 'v')
+    _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', fb.string('skip')),
+                                         ('why', fb.string('ring')), ('tgt', ve)])
+    fb.op('JAlways', offset='v')
     fb.label('noring')
     # expansion room (user): while we own fewer than RAID_GROW_N villages, no neutral village within our Annex reach
     # + RAID_GROW_ZONES (vanilla's maxSupplyDistZones + ANNEX_ZONES + 1): a pillage leaves it Devastated 20 days and
@@ -686,7 +783,14 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('JTrue', cond=b.call('ent.Entity.isFighting', y), offset='y')
     fb.op('Call2', dst=ok, fun=raidable, arg0=y, arg1=orders)
     fb.op('JFalse', cond=ok, offset='y')
-    fb.op('Call3', dst=ok, fun=raidsup, arg0=y, arg1=dy, arg2=sd)
+    rdo = fb.reg(cx.t('bool'))  # a neutral village: no worm ride there (ride.py `npil`)
+    fb.op('Bool', dst=rdo, value=False)
+    rde_ = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=rde_, src=ve)
+    fb.op('JNull', reg=b.call('ent.Entity.get_owner', rde_), offset='rdo_ve')
+    fb.op('Bool', dst=rdo, value=True)
+    fb.label('rdo_ve')
+    fb.op('CallN', dst=ok, fun=raidsup, args=[y, dy, sd, rdo])
     fb.op('JFalse', cond=ok, offset='y')
     fb.op('JFalse', cond=rec, offset='yrecok')
     fb.op('JSGt', a=dy, b=ly, offset='y')  # recovering: the village must be nearer than our land
@@ -731,12 +835,15 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('SDiv', dst=q, a=q, b=tf)
     fb.op('Mov', dst=rej_why_c, src=why_weak)
     fb.op('JSLt', a=m, b=q, offset='refuse')
-    # an at-war village: its owner defends it (not "may come"): the whole side at ENTER, no RAID_FAR discount
+    # an at-war village: its owner defends it (not "may come"): the whole side at RAID_OWNED_FAR (was ENTER), not RAID_FAR
     # (Smugglers' Liberate of Fremen's Nunesek 46:40 started at 408k vs 355k, lost 3 armies in 15 s when they came)
     fq = fb.reg(cx.t('f64'))
     fb.op('Mov', dst=fq, src=_ratio(fb, b, RAID_FAR))
     fb.op('JNull', reg=b.call('ent.Entity.get_owner', ve), offset='rf_n')
-    fb.op('Mov', dst=fq, src=gate)
+    # ... at RAID_OWNED_FAR (user: too safe harassing enemies; Fremen skipped Smugglers' Ad-Al'lab at 390k vs
+    # 267k armies within REACT_R + 100k turrets + 41k militia, x 1.5 / 0.8 terrain = 765k, and pillaged neutral
+    # Sin-Al'in instead, match 2026-10-04 21:1x); what stands at the village still needs ENTER (above)
+    fb.op('Mov', dst=fq, src=_ratio(fb, b, RAID_OWNED_FAR))
     fb.label('rf_n')
     fb.op('Mul', dst=q, a=h, b=fq)
     fb.op('SDiv', dst=q, a=q, b=tf)
@@ -817,7 +924,14 @@ def build_raid(cx, helpers, pw, raidable, react, land, terrain, raidsup, cover, 
     fb.op('JTrue', cond=b.call('ent.Entity.isFighting', y), offset='g')
     fb.op('Call2', dst=ok, fun=raidable, arg0=y, arg1=orders)
     fb.op('JFalse', cond=ok, offset='g')
-    fb.op('Call3', dst=ok, fun=raidsup, arg0=y, arg1=dy, arg2=best_sd)
+    rdo = fb.reg(cx.t('bool'))  # a neutral village: no worm ride there (ride.py `npil`)
+    fb.op('Bool', dst=rdo, value=False)
+    rde_ = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=rde_, src=best)
+    fb.op('JNull', reg=b.call('ent.Entity.get_owner', rde_), offset='rdo_best')
+    fb.op('Bool', dst=rdo, value=True)
+    fb.label('rdo_best')
+    fb.op('CallN', dst=ok, fun=raidsup, args=[y, dy, best_sd, rdo])
     fb.op('JFalse', cond=ok, offset='g')
     fb.op('JFalse', cond=rec, offset='grecok')
     fb.op('Mov', dst=ye, src=y)

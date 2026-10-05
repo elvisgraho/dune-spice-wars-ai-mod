@@ -128,6 +128,7 @@ Every item is a **bias** (weight or ratio modifier) with exits, per GENERAL "Cor
 | R2 | **AI type and councilors:** what sets a faction's AI type (Economy / Military / Statecraft / Expansion) and which councilors the AI gets | councilor-dependent items (Stakhanov isolation, Piter cheap ops, Jamis liberation Authority, Paul sietch Authority, Fenring POIs, Kudu) |
 | R3 | **Diplomacy offers:** how the AI offers / accepts truces and treaties (also Next: peace gate part 2) | Vernius truces for tech, keeping Vernius trused, leader-containment alliances, C6 "no peace to the closer" |
 | R4 | **Faction abilities:** does vanilla AI call each faction-only ability? (D: `DeployMainBase`, `Oppression`, `Sanctify` / `EcazChampion` / `EcazPride`, `PatentDev` / `BlackoutDev` / `NetworkNexus`, `RestoreSietch`, `InstallUWHeadquarter`, `Hasten*`). `mod find` each id for an AI caller; an uncalled one is a large gap | Corrino 2nd base, Vernius patents / obfuscation, Ecaz champions |
+|  | R4 Oppression: yes, `AIController.checkOppression` (REVERSING "Oppression AI"); Manpower gate lifted at OPP_MP (rules/oppress.py) |
 | R5 | **Hegemony and tax reads:** per-faction hegemony, the victory threshold, time to the next spice tax, CHOAM %, Governor countdown (W gives the per-capture values: GENERAL "Shared rules") | C6, C13, C15, O1, O4, O5 |
 | R6 | **Militia and recruitment:** how the AI fills militia slots and re-recruits during fights | Harkonnen militia in every village, re-recruit during a fight |
 

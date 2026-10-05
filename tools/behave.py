@@ -64,6 +64,7 @@ from rules.claim import *  # noqa: F401,F403
 from rules.strike import *  # noqa: F401,F403
 from rules.sweep import *  # noqa: F401,F403
 from rules.army import *  # noqa: F401,F403
+from rules.oppress import build_oppress
 from rules.orders import *  # noqa: F401,F403
 
 
@@ -198,11 +199,13 @@ def _install(cx, helpers, new_ids):
     helpers['wormonly'] = build_wormheld(cx, rally=False)  # ... worm part only: march skips (strike.py, _skip_striking)
     new_ids.update({helpers['wormheld'], helpers['wormonly']})
     report.update(pick_life(cx, helpers, idle, new_ids))
+    report.update(build_flee_stamp(cx, helpers, new_ids))  # rules/heal.py: map `fled` for the retreat lock
     report.update(no_regen_heal(cx, helpers, new_ids))
     report.update(build_cp_overflow(cx, helpers, new_ids))  # rules/army.py: CP overflow disbands temporaries first
     report.update(build_mp_gate(cx, helpers, new_ids))  # ... unit picks ignore the Manpower goals
     report.update(build_cp_need(cx, helpers, new_ids))  # ... CP building scored when the army is capped
     report.update(build_cp_defense(cx, helpers, new_ids))  # ... no all-in defense because CP is full
+    report.update(build_oppress(cx, helpers, new_ids))  # Harkonnen oppress when Manpower >= OPP_MP
     report.update(build_term_probe(cx, helpers, new_ids))  # rules/orders.py (before order-keep, which redirects the closure's removeUnits): logs why an order dies at once (refused Shuttle step)
     report.update(build_siege_keep(cx, helpers, new_ids))  # rules/orders.py: a dead lone besieger doesn't scrap the siege (before order-keep: it finds the closure by its removeUnits call)
     report.update(build_order_keep(cx, helpers, new_ids))  # rules/orders.py: one dead unit doesn't scrap a siege before Action
@@ -232,6 +235,7 @@ def _install(cx, helpers, new_ids):
     report.update(harvest_fields(cx, danger, helpers, new_ids))
     report.update(harvest_flee(cx, danger, threat, helpers, new_ids))
     wormflee = build_worm_flee(cx, helpers)
+    wormrel = build_worm_release(cx, helpers)  # rules/worm.py: re-send a siege army whose worm hold ended
     striking = build_striking(cx)  # en-route strike state (rules/strike.py): read by dstep / stage / gather / spos
     helpers['striking'] = striking
     report.update(strike_skip(cx, new_ids, striking, helpers['wormonly']))
@@ -259,8 +263,8 @@ def _install(cx, helpers, new_ids):
     drain = build_drain(cx, helpers, militia, cover)  # rules/drain.py: worn-down sieges called off
     rsguard = build_rsguard(cx, helpers)  # rules/rsguard.py: a resupply walk away from its target turned around
     intel = build_intel(cx, helpers, pw, land)  # rules/intel.py: fog of war, sightings first
-    tick = build_chain(cx, [intel, ride, memory, wormflee, ttick, dmz, pguard, strat, hunt, akeep, sdrop, raid, rally, ops, drain, rsguard, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, bunker, sact, sweep])
-    new_ids.update({bunker, drain, rsguard, ride, sdrop, dmz, pguard, sact, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
+    tick = build_chain(cx, [intel, ride, memory, wormflee, wormrel, ttick, dmz, pguard, strat, hunt, akeep, sdrop, raid, rally, ops, drain, rsguard, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, bunker, sact, sweep])
+    new_ids.update({bunker, drain, rsguard, ride, sdrop, dmz, pguard, sact, release, hthreat, hunt, raidable, raidsup, militia, react, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, wormrel, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
                     memory, intel, ops, tick})
     report['strand'] = 1
     report['worm-flee'] = 1
@@ -273,6 +277,8 @@ def _install(cx, helpers, new_ids):
     report['bunker-split'] = 1
     report['annex-wait'] = build_annex_wait(cx, helpers, new_ids)
     report.update(build_heal_dead(cx, helpers, new_ids))
+    report.update(build_empty_resupply(cx, helpers, new_ids))  # rules/orders.py: no empty retreat Resupply orders
+    report.update(build_dead_resupply(cx, helpers, new_ids))  # rules/orders.py: no Resupply to a dead heal target
     report['strat'] = 1
     report.update(install_sweep(cx, helpers, new_ids, tick, sweep))  # last: sees every added map
     return report, tick

@@ -152,6 +152,8 @@ REACT_R = 480      # raid: idle at-war armies this close can reach the village b
                    # ~20 s + 2 days = 60 s, at ~6 u/s); fighting, besieging or elsewhere-bound ones don't count
 RAID_FAR = round(1 / ENTER, 3)  # raid start: everything within REACT_R (with the village's side) needs only this x: an
                   # army away from the village commits only with ENTER x our raid; if it comes the abort pass decides
+RAID_OWNED_FAR = 0.75  # ... an at-war village: everything within REACT_R x this (user: too safe harassing enemies;
+                   # was ENTER: Fremen skipped Smugglers' Ad-Al'lab at 390k vs 408k); at the village still ENTER
 DANGER_T = 180     # faction memory: a zone where our harvester was attacked stays dangerous this long (6 game days),
                    # linearly fading (cooldown); longer would strand good fields, shorter re-sends into the same raiders
 GATHER_T = 1       # s: gather pass (Engage orders: leaders wait for the pack)
@@ -168,7 +170,9 @@ WORM_T = 1         # s: worm-flee pass (a targeted army has seconds before the w
 WORM_ESC_D = 60    # worm flee: an army walking whose path ends this much farther from the worm than it is now is left
                    # alone (it outruns it: aggro 30-60, strike <= 40 away, pre-attack 5-10 s; user: don't choke a move
                    # that makes it in time) ...
-WORM_SAFE_REACH = 30  # ... as is one whose path ends off the sand / in a worm-free zone within this (~5 s walk)
+WORM_SAFE_REACH = 65  # ... as is one whose path ends off the sand / in a worm-free zone within this (was 30, but our
+                   # own flee points lie 20-60 away: an army walking to one was re-sent every WFLEE_T s to another as far,
+                   # Atreides A_Elite 17 Moves in 80 s with the worm 3-16 away, match 2026-10-05 02:29)
 WORM_LET_D = 80    # ... but walking away counts only while the worm is at least this far: closer, it has aggroed (30-60)
                    # and strikes within seconds (Atreides 83:17: 4 armies let run at 3-16 from the worm, 312-326 of
                    # path left, 3 eaten 10 s later): the nearest rock is the only escape
@@ -199,6 +203,7 @@ STRIKE_JOIN_R = 2 * STRIKE_R  # a strike counts and sends only order armies this
                    # Sad-po: 5 armies 220 back were sent at a target that ran 2 s later and turned back)
 STRIKE_RATIO = 1.0  # ... and fight it when the order's armies within LOCAL are at least this x (its side + cover):
                     # even or better starts the fight (user), the vanilla fight retreat still judges it after 5 s
+STRIKE_END_K = 0.75  # ... a running strike ends `weak` only below this x the start test (hysteresis)
 STRIKE_MAX = 30     # s: ... a strike ends after this, then the march goes on
 STRIKE_LEASH = 120  # ... or once the army is this far from where it started (a running enemy isn't chased; user)
 STRIKE_TO = 1.5     # ... joined nearest first until this x the target's side (not every order army in reach: the rest marches on)
@@ -290,6 +295,9 @@ SD_OP = 'MSupplyDrop'  # Supply Drop operation (rules/sdrop.py): ability SupplyD
 SD_DUR = 90        # s: its duration (3 days x 30 s)
 SD_LOW = 0.1       # Supply Drop: cast only for an army at most this share of its max supply (user: at ~5%)
 SD_CHECK = 3       # s: sdrop pass period
+DWF_T = 20         # s: retreat lock: an army whose Defense vanilla cancelled in Waiting isn't picked for a Defense
+RLOCK_FLEE_T = 15  # s: retreat lock: an army vanilla's micro set to Flee this recently isn't picked for a Defense
+SD_NEED_SHARE = 0.34  # locked drop: the short armies at the target hold at least this share of the order's power there
 SD_CAST_R = 150    # a locked task's drop is cast once an order army is this close to the target (Engage: the armies
                    # are entering the target zone; the militia fight follows)
 SD_CAST_FIGHT = SUP_DRAIN_S * 20  # a locked drop is cast when an order army losing supply holds <= the walk home
@@ -396,7 +404,8 @@ BSPLIT_CHECK = 5   # s: bunker split pass (rules/bunker.py)
 BSPLIT_K = 1.5     # ... armies sent to silence the bunker partner: until this x its militia (>= 1 army, <= half the order)
 BSPLIT_R = 200     # ... only order armies within this of B (at the fight, not stragglers walking in)
 HDEAD_N = 5        # heal-dead (rules/orders.py): this many Resupply / Patrol orders to one structure cancelled in Waiting ...
-HDEAD_W = 30       # ... within this many s mark it dead ...
+HDEAD_W = 60       # ... within this many s mark it dead (was 30: a jammed army re-ordered every 5-7 s
+                   # made 4-5 per 30 s, Atreides x14-21 regroup loops, matches 2026-10-05 01:24 / 01:45) ...
 HDEAD_T = 300      # ... for this long: heal keys and strand skip it (Fremen's Sha-dad: 745 cancels, armies stuck at Wallon)
 BSPLIT_PRIO = 4    # ... split order priority: above the capture's (Annex 3), so addOrder moves the armies itself
 BSPLIT_KEEP_MIN = 4   # = orders.KEEP_MIN: before Action a split needs an order this big ...
@@ -433,6 +442,8 @@ GHOST_SPD = 3      # units/s: an unseen army is assumed this much closer per sec
 GHOST_R_MAX = 90   # ... capped at this: a remembered stack is expected near where it was seen
 BUSY_SEEN_T = 30   # s: an army last seen fighting / capturing counts as busy (BUSY_W where the query discounts) this long
 BUSY_W = 0.25      # aimod_threat family: an at-war army occupying a structure more than BUSY_R from the query point
+MISSION_W = 0.5    # siege sizing (owner armies, siege._owner_armies): a seen owner army in a Military order on another
+                   # structure counts this share (user: the threat read too large while the stack was out liberating)
 BUSY_R = 60        # counts this share (busy capturing elsewhere: no scare for defending another place)
 OUT_W = 0.5        # ... a query point on our land: an idle at-war army standing off our land counts this share (it
                    # must walk in first; movers heading in count fully)
@@ -538,7 +549,9 @@ BEHIND_E = 0.25    # raid: a village is behind another faction's main base M (se
                    # M is nearer B than it and d(B,M) + d(M,v) <= d(B,v) x (1 + this): never raided
 RAID_GROW_N = 3    # raid: while we own fewer villages, no neutral village within our Annex reach + RAID_GROW_ZONES (user:
 RAID_GROW_ZONES = 1  # expansion room first; Harkonnen pillaged its 4 neighbours twice and sat at 1 village)
-RAID_RETRY = 60    # s: a village our raid left (aborted, or cancelled at once by vanilla) isn't raided again this soon
+RAID_RETRY = 150   # s: a village our raid left (aborted, or cancelled at once by vanilla) isn't raided again this soon
+                   # (was 60: Atreides' Tab-Al'tar raid aborted `weak` 62:03 as Harkonnen's 423k came, relaunched 63:30 at
+                   # 240k vs 230k and lost it, match 2026-10-04 23:14; a relief stays longer than a minute)
 FRONT_R = 600      # director: enemy villages this close to our land are the front (policy §5b)
 PRESS = KILL       # ... soft = the spare armies in reach have this x (armies in reach + cover + militia) / terrain
 PRESS_R = HUNT_R   # ... spare armies this close to a village can take part (same reach as siege-join)
@@ -785,8 +798,16 @@ def _unreach(fb, b, cx, s_e, t, yes, fac=None):
     fb.op('SafeCast', dst=sq, src=sv)
     fb.op('Sub', dst=sq, a=t, b=sq)
     fb.op('JSLte', a=sq, b=b.const('f64', SD_FRESH), offset=no)
-    # a worm ride available (rules/ride.py map `wfree`): the worm plan has no supply check and rides most of the way
+    # a worm ride available (rules/ride.py map `wfree`): the worm plan has no supply check and rides most of the way;
+    # not for a target whose ride plan failed lately (map `wbad`, within UNREACH_T: no thumper slots from there)
     fb.label(no + 'w')
+    wbv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'wbad'), fb.dyn(s_e))
+    fb.op('JNull', reg=wbv, offset=no + 'wr')
+    wbq = fb.reg(cx.t('f64'))
+    fb.op('SafeCast', dst=wbq, src=wbv)
+    fb.op('Sub', dst=wbq, a=t, b=wbq)
+    fb.op('JSLt', a=wbq, b=b.const('f64', UNREACH_T), offset=yes)
+    fb.label(no + 'wr')
     _ride_free(fb, b, cx, pfac, t, yes)
     fb.label(no)
 

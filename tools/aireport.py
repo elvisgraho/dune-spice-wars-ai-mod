@@ -1108,6 +1108,33 @@ def summarize(events, faction=None, all_orders=False):
             rq = f"{min(r['req']):.2f}-{max(r['req']):.2f}" if r['req'] else '-'
             out.append(f'{f} {tgt} {kind} x{r["n"]} req {rq}')
 
+    # order loops: a Cancel (order with units) followed within 2 s game by a new order of the same faction and type
+    # (retreat / Defense tug, re-picked armies): flip-flop and command spam
+    last, loops, lwhen = {}, Counter(), defaultdict(list)
+    for e in events:
+        if e.get('e') not in ('stop', 'order') or not (e.get('n') or 0) or not isinstance(e.get('g'), (int, float)):
+            continue
+        key = (e.get('f'), str(e.get('type')).split('(')[0])
+        if e['e'] == 'stop' and e.get('why') == 'Cancel':
+            last[key] = (e['g'], e.get('src'), e.get('ph'))
+        elif e['e'] == 'order' and key in last and e['g'] - last[key][0] <= 2:
+            lk = key + (last[key][1], last[key][2])
+            loops[lk] += 1
+            lwhen[lk].append(e['g'])
+    if loops:
+        out.append('\n## Order loops (Cancel then the same faction / type re-ordered within 2 s; >= 10 flagged)')
+        for (f, t, src, ph), n in loops.most_common(8):
+            out.append(f"{'!' if n >= 10 else ''}{f} {t} x{n} (cancel by {src} ph {ph}) at {', '.join(sorted({clock(g) for g in lwhen[(f, t, src, ph)]})[:6])}")
+    # Waiting-cancel streaks per target (vanilla can't path there; re-issued orders may log n 0, which the loop count
+    # above skips: Harkonnen's Resupply to Carthag was cancelled in Waiting 860 times, match 2026-10-05 03:55)
+    wc = Counter()
+    for e in events:
+        if e.get('e') == 'stop' and e.get('src') == '<none>' and e.get('ph') == 1 and e.get('why') == 'Cancel':
+            wc[(e.get('f'), str(e.get('type')).split('(')[0], ent(e.get('tgt')))] += 1
+    wbig = [(n, k) for k, n in wc.items() if n >= 20]
+    if wbig:
+        out.append('\n## Waiting-cancel streaks (orders cancelled in Waiting >= 20x on one target: no path / refused plan)')
+        out.append(', '.join(f"{'!' if n >= 50 else ''}{f}:{t}>{tg} x{n}" for n, (f, t, tg) in sorted(wbig, reverse=True)[:8]))
     churn = Counter((o['ev'].get('f'), str(o['ev'].get('type')).split('(')[0]) for o in orders if o not in mil)
     if churn:
         out.append('\n## Other orders (count, per game-minute; >5/min flagged as possible order loop)')

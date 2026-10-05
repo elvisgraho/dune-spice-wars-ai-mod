@@ -411,6 +411,88 @@ def build_worm_flee(cx, helpers):
     return fb.build()
 
 
+def build_worm_release(cx, helpers):
+    """aimod_wormrel(mil, dt), every WORM_T s: an army worm-flee moved (map `wfled`) whose hold is over
+    (aimod_wormonly false) and that is still in one of our Military orders on a structure before Action gets one
+    Move to its current path step (`order.unitPaths[army]` step.to), once per flee (map `wrel` army -> the `wfled`
+    time it answered). Vanilla's Regroup re-commands an army only when it has no move target, a sync step only once
+    every army syncs: after a Decoy Thumper's worm (2 min of flees) Fremen's 12 armies for Tuo-esek stood 160 from
+    it for another minute (match 2026-10-04 22:05). Logs `wrel` (a, tgt). In a trap."""
+    fb = FB(cx, [cx.t('logic.ai.AIMilitary'), cx.t('f64')], cx.t('void'))
+    b = B(fb)
+    void = fb.reg(cx.t('void'))
+    guard = fb.try_()
+    fac = b.field(b.field(0, 'controller'), 'owner')
+    fb.op('JNull', reg=fac, offset='end')
+    t = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=t, src=b.field(_state(fb, b, cx), 'time'))
+    _tick(fb, b, cx, t, WORM_T, 'end')
+    wfled, wrel = _global_map(fb, b, cx, 'wfled'), _global_map(fb, b, cx, 'wrel')
+    from rules.stage import _virtual, _vidx
+    path_t = _virtual(cx, 'logic.ai.AIOrders.checkRegroupOrder', ['current', 'steps'])
+    step_t = _virtual(cx, 'logic.ai.AIOrders.checkRegroupOrder', ['from', 'mode', 'sync', 'to'])
+    cur_i, cur_t = _vidx(cx, path_t, 'current')
+    steps_i, steps_t = _vidx(cx, path_t, 'steps')
+    to_i, to_t = _vidx(cx, step_t, 'to')
+    my, mlen = _my_armies(fb, b, fac, 'end')
+    i, ix, cur = fb.reg(cx.t('i32')), fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    q, fq = fb.reg(cx.t('f64')), fb.reg(cx.t('f64'))
+    held = fb.reg(cx.t('bool'))
+    o = fb.reg(cx.t('logic.ai.AIOrder'))
+    a = _army_loop(fb, b, my, mlen, i, 'a', 'end')
+    fv = b.call('haxe.ds.ObjectMap.get', wfled, fb.dyn(a))
+    fb.op('JNull', reg=fv, offset='a')
+    fb.op('SafeCast', dst=fq, src=fv)
+    rv = b.call('haxe.ds.ObjectMap.get', wrel, fb.dyn(a))
+    fb.op('JNull', reg=rv, offset='nrel')
+    fb.op('SafeCast', dst=q, src=rv)
+    fb.op('JEq', a=q, b=fq, offset='a')  # this flee already answered
+    fb.label('nrel')
+    ae = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=ae, src=a)
+    fb.op('Call1', dst=held, fun=helpers['wormonly'], arg0=ae)
+    fb.op('JTrue', cond=held, offset='a')
+    b.call('haxe.ds.ObjectMap.set', wrel, fb.dyn(a), fb.dyn(fq))
+    _order_of(fb, b, cx, fac, a, o, 'a')
+    fb.op('EnumIndex', dst=ix, value=b.field(o, 'type'))
+    fb.op('JNotEq', a=ix, b=b.const('i32', MILITARY), offset='a')
+    fb.op('JSGte', a=b.field(o, 'phase'), b=b.const('i32', ACTION), offset='a')
+    fb.op('JSLt', a=b.field(o, 'phase'), b=b.const('i32', REGROUP), offset='a')
+    tg = b.cast(b.call('logic.ai.AIOrder.getTarget', o), 'ent.Structure')
+    fb.op('JNull', reg=tg, offset='a')
+    ups = b.field(o, 'unitPaths')
+    fb.op('JNull', reg=ups, offset='a')
+    pv = b.call('haxe.ds.ObjectMap.get', ups, fb.dyn(a))
+    fb.op('JNull', reg=pv, offset='a')
+    path, step, steps = fb.reg(path_t), fb.reg(step_t), fb.reg(steps_t)
+    ci, to = fb.reg(cur_t), fb.reg(to_t)
+    fb.op('ToVirtual', dst=path, src=pv)
+    fb.op('Field', dst=steps, obj=path, field=steps_i)
+    fb.op('JNull', reg=steps, offset='a')
+    fb.op('Field', dst=ci, obj=path, field=cur_i)
+    fb.op('Mov', dst=cur, src=ci)
+    fb.op('JSGte', a=cur, b=b.field(steps, 'length'), offset='a')
+    sv = b.call('hl.types.ArrayObj.getDyn', steps, cur)
+    fb.op('JNull', reg=sv, offset='a')
+    fb.op('ToVirtual', dst=step, src=sv)
+    fb.op('Field', dst=to, obj=step, field=to_i)
+    fb.op('JNull', reg=to, offset='a')
+    x_i, x_t = _vidx(cx, to_t, 'x')
+    y_i, y_t = _vidx(cx, to_t, 'y')
+    px, py = fb.reg(x_t), fb.reg(y_t)
+    fb.op('Field', dst=px, obj=to, field=x_i)
+    fb.op('Field', dst=py, obj=to, field=y_i)
+    _move_to(fb, b, cx, a, px, py, fac)
+    tge = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=tge, src=tg)
+    _log_ev(fb, b, cx, helpers, 'wrel', [('f', fb.get(fac, 'kind')), ('a', ae), ('tgt', tge)])
+    fb.op('JAlways', offset='a')
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=void)
+    return fb.build()
+
+
 def build_wormheld(cx, rally=True):
     """aimod_wormheld(army) -> true while worm-flee moved it less than WORM_HOLD s ago (map `wfled`) and a sandworm
     (State.worms) is within WORM_NEAR of it: it waits on the rock instead of being re-ordered over the sand; also

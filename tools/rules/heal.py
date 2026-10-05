@@ -77,7 +77,7 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     Vanilla returns exactly 1.0 when the warzone holds no enemy power (HPowerScore.compute), e.g. only a neutral
     unit or a structure left: that value passes unchanged (x terrain x supply made it 0.64 and a winning stack left
     an enemy village it could pillage), except disengage: one of our armies there has a Resupply order and none a
-    Military one -> 0 (log act `disengage`).
+    Military one -> 0 (log act `disengage`); not while one of ours there is on a Defense order.
     Recall: when every one of our armies in the warzone is `short` and none is in a Military order (its hunt / siege
     ended, e.g. hunt abort `supply` -> Resupply), the balance is 0: vanilla force-flees them home. Otherwise micro keeps
     attacking whatever is in reach, and a winning stack pursues a fleeing enemy deep into its land (Atreides chased
@@ -369,6 +369,9 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     fb.label('csud')
     fb.op('JSLte', a=occ, b=zero, offset='csl')
     fb.op('JSLt', a=occ, b=tot, offset='csl')
+    # ... and the side fight's enemy doesn't outweigh the capture's holders: a relief stack is no side fight (Atreides'
+    # Tabdah raid held at raw 0.03 vs 237k, then 384k arrived: 3 of 9 dead, 100% lost, match 2026-10-04 22:53)
+    fb.op('JSGt', a=en, b=occ, offset='csl')
     fb.op('Bool', dst=csd, value=True)
     fb.op('Add', dst=bal, a=r, b=_ratio(fb, b, 0.01))
     fb.label('csdone')
@@ -442,6 +445,8 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     fb.op('Bool', dst=rsp, value=False)
     oth = fb.reg(cx.t('bool'))  # one of ours there on another order (Discovery, Investigate, Defense, Patrol, ...)
     fb.op('Bool', dst=oth, value=False)
+    dfn = fb.reg(cx.t('bool'))  # one of ours there on a Defense order
+    fb.op('Bool', dst=dfn, value=False)
     oix = fb.reg(cx.t('i32'))
     arr5, alen5 = _my_armies(fb, b, 1, 'end')
     i5 = fb.reg(cx.t('i32'))
@@ -462,13 +467,48 @@ def build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land):
     fb.op('EnumIndex', dst=oix, value=b.field(o5, 'type'))
     fb.op('JEq', a=oix, b=b.const('i32', RESUPPLY), offset='nprs')
     fb.op('Bool', dst=oth, value=True)
+    fb.op('JNotEq', a=oix, b=b.const('i32', DEFENSE), offset='npl')
+    fb.op('Bool', dst=dfn, value=True)
     fb.op('JAlways', offset='npl')
     fb.label('nprs')
     fb.op('Bool', dst=rsp, value=True)
     fb.op('JAlways', offset='npl')
     fb.label('npdone')
+    # ... or a Defense order of ours (with armies, wherever they stand: the one walking in is not in the warzone yet)
+    # for a structure within FLEE_R of this fight (Smugglers' 1-army Defense cancelled 168 times from 20:51 while
+    # retreating armies stood at the fight, match 2026-10-04 20:27)
+    dords = b.field(b.field(b.field(1, 'aiController'), 'aiOrders'), 'orders')
+    fb.op('JNull', reg=dords, offset='dfo_end')
+    dk, dtx = fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Mov', dst=dk, src=b.field(dords, 'length'))
+    b.loop_head('dfo')
+    fb.op('JSLte', a=dk, b=b.const('i32', 0), offset='dfo_end')
+    fb.op('Sub', dst=dk, a=dk, b=b.const('i32', 1))
+    dor = b.cast(b.call('hl.types.ArrayObj.getDyn', dords, dk), 'logic.ai.AIOrder')
+    fb.op('JNull', reg=dor, offset='dfo')
+    dot = b.field(dor, 'type')
+    fb.op('EnumIndex', dst=dtx, value=dot)
+    fb.op('JNotEq', a=dtx, b=b.const('i32', DEFENSE), offset='dfo')
+    dou = b.field(dor, 'units')
+    fb.op('JNull', reg=dou, offset='dfo')
+    fb.op('JSLte', a=b.field(dou, 'length'), b=b.const('i32', 0), offset='dfo')
+    dst_ = fb.reg(cx.t('ent.Entity'))
+    fb.op('EnumField', dst=dst_, value=dot, construct=DEFENSE, field=0)
+    fb.op('JNull', reg=dst_, offset='dfo')
+    fb.op('Sub', dst=ex, a=b.field(dst_, 'posx'), b=ncx)
+    fb.op('Sub', dst=ey, a=b.field(dst_, 'posy'), b=ncy)
+    fb.op('Mul', dst=ex, a=ex, b=ex)
+    fb.op('Mul', dst=ey, a=ey, b=ey)
+    fb.op('Add', dst=ex, a=ex, b=ey)
+    fb.op('JSGt', a=ex, b=b.const('f64', FLEE_R * FLEE_R), offset='dfo')
+    fb.op('Bool', dst=dfn, value=True)
+    fb.label('dfo_end')
     dact = fb.reg(cx.t('String'))
     fb.op('Mov', dst=dact, src=fb.string('disengage'))
+    # a Defense of ours there (vs rebels / raiders: no power counted, raw 1.0) fights on: one healing army there made
+    # it retreat every tick, checkStructures re-sent the rest (Harkonnen at Fa-nit vs Rebels, 85 Defense cancel /
+    # re-order cycles from 19:29, match 2026-10-04 19:36)
+    fb.op('JTrue', cond=dfn, offset='end')
     fb.op('JTrue', cond=rsp, offset='dgo')
     # trespass only for armies without an order there: a Discovery / Investigate / Defense trip that brushes an enemy
     # building has its own gates, and cancelling it would re-launch it (a cancel / relaunch loop)
@@ -1145,6 +1185,46 @@ def safe_heal(cx, unsafe, new_ids, threat_now, own, pw, threat, helpers):
     return report
 
 
+def build_flee_stamp(cx, helpers, new_ids):
+    """flee-stamp: every AIUnits.changeArmyMicro call (the ai-log wrapper's when installed) -> wrapper: the original
+    call, then for a Flee behaviour map `fled` army -> now. Vanilla's fight retreat sends Resupply only for armies
+    with safe regen and force-flees the rest with no order (a local `forceFlee` map): the retreat lock reads the
+    stamp (Fremen at Aliftar, match 2026-10-04 20:00: 13 orderless fleeing armies re-picked into a Defense ~100
+    times in 1:40)."""
+    orig = cx.fn('logic.ai.AIUnits.changeArmyMicro')
+    tid = helpers.get('changeArmyMicro', orig.findex.value)
+    ft = cx.code.types[orig.type.value].definition
+    args = [a.value for a in ft.args]
+    names = [c.name.resolve(cx.code) for c in cx.code.types[args[3]].definition.constructs]
+    fb = FB(cx, args, ft.ret.value, fun_type=orig.type.value)
+    b = B(fb)
+    r = fb.reg(ft.ret.value)
+    fb.op('CallN', dst=r, fun=tid, args=list(range(len(args))))
+    guard = fb.try_()
+    ix = fb.reg(cx.t('i32'))
+    fb.op('JNull', reg=3, offset='end')
+    fb.op('EnumIndex', dst=ix, value=3)
+    fb.op('JNotEq', a=ix, b=b.const('i32', names.index('Flee')), offset='end')
+    fb.op('JNull', reg=2, offset='end')
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'fled'), fb.dyn(2), fb.dyn(b.field(_state(fb, b, cx), 'time')))
+    fb.label('end')
+    fb.end_try(guard)
+    fb.op('Ret', ret=r)
+    w = fb.build()
+    n = 0
+    for f in cx.code.functions:
+        if f.findex.value in (w, tid):
+            continue
+        for op in f.ops:
+            if op.op.startswith('Call') and op.df.get('fun') is not None and op.df['fun'].value == tid:
+                op.df['fun'].value = w
+                n += 1
+    if not n:
+        raise ValueError('flee-stamp: no changeArmyMicro call')
+    new_ids.add(w)
+    return {'flee-stamp': n}
+
+
 def pick_life(cx, helpers, idle, new_ids):
     """pick-life: worn armies heal instead of joining missions. Vanilla getUnits applies minLife (0.9) only to armies
     with hasSafeRegen, so a Harkonnen Discovery_Sniper at < 50% that sat in a Resupply order at Tsim-Al'rekh was
@@ -1293,6 +1373,112 @@ def _defense_extras(cx, helpers, idle, new_ids):
     fb.op('JAlways', offset='rk')
     fb.label('rk_done')
     fb.end_try(guard0)
+    # retreat lock: an army in one of our Resupply orders isn't picked for a Defense (prio 5 > Resupply 0, so the pick
+    # took it straight back): vanilla's fight retreat cancelled the Defense and sent Resupply, the next checkStructures
+    # pass re-picked the same armies, every ~0.5 s (Fremen at Ub-anim, match 2026-10-04 16:35: 50 Defense / Resupply
+    # cycles in 23 s, 5 armies rocking in place). Also at an active main base (both stamps; it rejoins after the short lock)
+    guard1 = fb.try_()
+    lfac = b.field(b.field(0, 'controller'), 'owner')
+    fb.op('JNull', reg=lfac, offset='rl_done')
+    lav, _ = _vfield(fb, b, 1, 'allyStructure')
+    fb.op('JNull', reg=lav, offset='rl_done')
+    lst = fb.reg(cx.t('ent.Structure'))
+    fb.op('SafeCast', dst=lst, src=fb.dyn(lav))
+    fb.op('JNull', reg=lst, offset='rl_done')
+    lmb = fb.reg(cx.t('bool'))  # an active main base: only the `dwf` test (vanilla refused that Defense itself)
+    fb.op('Mov', dst=lmb, src=b.call('ent.Structure.get_isActiveMainBase', lst))
+    lcv, _ = _vfield(fb, b, 1, 'consideredUnits')
+    fb.op('JNull', reg=lcv, offset='rl_done')
+    lcand = fb.reg(cx.t('hl.types.ArrayObj'))
+    fb.op('SafeCast', dst=lcand, src=fb.dyn(lcv))
+    fb.op('JNull', reg=lcand, offset='rl_done')
+    lk, lidx, lrm = fb.reg(cx.t('i32')), fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Int', dst=lrm, ptr=cx.code.add_i32(0).value)
+    lo = fb.reg(cx.t('logic.ai.AIOrder'))
+    fb.op('Mov', dst=lk, src=b.field(lcand, 'length'))
+    b.loop_head('rl')  # backwards: removal shifts the tail
+    fb.op('JSLte', a=lk, b=b.const('i32', 0), offset='rl_end')
+    fb.op('Sub', dst=lk, a=lk, b=b.const('i32', 1))
+    lu = b.cast(b.call('hl.types.ArrayObj.getDyn', lcand, lk), 'ent.Army')
+    fb.op('JNull', reg=lu, offset='rl')
+    # force-fled by a fight retreat (no order: flee-stamp map `fled`) within RLOCK_FLEE_T, or in a Defense vanilla
+    # cancelled in Waiting (orders.py heal-dead map `dwf`) within DWF_T
+    lfq = fb.reg(cx.t('f64'))
+    # both stamps also at an active main base (a lone Atreides army lost at its capital, retreated and was re-sent by the
+    # prio-10 all-in Defense every 0.5 s, x21 from 14:21, match 2026-10-05 04:38): it rejoins after RLOCK_FLEE_T
+    for mname, lim in (('dwf', DWF_T), ('fled', RLOCK_FLEE_T)):
+        nx = _uid('rlf')
+        lfv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, mname), fb.dyn(lu))
+        fb.op('JNull', reg=lfv, offset=nx)
+        fb.op('SafeCast', dst=lfq, src=lfv)
+        fb.op('Sub', dst=lfq, a=b.field(_state(fb, b, cx), 'time'), b=lfq)
+        fb.op('JSLt', a=lfq, b=b.const('f64', lim), offset='rl_rm')
+        fb.label(nx)
+    # not every army in a Resupply order (that kept 10 healthy Harkonnen armies, sent home by `disengage` after a won
+    # fight, out of the committed all-in Defense of Zayur until it fell, match 2026-10-04 21:4x): only the stamps
+    fb.op('JAlways', offset='rl')
+    fb.label('rl_rm')
+    b.call('hl.types.ArrayObj.splice', lcand, lk, b.const('i32', 1))
+    fb.op('Incr', dst=lrm)
+    fb.op('JAlways', offset='rl')
+    fb.label('rl_end')
+    fb.op('JSLte', a=lrm, b=b.const('i32', 0), offset='rl_done')
+    _throttle(fb, b, cx, 'rlock', lst, 10, 'rl_done')
+    _log_ev(fb, b, cx, helpers, 'rlock', [('f', fb.get(lfac, 'kind')), ('s', lst), ('n', lrm)])
+    fb.label('rl_done')
+    fb.end_try(guard1)
+    # pillage / raiders only (user): a structure of ours being pillaged, or attacked by raiders only (no takeover):
+    # armies on one of our Military orders (attacks, liberations, raids) aren't recalled to defend it (vanilla's
+    # Defense, prio 5, takes them from any lower order); idle ones still defend. Log `dkeep` (s, n)
+    guard2 = fb.try_()
+    kfac = b.field(b.field(0, 'controller'), 'owner')
+    fb.op('JNull', reg=kfac, offset='dk_done')
+    kav, _ = _vfield(fb, b, 1, 'allyStructure')
+    fb.op('JNull', reg=kav, offset='dk_done')
+    kst = fb.reg(cx.t('ent.Structure'))
+    fb.op('SafeCast', dst=kst, src=fb.dyn(kav))
+    fb.op('JNull', reg=kst, offset='dk_done')
+    ksg = b.field(kst, 'siege')
+    fb.op('JNull', reg=ksg, offset='dk_done')
+    # a pillage under way (any attacker; user: the distinction is pillaging vs liberating), or raiders only: no faction
+    # besieging / occupying, no at-war army at it, no renegade Takeover (world._renegades_at)
+    _pillaging(fb, b, cx, kst, 'dk_go')
+    fb.op('JNotNull', reg=b.field(ksg, 'besiegingFaction'), offset='dk_done')
+    fb.op('JNotNull', reg=b.call('ent.comp.SiegeComponent.getOccupierFaction', ksg), offset='dk_done')
+    kse = fb.reg(cx.t('ent.Entity'))
+    fb.op('Mov', dst=kse, src=kst)
+    ktq = fb.reg(cx.t('f64'))
+    fb.op('Call3', dst=ktq, fun=helpers['threat'], arg0=kfac, arg1=kse, arg2=b.const('f64', LOCAL))
+    fb.op('JSGt', a=ktq, b=b.const('f64', 0), offset='dk_done')
+    from rules.world import _renegades_at
+    _renegades_at(fb, b, cx, kst, 'dk_done')
+    fb.label('dk_go')
+    kcv, _ = _vfield(fb, b, 1, 'consideredUnits')
+    fb.op('JNull', reg=kcv, offset='dk_done')
+    kcand = fb.reg(cx.t('hl.types.ArrayObj'))
+    fb.op('SafeCast', dst=kcand, src=fb.dyn(kcv))
+    fb.op('JNull', reg=kcand, offset='dk_done')
+    kk, kix, krm = fb.reg(cx.t('i32')), fb.reg(cx.t('i32')), fb.reg(cx.t('i32'))
+    fb.op('Int', dst=krm, ptr=cx.code.add_i32(0).value)
+    ko = fb.reg(cx.t('logic.ai.AIOrder'))
+    fb.op('Mov', dst=kk, src=b.field(kcand, 'length'))
+    b.loop_head('dk')
+    fb.op('JSLte', a=kk, b=b.const('i32', 0), offset='dk_end')
+    fb.op('Sub', dst=kk, a=kk, b=b.const('i32', 1))
+    ku = b.cast(b.call('hl.types.ArrayObj.getDyn', kcand, kk), 'ent.Army')
+    fb.op('JNull', reg=ku, offset='dk')
+    _order_of(fb, b, cx, kfac, ku, ko, 'dk')
+    fb.op('EnumIndex', dst=kix, value=b.field(ko, 'type'))
+    fb.op('JNotEq', a=kix, b=b.const('i32', MILITARY), offset='dk')
+    b.call('hl.types.ArrayObj.splice', kcand, kk, b.const('i32', 1))
+    fb.op('Incr', dst=krm)
+    fb.op('JAlways', offset='dk')
+    fb.label('dk_end')
+    fb.op('JSLte', a=krm, b=b.const('i32', 0), offset='dk_done')
+    _throttle(fb, b, cx, 'dkeep', kst, 10, 'dk_done')
+    _log_ev(fb, b, cx, helpers, 'dkeep', [('f', fb.get(kfac, 'kind')), ('s', kst), ('n', krm)])
+    fb.label('dk_done')
+    fb.end_try(guard2)
     fb.op('Call2', dst=res, fun=sites[0].df['fun'].value, arg0=0, arg1=1)
     guard = fb.try_()
     fb.op('JNull', reg=res, offset='end')
@@ -1399,6 +1585,26 @@ def _pick_life_wrapper(cx, helpers, ft, fun_type, inner, tag):
                                                 ('hp%', b.call('ent.Entity.get_lifeRatio', a)), ('src', 'short')])
         fb.op('JAlways', offset='l')
         fb.label('nshort')
+        # main base (priority >= 10): vanilla skips pickUnits there (selected = this idle list), so the retreat lock
+        # of _defense_extras never sees it; the stamps apply here (Harkonnen prio-10 Defense of 8 armies cancelled
+        # by the retreat x31 every ~1 s, 43:56-44:03, match 2026-10-05 05:22). Log `mblock` (a)
+        fb.op('JSLt', a=prio, b=b.const('i32', 10), offset='nmbl')
+        mq = fb.reg(cx.t('f64'))
+        for mname, lim in (('dwf', DWF_T), ('fled', RLOCK_FLEE_T)):
+            nx = _uid('mbl')
+            mv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, mname), fb.dyn(a))
+            fb.op('JNull', reg=mv, offset=nx)
+            fb.op('SafeCast', dst=mq, src=mv)
+            fb.op('Sub', dst=mq, a=b.field(_state(fb, b, cx), 'time'), b=mq)
+            fb.op('JSLt', a=mq, b=b.const('f64', lim), offset='mbl_rm')
+            fb.label(nx)
+        fb.op('JAlways', offset='nmbl')
+        fb.label('mbl_rm')
+        b.call('hl.types.ArrayObj.remove', res, fb.dyn(a))
+        _throttle(fb, b, cx, 'mblock', a, 10, 'l')
+        _log_ev(fb, b, cx, helpers, 'mblock', [('f', fb.get(b.call('ent.Entity.get_owner', a), 'kind')), ('a', a)])
+        fb.op('JAlways', offset='l')
+        fb.label('nmbl')
     if tag in ('siege', 'defense'):
         # the last army of one of our Military orders in Action finishes an occupation alone (rules/release.py split
         # the rest off): taking it empties the order (removeUnit cancels it). A main-base defense still may

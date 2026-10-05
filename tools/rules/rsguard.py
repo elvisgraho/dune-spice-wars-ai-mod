@@ -7,9 +7,9 @@ Resupply walk.
 
 aimod_rsguard(mil, dt), tick chain every RSG_CHECK s per faction: for each army of our Resupply orders (AIOrderType 4)
 with a target: map `rsgd` army -> best (smallest) distance to the target seen, `rsgt` army -> when. A new best
-updates both. When the army is in a hostile zone (Army.isInHostileZone: it loses supply), its best is RSG_T s old
+updates both (map `rsgo` army -> that target: a re-targeted Resupply starts a new best). When the army is in a hostile zone (Army.isInHostileZone: it loses supply), its best is RSG_T s old
 and it now stands >= RSG_GROW farther than that best: the order is stopped (Cancel) and the army walks (Move) to
-our nearest structure; both maps forget it. Logs `rsg` (a, tgt, d, best, s = where it is sent, ds).
+our nearest structure not marked dead (common._heal_dead); both maps forget it. Logs `rsg` (a, tgt, d, best, s = where it is sent, ds).
 Fails safe: in a trap."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
 from rules.worm import _move_to
@@ -34,6 +34,7 @@ def build_rsguard(cx, helpers):
     fb.op('JNull', reg=orders, offset='end')
     mpd = _global_map(fb, b, cx, 'rsgd')
     mpt = _global_map(fb, b, cx, 'rsgt')
+    mpo = _global_map(fb, b, cx, 'rsgo')  # army -> the target its best belongs to
     k, ix, j = (fb.reg(cx.t('i32')) for _ in range(3))
     d, bd, q = (fb.reg(cx.t('f64')) for _ in range(3))
     o = fb.reg(cx.t('logic.ai.AIOrder'))
@@ -55,6 +56,11 @@ def build_rsguard(cx, helpers):
     a = _army_loop(fb, b, units, b.field(units, 'length'), j, 'u', 'o')
     fb.op('Mov', dst=ae, src=a)
     fb.op('Mov', dst=d, src=b.call('ent.Entity.getDistTo', ae, tgt))
+    # a new target (vanilla re-targeted the Resupply): its best starts over (the best kept from the last target made a
+    # fresh walk to Haymur, 471 away, read as walking away from a best of 11: cancelled at once, match 2026-10-05 00:19)
+    ov = b.call('haxe.ds.ObjectMap.get', mpo, fb.dyn(a))
+    fb.op('JNull', reg=ov, offset='best')
+    fb.op('JNotEq', a=b.cast(ov, 'ent.Entity'), b=tgt, offset='best')
     bv = b.call('haxe.ds.ObjectMap.get', mpd, fb.dyn(a))
     fb.op('JNull', reg=bv, offset='best')
     fb.op('SafeCast', dst=bd, src=bv)
@@ -82,6 +88,7 @@ def build_rsguard(cx, helpers):
     se = b.cast(b.call('hl.types.ArrayObj.getDyn', ss, si), 'ent.Entity')
     fb.op('Incr', dst=si)
     fb.op('JNull', reg=se, offset='s')
+    _heal_dead(fb, b, cx, se, 's')  # a dead heal target (heal-dead) isn't where it walks to
     fb.op('Mov', dst=sd, src=b.call('ent.Entity.getDistTo', ae, se))
     fb.op('JSGte', a=sd, b=nd, offset='s')
     fb.op('Mov', dst=nd, src=sd)
@@ -93,6 +100,7 @@ def build_rsguard(cx, helpers):
                                         ('s', near), ('ds', nd)])
     b.call('haxe.ds.ObjectMap.remove', mpd, fb.dyn(a))
     b.call('haxe.ds.ObjectMap.remove', mpt, fb.dyn(a))
+    b.call('haxe.ds.ObjectMap.remove', mpo, fb.dyn(a))
     reason = cx.code.types[cx.fn('logic.ai.AIOrder.stop').type.value].definition.args[1].value
     cancel = fb.reg(reason)
     fb.op('MakeEnum', dst=cancel, construct=CANCEL, args=[])
@@ -102,6 +110,7 @@ def build_rsguard(cx, helpers):
     fb.label('best')
     b.call('haxe.ds.ObjectMap.set', mpd, fb.dyn(a), fb.dyn(d))
     b.call('haxe.ds.ObjectMap.set', mpt, fb.dyn(a), fb.dyn(t))
+    b.call('haxe.ds.ObjectMap.set', mpo, fb.dyn(a), fb.dyn(tgt))
     fb.op('JAlways', offset='u')
     fb.label('end')
     fb.end_try(guard)

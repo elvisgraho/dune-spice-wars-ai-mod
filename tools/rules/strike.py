@@ -19,7 +19,7 @@ Pass 1 re-judges every striking army of ours (map `stro` army -> its order), als
 (log `strike` act end, why) when it left its order or the order ended / went past Action (`order`: no endless
 chase), the target is dead or no longer at war (`done`), STRIKE_MAX s passed while not fighting (`time`: a fight under way is vanilla micro's), the army is
 STRIKE_LEASH from where it started or the target 2 x STRIKE_R from it (`ran`: no chase across the map), or the
-balance there fell below STRIKE_RATIO (`weak`). Ending stops the army (Move to its own position: idle, so vanilla
+balance there fell below STRIKE_END_K x STRIKE_RATIO (`weak`; start at STRIKE_RATIO: hysteresis). Ending stops the army (Move to its own position: idle, so vanilla
 re-sends the march at once), except a `done` / `time` / `weak` end of an army still fighting: that fight stays
 vanilla micro's (its fight retreat judges it) and the march resumes after it; `ran` always stops it. While a strike is fresh (aimod_striking: refreshed within 2 x STRIKE_T) vanilla's march calls
 (the doAction of checkRegroupOrder / checkEngageOrder) and our gather / stage / desert-step / spos moves skip the
@@ -208,6 +208,9 @@ def build_strike(cx, helpers, pw, threat, cover, striking):
     fb.op('Bool', dst=mv, value=False)
     fb.op('Mov', dst=why, src=fb.string('weak'))
     balance(ee, 'kb')
+    # hysteresis: a running strike ends below STRIKE_END_K x the start test (start and end at the same 1.0 flipped
+    # every 2-4 s at 666k vs 630-660k: Fremen's 11 armies re-sent 6 times in 25 s, match 2026-10-05 02:50)
+    fb.op('Mul', dst=h, a=h, b=_ratio(fb, b, STRIKE_END_K))
     fb.op('JSLt', a=m, b=h, offset='stop')
     # keep: refresh, and send it at the target again if something else took it off
     b.call('haxe.ds.ObjectMap.set', strk, fb.dyn(a), fb.dyn(t))

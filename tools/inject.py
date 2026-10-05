@@ -729,10 +729,13 @@ def apply(code, trace=(), trace_per_caller=()):
         report[f'{event}:{_short(label)}'] = n
         if event == 'order':
             helpers['addOrder'] = w  # logging wrapper of AIOrders.addOrder, reused by behave.hunt
+        if event == 'micro':
+            helpers['changeArmyMicro'] = w  # logging wrapper of AIUnits.changeArmyMicro (rules/heal.py flee stamp)
         if event == 'phase' and label.endswith('nextPhase'):
             helpers['nextPhase'] = w  # logging wrapper of AIOrder.nextPhase, reused by behave.hunt (engage)
     import aware  # enemy army awareness scan (event `aw`)
     import behave  # behaviour on top of it: safe-heal + hunt (event `hunt`)
+    helpers['log_ids'] = set(new_ids)  # the ai-log wrappers: rules/orders.py heal-dead tells them from rule functions
     try:
         rep, hunt = behave.install(cx, helpers, new_ids)
         report.update(rep)

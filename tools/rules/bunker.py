@@ -14,7 +14,8 @@ of an order with priority >= its own, and takes only one army per order: each le
 AIOrders.removeUnitFromOrders first; before Action the removal runs through take-keep). Nearest first until
 BSPLIT_K x B's militia (aimod_militia), at least one army, at most half the order in Action, 1 / BSPLIT_KEEP_SHARE of an
 order of BSPLIT_KEEP_MIN+ in Engage (take-keep's limit; more would cancel the capture). Short of the militia: no split
-(log why weak; in Engage tried again in Action). The split order goes into map `bspo` (split -> capture): raid's abort
+(log why weak; in Engage tried again in Action). Hostile armies at A or able to reach it (aimod_threat within
+REACT_R): no split yet (log why relief, re-checked every pass: a split in front of a relief lost both halves). The split order goes into map `bspo` (split -> capture): raid's abort
 pass leaves it alone (it read the defenders fighting the capture next door as the split's enemy and aborted it `weak`
 0.27 s after the split). Logs `bsplit` (tgt, b, n, of, sa, M, mil, ok). Fails safe: in a trap."""
 from rules.common import *  # noqa: F401,F403  thresholds (AI-POLICY §4) and bytecode helpers
@@ -170,6 +171,17 @@ def build_bunker(cx, helpers, pw, militia):
     b.call('haxe.ds.ObjectMap.set', bspl, fb.dyn(o), fb.dyn(t))
     fb.op('JAlways', offset='o')
     fb.label('strong')
+    # relief: a hostile army at A or able to reach it (aimod_threat within REACT_R, release's danger radius): keep the
+    # force together, re-checked next pass (Atreides' Sandwan raid, 8 armies in Action at 6.8:1, split 3 to Ullab at
+    # 69:50; Fremen's relief arrived, Sandwan 0.31 and Ullab 131k vs 154k: both lost, match 2026-10-04 20:27)
+    rel = fb.reg(cx.t('f64'))
+    fb.op('Call3', dst=rel, fun=helpers['threat'], arg0=fac, arg1=ae, arg2=b.const('f64', REACT_R))
+    fb.op('JSLte', a=rel, b=b.const('f64', 0), offset='norel')
+    _throttle(fb, b, cx, 'bsrel', o, 30, 'o')
+    _log_ev(fb, b, cx, helpers, 'bsplit', [('f', fb.get(fac, 'kind')), ('tgt', ae), ('b', be), ('n', fb.dyn(cnt)),
+                                           ('of', fb.dyn(un)), ('M', got), ('H', rel), ('why', 'relief')])
+    fb.op('JAlways', offset='o')
+    fb.label('norel')
     # addOrder takes the armies from the capture itself when the split's priority is higher (Annex 3; it refused
     # armies of an order with priority >= its own: all 5 first splits returned null); before Action through take-keep
     b.call('haxe.ds.ObjectMap.set', bspl, fb.dyn(o), fb.dyn(t))
