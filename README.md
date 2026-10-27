@@ -92,6 +92,9 @@ A pure refactor must produce byte-identical boot files. From `ai-mod/`, save a f
 
 `bhash` fixes `PYTHONHASHSEED=0`, refuses to overwrite a baseline, and fails if either boot's hash or size changes.
 Tool regression tests run with `.venv\Scripts\python.exe -m unittest discover -s tools -p 'test_*.py'`.
+Campaign regressions execute bounded sections of the emitted bytecode with explicit engine fixtures
+(`tools/campaign_probe.py`, `tools/test_campaign_review.py`). `$env:AIMOD_TEST_BOOT='hlbootdx.dat'` selects the
+DirectX boot for that targeted test module; the default is `hlboot.dat`.
 
 ## Documentation rule (mandatory)
 

@@ -1,0 +1,766 @@
+{
+  "date": "2026-10-27",
+  "scenario": "raze",
+  "method": "Project mod.cmd match 20 through Steam; no screenshots or computer vision.",
+  "original_git_head": "db3c0de59d274d5db8d9bb2835614226acf5c78f",
+  "original_source_sha256": {
+    "tools/rules/bkcamp/__init__.py": "2207e08632e0b591e4e273912bfaa6dd981064f9b2f878bcaf38189c08ace06a",
+    "tools/rules/bkstate.py": "dee96aabe811f632600ecba4d6e751081ca3c301da33a29fb9ddbca005a37c4a",
+    "tools/rules/common.py": "2369af3c28e28a3d3f40efeefa56d14a04eaed3ad4b0f139fe3925c3bd16c848",
+    "tools/rules/forecast.py": "5390341015b4e9397608e3f79358c02d75d89292a10af180ed374753fa204495",
+    "tools/rules/bkcamp/raze.py": "c57d4912358daf5eb55c49bf654262057751f1d7260eae27f0a34ac083cb373b",
+    "tools/rules/bkcamp/numbers.py": "9d5387926b16b968e921b4177f344868497219010fc2c9290771bb6f796ff031",
+    "tools/rules/bkcamp/phase.py": "bd5260cec60b2d4dd14446f4083344ebb4ee1d374460e73870201aa5937bc965",
+    "tools/rules/bkcamp/muster.py": "2e5444994905a662fb155f7a6afeca365b8cd6143a183b083a79d0e4a9bf84b0"
+  },
+  "baseline": {
+    "archive": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\D4X\\ai-mod\\work\\logs\\20261027-181255-90f7dd1b-d9c1179a72.log",
+    "source": {
+      "path": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\D4X\\game.log",
+      "sha256": "d9c1179a7260d16b52244ae22b5f919d34e1a71ab3495dbbb13eea815a8c73be",
+      "bytes": 39656167,
+      "decode_errors": false
+    },
+    "health": "HEALTH OK: no game exceptions in game.log",
+    "coverage": {
+      "input_events": 124302,
+      "selected_events": 124302,
+      "first_game_s": 0.0,
+      "last_game_s": 4653.581398726533,
+      "parse": {
+        "full": 124302
+      },
+      "micro_observation": "changes",
+      "stable_actor_ids": true,
+      "actor_ids": {
+        "available": 8749,
+        "total": 8749
+      },
+      "order_correlation": "mixed ids/legacy heuristic",
+      "order_ids": {
+        "available": 11305,
+        "total": 11462
+      },
+      "validation": {
+        "checked_events": 44735,
+        "invalid_events": 0,
+        "usable_events": 124302,
+        "unchecked_event_kinds": {
+          "patrol": 208,
+          "opbuy": 156,
+          "selfsup": 1393,
+          "wind": 311,
+          "dmode": 7,
+          "dstyle": 4,
+          "dpick": 238,
+          "obuy": 79,
+          "ostat": 308,
+          "oauto": 30,
+          "ophold": 306,
+          "buyx": 463,
+          "tstk": 76,
+          "bcpass": 1440,
+          "bthreat": 304,
+          "bkill": 44,
+          "strat": 560,
+          "oppgate": 53,
+          "acand": 2794,
+          "scout": 20,
+          "ascore": 509,
+          "pick": 7412,
+          "pw": 9026,
+          "raid": 577,
+          "tpost": 219,
+          "opgate": 47,
+          "tval": 168,
+          "sengage": 31,
+          "fpw": 13428,
+          "fightb": 8849,
+          "fight": 445,
+          "sact": 46,
+          "bkbal": 313,
+          "wzb": 1340,
+          "focus": 208,
+          "askip": 256,
+          "adbg": 247,
+          "sweep": 308,
+          "fopen": 2,
+          "space": 393,
+          "esteer": 2766,
+          "wrank": 1852,
+          "bres": 841,
+          "bpick": 1484,
+          "claimx": 2606,
+          "astick": 38,
+          "join": 26,
+          "release": 5,
+          "stage": 99,
+          "tension": 426,
+          "rfirst": 17,
+          "wplan": 43,
+          "tyield": 8,
+          "gather": 268,
+          "disc": 280,
+          "afveto": 936,
+          "drain": 19,
+          "pagate": 7,
+          "trippick": 50,
+          "opveto": 425,
+          "sdrop": 120,
+          "osafe": 23,
+          "tveto": 31,
+          "opick": 145,
+          "oppress": 145,
+          "uhqp": 52,
+          "opfz": 243,
+          "uhqx": 249,
+          "gear": 150,
+          "wsteer": 1282,
+          "turret": 138,
+          "tresv": 78,
+          "hero": 34,
+          "retreat": 301,
+          "rsfull": 21,
+          "dsur": 11,
+          "sxfail": 4,
+          "sxblock": 28,
+          "heal": 2041,
+          "dstep": 8,
+          "stay": 559,
+          "rsg": 115,
+          "fskip": 102,
+          "ohold": 89,
+          "mpgate": 3,
+          "rlock": 49,
+          "dfull": 82,
+          "uhqres": 15,
+          "wride": 4,
+          "rsloop": 113,
+          "wstall": 7,
+          "tkeep": 7,
+          "bstall": 148,
+          "aagate": 16,
+          "wveto": 609,
+          "dmz": 134,
+          "aswap": 73,
+          "strand": 52,
+          "rfaf": 4,
+          "afield": 10,
+          "treaty": 20,
+          "rride": 4,
+          "tdrop": 34,
+          "rally": 252,
+          "dall": 60,
+          "bkpress": 86,
+          "whold": 5745,
+          "rsbusy": 22,
+          "bkpart": 46,
+          "rnot": 4,
+          "dhope": 44,
+          "wflee": 97,
+          "wlet": 38,
+          "opcf": 2,
+          "wrel": 21,
+          "lowpick": 32,
+          "hride": 1,
+          "noregen": 84,
+          "oterm": 387,
+          "peace": 3,
+          "dgate": 27,
+          "strike": 106,
+          "bklandx": 34,
+          "hdead": 9,
+          "farpick": 29,
+          "bkdr": 81,
+          "ares": 21,
+          "dmzp": 33,
+          "rpoint": 7,
+          "wfail": 3,
+          "bkland": 4,
+          "lreach": 17,
+          "dstop": 4,
+          "pkeep": 4,
+          "rghome": 40,
+          "bfoot": 5,
+          "capl": 3,
+          "skeep": 5,
+          "tdem": 2,
+          "sweak": 4,
+          "weaten": 5,
+          "sfloor": 3,
+          "okeep": 4,
+          "bkopx": 4,
+          "mblock": 22
+        },
+        "sessions": [
+          {
+            "id": 1,
+            "events": 124302
+          }
+        ]
+      },
+      "missing_game_clocks": 0
+    },
+    "campaigns": [
+      {
+        "target": "Arrakeen",
+        "owner": "Atreides",
+        "first_hp": 100.0,
+        "last_hp": 99.0,
+        "min_hp": 99.0,
+        "go_windows": [
+          {
+            "start_game_s": 1055.0242875575918,
+            "end_game_s": 1370.029370498642,
+            "start_hp": 100.0,
+            "min_hp": 100.0,
+            "start_line": 28468,
+            "end_line": 36073,
+            "damage_percentage_points": 0
+          },
+          {
+            "start_game_s": 1750.108323621729,
+            "end_game_s": 2050.16319646832,
+            "start_hp": 100.0,
+            "min_hp": 100.0,
+            "start_line": 46393,
+            "end_line": 54910,
+            "damage_percentage_points": 0
+          },
+          {
+            "start_game_s": 2755.16986603739,
+            "end_game_s": 3060.1679560186967,
+            "start_hp": 100.0,
+            "min_hp": 99.0,
+            "start_line": 69996,
+            "end_line": 80202,
+            "damage_percentage_points": 1.0
+          },
+          {
+            "start_game_s": 3685.15931067526,
+            "end_game_s": 3875.0264087207456,
+            "start_hp": 99.0,
+            "min_hp": 99.0,
+            "start_line": 95783,
+            "end_line": 101632,
+            "damage_percentage_points": 0
+          },
+          {
+            "start_game_s": 4295.128956652591,
+            "end_game_s": 4555.1907110860175,
+            "start_hp": 99.0,
+            "min_hp": 99.0,
+            "start_line": 113753,
+            "end_line": 122305,
+            "damage_percentage_points": 0
+          }
+        ]
+      }
+    ],
+    "findings": [
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Harkonnen",
+        "count": 88,
+        "first_game_s": 948.5213450908577,
+        "last_game_s": 4476.019958878554,
+        "source_lines": [
+          26487,
+          26747,
+          47102
+        ],
+        "message": "army #7792 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Smugglers",
+        "count": 51,
+        "first_game_s": 2867.1159531117983,
+        "last_game_s": 2891.137847757509,
+        "source_lines": [
+          74583,
+          74589,
+          74613
+        ],
+        "message": "army #7563 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Atreides",
+        "count": 44,
+        "first_game_s": 66.06257219314573,
+        "last_game_s": 2844.562727785216,
+        "source_lines": [
+          1353,
+          21541,
+          21562
+        ],
+        "message": "army #2149 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "waiting_cancel",
+        "severity": "warning",
+        "faction": "Smugglers",
+        "count": 25,
+        "first_game_s": 1950.1106117248266,
+        "last_game_s": 3270.6179922743813,
+        "source_lines": [
+          51784,
+          82029,
+          82033
+        ],
+        "message": "Patrol repeatedly cancelled in Waiting at Sadram"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Atreides",
+        "count": 15,
+        "first_game_s": 777.0687633991196,
+        "last_game_s": 1181.5632334550112,
+        "source_lines": [
+          21095,
+          22527,
+          22623
+        ],
+        "message": "army #2129 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Harkonnen",
+        "count": 11,
+        "first_game_s": 947.0118002414621,
+        "last_game_s": 951.0295485973276,
+        "source_lines": [
+          26437,
+          26450,
+          26463
+        ],
+        "message": "army #2042 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Atreides",
+        "count": 8,
+        "first_game_s": 858.5718800067829,
+        "last_game_s": 2915.5767861845056,
+        "source_lines": [
+          23714,
+          23956,
+          29720
+        ],
+        "message": "army #4525 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Atreides",
+        "count": 7,
+        "first_game_s": 1862.0645911693355,
+        "last_game_s": 3797.0738933093066,
+        "source_lines": [
+          48912,
+          71582,
+          71645
+        ],
+        "message": "army #27401 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Atreides",
+        "count": 6,
+        "first_game_s": 1129.0505116939448,
+        "last_game_s": 2833.0710955143672,
+        "source_lines": [
+          29722,
+          30280,
+          30481
+        ],
+        "message": "army #15561 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Atreides",
+        "count": 5,
+        "first_game_s": 1907.0746535777791,
+        "last_game_s": 2853.0541214467357,
+        "source_lines": [
+          50991,
+          72179,
+          73300
+        ],
+        "message": "army #30461 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Atreides",
+        "count": 4,
+        "first_game_s": 788.076870489115,
+        "last_game_s": 819.5584174632959,
+        "source_lines": [
+          21512,
+          21538,
+          22083
+        ],
+        "message": "army #2169 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Atreides",
+        "count": 4,
+        "first_game_s": 1888.0670348643991,
+        "last_game_s": 1905.5836005687459,
+        "source_lines": [
+          50240,
+          50557,
+          50847
+        ],
+        "message": "army #29256 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Fremen",
+        "count": 4,
+        "first_game_s": 1895.174818468067,
+        "last_game_s": 1909.1592003345236,
+        "source_lines": [
+          50624,
+          50746,
+          50909
+        ],
+        "message": "army #21487 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Atreides",
+        "count": 4,
+        "first_game_s": 2711.0724722385453,
+        "last_game_s": 2853.0541214467357,
+        "source_lines": [
+          68674,
+          72239,
+          73333
+        ],
+        "message": "army #24491 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Fremen",
+        "count": 3,
+        "first_game_s": 1703.158849954584,
+        "last_game_s": 1881.1747100353,
+        "source_lines": [
+          45501,
+          48766,
+          49778
+        ],
+        "message": "army #8049 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Fremen",
+        "count": 3,
+        "first_game_s": 1894.682907374673,
+        "last_game_s": 1906.6980702876792,
+        "source_lines": [
+          50609,
+          50842,
+          50986
+        ],
+        "message": "army #23158 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "command_conflict",
+        "severity": "warning",
+        "faction": "Fremen",
+        "count": 3,
+        "first_game_s": 1895.174818468067,
+        "last_game_s": 1906.1716845035298,
+        "source_lines": [
+          50627,
+          50851,
+          50953
+        ],
+        "message": "army #2680 receives Move and ArmyFight within 0.5 seconds"
+      },
+      {
+        "kind": "base_low_damage",
+        "severity": "warning",
+        "faction": null,
+        "count": 1,
+        "first_game_s": 1055.0242875575918,
+        "last_game_s": 1370.029370498642,
+        "source_lines": [
+          28468,
+          36073
+        ],
+        "message": "Arrakeen: sustained attack ended with only 0 percentage points of observed base damage"
+      },
+      {
+        "kind": "base_low_damage",
+        "severity": "warning",
+        "faction": null,
+        "count": 1,
+        "first_game_s": 1750.108323621729,
+        "last_game_s": 2050.16319646832,
+        "source_lines": [
+          46393,
+          54910
+        ],
+        "message": "Arrakeen: sustained attack ended with only 0 percentage points of observed base damage"
+      },
+      {
+        "kind": "base_low_damage",
+        "severity": "warning",
+        "faction": null,
+        "count": 1,
+        "first_game_s": 2755.16986603739,
+        "last_game_s": 3060.1679560186967,
+        "source_lines": [
+          69996,
+          80202
+        ],
+        "message": "Arrakeen: sustained attack ended with only 1.0 percentage points of observed base damage"
+      },
+      {
+        "kind": "base_low_damage",
+        "severity": "warning",
+        "faction": null,
+        "count": 1,
+        "first_game_s": 3685.15931067526,
+        "last_game_s": 3875.0264087207456,
+        "source_lines": [
+          95783,
+          101632
+        ],
+        "message": "Arrakeen: sustained attack ended with only 0 percentage points of observed base damage"
+      },
+      {
+        "kind": "base_low_damage",
+        "severity": "warning",
+        "faction": null,
+        "count": 1,
+        "first_game_s": 4295.128956652591,
+        "last_game_s": 4555.1907110860175,
+        "source_lines": [
+          113753,
+          122305
+        ],
+        "message": "Arrakeen: sustained attack ended with only 0 percentage points of observed base damage"
+      }
+    ]
+  },
+  "code_checks": {
+    "baseline_targeted": {
+      "hlboot.dat": {
+        "tests": 15,
+        "expected_failures": 10,
+        "controls_passed": 5
+      },
+      "hlbootdx.dat": {
+        "tests": 15,
+        "expected_failures": 10,
+        "controls_passed": 5
+      }
+    },
+    "patched_targeted": {
+      "hlboot.dat": {
+        "tests": 15,
+        "passed": 15
+      },
+      "hlbootdx.dat": {
+        "tests": 15,
+        "passed": 15
+      }
+    },
+    "bcheck_issues": 0,
+    "baseline_file_changed": false,
+    "rule_size": "79 modules within 1300 lines",
+    "full_suite": {
+      "tests": 57,
+      "passed": 57
+    }
+  },
+  "problems": [
+    {
+      "id": "coalition-double-count",
+      "source": "tools/rules/bkcamp/numbers.py",
+      "problem": "Coalition power was added to M and also subtracted from D.",
+      "regression": "test_campaign_reads_enemy_power_without_partner_discount",
+      "before": "1,000,000 enemy power became 650,000 with 350,000 partner credit before the coalition was counted in M.",
+      "fix": "Read the forecast enemy side before partner credit.",
+      "evidence": "compiled bytecode, not a runtime-frequency claim"
+    },
+    {
+      "id": "defense-target-binding",
+      "source": "tools/rules/bkcamp/numbers.py",
+      "problem": "Fresh defense readings from a previous leader base entered the current mean.",
+      "regression": "test_defense_readings_are_bound_to_the_base",
+      "before": "A fresh 999,000 reading for another base was counted.",
+      "fix": "Bind every defense reading to its base.",
+      "evidence": "compiled bytecode, not a runtime-frequency claim"
+    },
+    {
+      "id": "capture-target-commitment",
+      "source": "tools/rules/bkcamp/muster.py",
+      "problem": "A closer candidate replaced an eligible running foothold capture.",
+      "regression": "test_active_foothold_keeps_its_target_during_candidate_scan",
+      "before": "An eligible active target at score distance 200 lost to a temporary closer pick at 10.",
+      "fix": "Prefer the active target after eligibility checks; allow replacement if it becomes invalid.",
+      "evidence": "compiled bytecode, not a runtime-frequency claim"
+    },
+    {
+      "id": "busy-pack-power",
+      "source": "tools/rules/bkcamp/muster.py",
+      "problem": "The launch count included armies the executor could not send.",
+      "regression": "test_busy_army_does_not_launch_the_foothold_pack",
+      "before": "An unavailable 300,000-power army alone launched a pack needing 225,000.",
+      "fix": "Count only free or campaign-owned armies.",
+      "evidence": "compiled bytecode, not a runtime-frequency claim"
+    },
+    {
+      "id": "nearby-gather-point",
+      "source": "tools/rules/bkcamp/muster.py",
+      "problem": "A nearby staging structure left gathering coordinates at the enemy village.",
+      "regression": "test_short_staging_gathers_at_home_instead_of_village",
+      "before": "Village x=500 and staging x=350 yielded a gathering point at x=500.",
+      "fix": "Use the nearby staging structure, x=350.",
+      "evidence": "compiled bytecode, not a runtime-frequency claim"
+    },
+    {
+      "id": "prelaunch-route-target",
+      "source": "tools/rules/bkcamp/muster.py",
+      "problem": "The prelaunch route headed for the village zone instead of the gathering point.",
+      "regression": "test_prelaunch_route_uses_the_gathering_point",
+      "before": "The emitted route copied the village position, bypassing the gathering destination.",
+      "fix": "Resolve and route to the gathering point zone.",
+      "evidence": "compiled bytecode, not a runtime-frequency claim"
+    },
+    {
+      "id": "refused-raze-claim",
+      "source": "tools/rules/bkcamp/raze.py",
+      "problem": "Direct raze ignored a refused ownership claim and refreshed its ownership marks.",
+      "regression": "test_denied_raze_claim_stops_before_command_or_ownership_marks",
+      "before": "The emitted claim result had no refusal branch.",
+      "fix": "Skip the army before ownership marks and commands when its claim is refused.",
+      "evidence": "compiled bytecode, not a runtime-frequency claim"
+    },
+    {
+      "id": "campaign-war-gate",
+      "source": "tools/rules/bkcamp/__init__.py",
+      "problem": "Assault membership could take armies before a war declaration succeeded.",
+      "regression": "test_campaign_checks_war_before_posting_or_taking_armies",
+      "before": "The campaign prologue had no live war check.",
+      "fix": "Require live War status before posting or taking armies.",
+      "evidence": "compiled bytecode, not a runtime-frequency claim"
+    },
+    {
+      "id": "column-wait-budget",
+      "source": "tools/rules/bkcamp/raze.py",
+      "problem": "A continuously separated column restarted its wait after 120 seconds.",
+      "regression": "test_continuous_column_wait_is_capped_once_per_go",
+      "before": "At time 230, a wait begun at 100 restarted although the current go began at 50.",
+      "fix": "Renew the 60-second per-army wait only for a new go.",
+      "evidence": "compiled bytecode, not a runtime-frequency claim"
+    },
+    {
+      "id": "phase-transition-hold",
+      "source": "tools/rules/bkcamp/phase.py",
+      "problem": "A hold timer for one destination phase authorized a different destination.",
+      "regression": "test_phase_hold_restarts_when_desired_transition_changes",
+      "before": "A held muster-to-go condition immediately authorized muster-to-attrition.",
+      "fix": "Bind the timer to both source and destination phases.",
+      "evidence": "compiled bytecode, not a runtime-frequency claim"
+    }
+  ],
+  "verification_match": null,
+  "limits": [
+    "Random maps differ between matches; a single before/after pair does not establish a causal win-rate or damage improvement.",
+    "The ten targeted cases establish the source corrections; a normal match may not exercise every edge case.",
+    "Command conflicts and low sustained base damage remain separate runtime checks."
+  ],
+  "installed_boots": {
+    "hlboot.dat": {
+      "patches": [
+        "admin-always-on",
+        "ai-log"
+      ],
+      "patched": "f9f41003b585cf7f1f88ae1e0cdad0c529b6b6f18e6d765b40b57ef8018cba90",
+      "tool": "4563f2991799e05d"
+    },
+    "hlbootdx.dat": {
+      "patches": [
+        "admin-always-on",
+        "ai-log"
+      ],
+      "patched": "b053b2c629d84d8be1a82c56988ddf901f30aaaa22cd89ec3dad2a8189864fbd",
+      "tool": "4563f2991799e05d"
+    }
+  },
+  "blast_radius": {
+    "safety_facts": [
+      {
+        "fact": "Only the coalition campaign selects fct_raw; hunts, raids, strategy and _fc_sides keep fct partner credit.",
+        "evidence_level": "Path traced",
+        "sources": [
+          "tools/rules/common.py::_fc_theirs",
+          "tools/rules/bkcamp/numbers.py::_emit_numbers",
+          "tools/rules/hunt/__init__.py",
+          "tools/rules/hunt/running.py",
+          "tools/rules/raid.py",
+          "tools/rules/strat.py"
+        ]
+      },
+      {
+        "fact": "The campaign retreat consumer already sums coalition armies in its numerator, so raw D removes the same double credit there.",
+        "evidence_level": "Path traced",
+        "sources": [
+          "tools/rules/bkcamp/numbers.py::_emit_numbers",
+          "tools/rules/bkstate.py::shared_defense",
+          "tools/rules/heal/retreat.py::build_retreat"
+        ]
+      },
+      {
+        "fact": "New campaign maps are process-local ObjectMaps, not serialized game data. No CastleDB rows, identifiers or save schema change.",
+        "evidence_level": "Source evidence",
+        "sources": [
+          "tools/rules/common.py::_global_map",
+          "tools/rules/bkstate.py"
+        ]
+      },
+      {
+        "fact": "Both regular partner credit and the unadjusted enemy side are checked with the same emitted forecast fixture.",
+        "evidence_level": "Automated evidence",
+        "sources": [
+          "tools/test_campaign_review.py::test_campaign_reads_enemy_power_without_partner_discount"
+        ]
+      }
+    ],
+    "cleared": [
+      "Ordinary hunt and raid sizing keep their partner discount.",
+      "Campaign retreat no longer credits partners on both sides.",
+      "No persistent data migration is required."
+    ],
+    "open": [
+      {
+        "risk": "A correctly higher D can change campaign attack and retreat frequency.",
+        "likelihood": "medium",
+        "impact": "medium",
+        "check": "Inspect phase windows and damage in the verification match; do not infer improved AI quality from build success."
+      }
+    ]
+  }
+}

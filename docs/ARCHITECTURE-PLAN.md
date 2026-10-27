@@ -12,7 +12,7 @@ Use the shared pieces below instead of adding a private world measure or ownersh
 | `rules/econ.py` | Economy value model built |
 | `mod log --score` | Outcome and task-board scorecard built |
 
-Forecast sizing shares `common._fc_theirs`. Safety/posture queries and vanilla's live retreat balance retain their
+Forecast sizing shares `common._fc_theirs`. Its `partner_credit=False` option reads `fct_raw`, the same enemy estimate before partner credit. The campaign uses that output because M already includes coalition armies. Safety/posture queries and vanilla's live retreat balance retain their
 own roles; they are not alternative planned-fight forecasts. Live task-board activation needs a comparison match.
 
 ## Why

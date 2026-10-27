@@ -17,10 +17,12 @@ SEEN = 'bcseen'        # B -> last campaign pass (stale -> starts over in attrit
 STRIKE = 'bcsk'        # B -> time the go's strike was committed (BC_ALL_DIRECT)
 COND_SINCE = 'bccs'    # per faction (_fac_map): B -> since when this member's phase-change condition holds
 COND_PHASE = 'bccp'    # per faction (_fac_map): B -> the phase that condition started in
+COND_TO = 'bccn'       # per faction (_fac_map): B -> the proposed destination phase
 
 # ---- per member faction: readings posted each pass
 D_OWN = 'bcd'          # faction -> its own defense reading D at B
 D_OWN_T = 'bcdt'       # faction -> when D_OWN was posted
+D_OWN_B = 'bcdb'       # faction -> the base D_OWN describes
 D_SHARED = 'bcdsh'     # faction -> the shared (trimmed) D its last pass used (heal.py: the raze fight balance)
 M_POST = 'bcmm'        # faction -> its mustered power M
 M_POST_T = 'bcmmt'     # faction -> when M_POST was posted

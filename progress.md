@@ -33,6 +33,13 @@ Use `raze`, `mod match 20`. Pass: remove the row. Fail: retain one evidence-link
 
 ## Active validation
 
+- Ten campaign defects are fixed in source and installed: coalition double counting, defense readings from a
+  different base, capture target replacement, busy-army launch power, gathering at the village, routing past
+  the gathering point, ignored claim refusals, missing live-war gating, repeated column waits and reused
+  phase-destination timers. All ten regressions fail before and pass after in both boot files; five control
+  cases also pass. The full suite has 57 passing tests; `bcheck` reports zero issues with its baseline unchanged.
+  The 20-minute verification match is running. Baseline: 77:33 game time, 124,302 events, strict health pass,
+  Arrakeen 100 -> 99% over five attack windows. Evidence: [campaign review](validation/campaign-review.json).
 - Fixed in source: minor-raid defense respects live claims on orderless campaign armies; the base Supply Drop
   step-in respects the selected wave objective. Both compiled-bytecode regressions fail before and pass after;
   42 tool tests pass, `bcheck` reports zero issues. Follow-up: 55:08 game time, 73,324 fully parsed events, no
@@ -44,6 +51,10 @@ Use `raze`, `mod match 20`. Pass: remove the row. Fail: retain one evidence-link
 
 ## Open issues: campaign and fights
 
+- [ ] Lardah follow-up: compiled regressions reproduce expired claims while a capture army fights and worm
+  recovery following stale Regroup paths in Engage. The live match shows repeated backward Move sends and a
+  competing Pillage before Harkonnen eventually captures Lardah. Fixes await normal match shutdown;
+  [evidence and seed](validation/lardah-capture.json).
 - [ ] O-waz: the director canceled Harkonnen's liberation at 48:20 after counting about 230k nearby renegade
   raiders that were not targeting Harkonnen (179k reach vs 324k opposition). Check whether neutral-raid threat is
   too conservative before changing shared queries; the follow-up archive is in the capture-ownership record.

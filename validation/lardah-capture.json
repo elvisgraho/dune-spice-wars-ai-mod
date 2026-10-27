@@ -1,0 +1,92 @@
+{
+  "date": "2026-10-27",
+  "scenario": "lardah",
+  "seed": 5705907,
+  "before_archive": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\D4X\\ai-mod\\work\\logs\\20261027-182735-b9273180-2fca88e3f0.log",
+  "before_source": {
+    "path": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\D4X\\game.log",
+    "sha256": "2fca88e3f06386fea0510a6a005d5e7f363cd8f047d0d9494b5a7c24408e31dc",
+    "bytes": 20089231,
+    "decode_errors": false
+  },
+  "observed": {
+    "worm_release_rows_in_46_seconds": 41,
+    "worm_release_source_lines": [
+      24533,
+      24559,
+      24563,
+      24567,
+      24574,
+      24599,
+      24601,
+      24625,
+      24651,
+      24689,
+      24701,
+      24728,
+      24730,
+      24761,
+      24763,
+      24765,
+      24772,
+      24791,
+      24800,
+      24810,
+      24812,
+      24864,
+      24866,
+      24878,
+      24893,
+      24895,
+      24926,
+      24940,
+      24949,
+      24958,
+      24960,
+      24962,
+      24989,
+      25005,
+      25037,
+      25048,
+      25050,
+      25096,
+      25101,
+      25103,
+      25105
+    ],
+    "first_observed_harkonnen_ownership_game_s": 1290.0033940791789,
+    "pillage_order": 17331,
+    "pillage_start_game_s": 930.012580347053,
+    "pillage_cancel_game_s": 976.030072832098
+  },
+  "root_causes": [
+    {
+      "source": "tools/rules/worm.py::build_worm_release",
+      "problem": "Engage resumed stale Regroup unitPaths, repeatedly walking back toward old rally coordinates.",
+      "engine_fact": "checkEngageOrder resumes order.action for idle units and does not consume unitPaths; see REVERSING Regroup / Engage.",
+      "regression": "test_worm_recovery_uses_rally_paths_only_during_regroup"
+    },
+    {
+      "source": "tools/rules/bkcamp/muster.py::_emit_muster",
+      "problem": "The fighting skip preceded campaign claim refresh. Combat could expire the army ownership and let another task take the army.",
+      "regression": "test_fighting_capture_army_refreshes_ownership"
+    }
+  ],
+  "before_tests": {
+    "hlboot.dat": {
+      "tests": 2,
+      "expected_failures": 2
+    },
+    "hlbootdx.dat": {
+      "tests": 2,
+      "expected_failures": 2
+    }
+  },
+  "source_fixed": false,
+  "after_tests": null,
+  "verification_match": null,
+  "limits": [
+    "The village eventually was captured; the observed defect is the avoidable command and ownership loop.",
+    "The fixed seed reproduces geography, not identical combat timing."
+  ]
+}

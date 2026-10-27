@@ -1,0 +1,126 @@
+{
+  "_doc": "Lardah capture and worm-recovery reproduction. Raze forces on map seed 5705907. Run mod testbed on --scenario lardah, then mod match 10. Inspect Harkonnen capture of Lardah, fighting capture claims, and worm-release Move commands during Engage. Identical geography does not guarantee identical combat timing.",
+  "startResources": {
+    "Solari": 25000,
+    "Plascrete": 6000,
+    "Manpower": 1500,
+    "Authority": 1500,
+    "Influence": 1200,
+    "Intel": 1500,
+    "Agent": 12,
+    "GuildFavor": 300
+  },
+  "armies": {
+    "Atreides": [
+      "A_Trooper",
+      "A_Trooper",
+      "A_Trooper",
+      "A_Trooper",
+      "A_Soldier",
+      "A_Soldier",
+      "A_Soldier",
+      "A_Soldier"
+    ],
+    "Harkonnen": [
+      "H_Trooper",
+      "H_Trooper",
+      "H_Trooper",
+      "H_Trooper",
+      "H_Soldier",
+      "H_Soldier",
+      "H_Soldier",
+      "H_Demo",
+      "H_Demo",
+      "H_Demo",
+      "H_Elite",
+      "H_Elite"
+    ],
+    "Smugglers": [
+      "S_Trooper",
+      "S_Trooper",
+      "S_Trooper",
+      "S_Trooper",
+      "S_Sneak",
+      "S_Sneak",
+      "S_Sneak",
+      "S_Sneak",
+      "S_Demo",
+      "S_Demo",
+      "S_Elite",
+      "S_Elite"
+    ],
+    "Fremen": [
+      "F_Trooper",
+      "F_Trooper",
+      "F_Trooper",
+      "F_Trooper",
+      "F_Sneak",
+      "F_Sneak",
+      "F_Sneak",
+      "F_Special",
+      "F_Special",
+      "F_Demo",
+      "F_Elite",
+      "F_Elite"
+    ],
+    "Corrino": [
+      "C_Trooper",
+      "C_Trooper",
+      "C_Trooper",
+      "C_Soldier",
+      "C_Soldier",
+      "C_Soldier",
+      "C_Special",
+      "C_Elite"
+    ],
+    "Ecaz": [
+      "E_Trooper",
+      "E_Trooper",
+      "E_Trooper",
+      "E_Soldier",
+      "E_Soldier",
+      "E_Soldier",
+      "E_Special",
+      "E_Elite"
+    ],
+    "Vernius": [
+      "V_Soldier",
+      "V_Soldier",
+      "V_Soldier",
+      "V_Trooper",
+      "V_Trooper",
+      "V_Special",
+      "V_Elite",
+      "V_Elite"
+    ]
+  },
+  "humanSlot": 1,
+  "macros": {
+    "O": [
+      "seed 5705907",
+      "allFactionsNewGame {humanSlot}"
+    ],
+    "P": [
+      "ai true",
+      "speed 4"
+    ],
+    "K": [
+      "fog"
+    ],
+    "L": [
+      "resAll Hegemony 8000",
+      "res Hegemony 14000",
+      "relationship Atreides Harkonnen War",
+      "relationship Atreides Smugglers War",
+      "relationship Atreides Fremen War",
+      "speed 4"
+    ],
+    "F9": [
+      "speed 2"
+    ],
+    "F10": [
+      "speed 4"
+    ]
+  },
+  "lateMinutes": 1
+}

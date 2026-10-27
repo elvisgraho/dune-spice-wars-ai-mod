@@ -13,13 +13,14 @@ def _emit_numbers(c):
     (b, bcsg, be, cx, fac, fb, helpers, ld, pw, st, t, zero,) = _take(c, 'b bcsg be cx fac fb helpers ld pw st t zero')
     # the numbers
     dd, mm_, pp, q = (fb.reg(cx.t('f64')) for _ in range(4))
-    _fc_theirs(fb, b, cx, helpers, fac, be, dd, T=BC_FC_T)
+    _fc_theirs(fb, b, cx, helpers, fac, be, dd, T=BC_FC_T, partner_credit=False)
     # one shared D: every member posts its own reading (fog: Smugglers read 70k while Fremen read 1.5M at the same
     # base, match 2026-10-24 15:00); the phase uses the trimmed mean of the fresh ones (<= BC_D_FRESH s; highest and
     # lowest dropped from 3 or more, the higher of 2, our own alone) (maps `bcd` / `bcdt` faction -> D / when)
     bcd, bcdt = _global_map(fb, b, cx, bks.D_OWN), _global_map(fb, b, cx, bks.D_OWN_T)
     b.call('haxe.ds.ObjectMap.set', bcd, fb.dyn(fac), fb.dyn(dd))
     b.call('haxe.ds.ObjectMap.set', bcdt, fb.dyn(fac), fb.dyn(t))
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, bks.D_OWN_B), fb.dyn(fac), fb.dyn(be))
     dsum, dmax, dmin, dv = (fb.reg(cx.t('f64')) for _ in range(4))
     dn = fb.reg(cx.t('i32'))
     fb.op('Mov', dst=dsum, src=b.const('f64', 0))
@@ -40,6 +41,8 @@ def _emit_numbers(c):
     fb.op('JTrue', cond=b.call('logic.state.State.areAtWar', st, fac, dfx), offset='dd')
     fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', st, dfx, ld), offset='dd')
     fb.label('dd_m')
+    dbv = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, bks.D_OWN_B), fb.dyn(dfx))
+    fb.op('JNotEq', a=dbv, b=fb.dyn(be), offset='dd')
     _age(fb, b, cx, bcdt, dfx, t, 'dd', dst=dv)
     fb.op('JSGt', a=dv, b=b.const('f64', BC_D_FRESH), offset='dd')
     ddv = b.call('haxe.ds.ObjectMap.get', bcd, fb.dyn(dfx))

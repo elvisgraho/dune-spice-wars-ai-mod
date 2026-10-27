@@ -84,6 +84,8 @@ def build_bk_campaign(cx, helpers, pw, free):
     fb.op('SafeCast', dst=li, src=lv)
     fb.op('JSLt', a=li, b=b.const('i32', 2), offset='end')
     ld = _bk_target(fb, b, cx, fac, 'end')
+    # Plan membership can precede a successful declaration. Never take armies for a peaceful target.
+    fb.op('JFalse', cond=b.call('logic.state.State.areAtWar', st, fac, ld), offset='end')
     lb = b.call('ent.Faction.get_mainBase', ld)
     fb.op('JNull', reg=lb, offset='end')
     be = fb.reg(cx.t('ent.Entity'))

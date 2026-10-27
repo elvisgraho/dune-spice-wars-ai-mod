@@ -541,13 +541,14 @@ def field_name_t(cx, obj_type, index):
 
 
 
-def _fc_theirs(fb, b, cx, helpers, fac, place, dst, T=FC_REACT_T, contest=False):
+def _fc_theirs(fb, b, cx, helpers, fac, place, dst, T=FC_REACT_T, contest=False, partner_credit=True):
     """dst = the battle forecast's their side at entity `place` over T (rules/forecast.py: hostile armies that can be
     there, at least the owner's armies as we know them for another faction's structure, enemy turret cover, the
     militia of a structure not ours): the one sizing measure for hunt / raid / strat (ARCHITECTURE-PLAN step 1; was
     aimod_react within LOCAL + each rule's cover / militia sum). Our side isn't computed (an empty unit list). 0 when
     the forecast failed. Neutral raiders aren't in it: callers that face them add aimod_neutral. contest=True: the
-    place is a village we contest against its besieger: its militia / owner aren't counted (aimod_forecast_c)."""
+    place is a village we contest against its besieger: its militia / owner aren't counted (aimod_forecast_c).
+    partner_credit=False reads the same forecast before partner credit, for callers summing coalition armies."""
     arr = _new_array(fb, b, cx)
     tt = fb.reg(cx.t('bool'))
     fb.op('Bool', dst=tt, value=True)
@@ -557,7 +558,9 @@ def _fc_theirs(fb, b, cx, helpers, fac, place, dst, T=FC_REACT_T, contest=False)
     fb.op('CallN', dst=r, fun=helpers['forecast_c' if contest else 'forecast'], args=[fac, pe, b.const('f64', T), tt, arr])
     fb.op('Mov', dst=dst, src=b.const('f64', 0))
     skip = _uid('fcth')
-    vt = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, 'fct'), fb.dyn(fac))
+    # A caller summing coalition armies on its own side must not also discount them from the enemy.
+    side = 'fct' if partner_credit else 'fct_raw'
+    vt = b.call('haxe.ds.ObjectMap.get', _global_map(fb, b, cx, side), fb.dyn(fac))
     fb.op('JNull', reg=vt, offset=skip)
     fb.op('SafeCast', dst=dst, src=vt)
     fb.label(skip)

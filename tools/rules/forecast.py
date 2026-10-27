@@ -2,7 +2,7 @@
 matters", for every decision, instead of each rule's own radius / discount / ratio.
 
 aimod_forecast(fac, place, T, attack, units) -> ratio ours / theirs (theirs 0: FC_NONE). Maps `fco` / `fct` faction ->
-our / their side of the last call (logs).
+our / their side of the last call (logs). `fct_raw` keeps the enemy side before partner credit for coalition sums.
 - theirs: hostile armies that can be at `place` within T (aimod_threat, fog-aware, radius T x CONTEST_SPD clamped to
   [LOCAL, FC_MAX_R]: standing within it or moving towards `place`); for a structure owned by another faction at least
   aimod_owner_pw (the owner's armies as we know them, unseen ones at its main base: raids on at-war villages were sized
@@ -36,7 +36,7 @@ def build_forecast(cx, helpers, pw, threat, cover, terrain, eta, militia, missio
     guard = fb.try_()
     fb.op('JNull', reg=0, offset='end')
     zero = b.const('f64', 0)
-    for mn in ('fco', 'fct'):
+    for mn in ('fco', 'fct', 'fct_raw'):
         b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, mn), fb.dyn(0), fb.dyn(zero))
     fb.op('JNull', reg=1, offset='end')
     ours, theirs, q, r, d = (fb.reg(cx.t('f64')) for _ in range(5))
@@ -171,6 +171,9 @@ def build_forecast(cx, helpers, pw, threat, cover, terrain, eta, militia, missio
     fb.op('Add', dst=jh, a=jh, b=q)
     fb.op('JAlways', offset='jl')
     fb.label('nojoint')
+    # Preserve the enemy side before partner credit for callers that already sum the coalition.
+    raw_theirs = fb.reg(cx.t('f64'))
+    fb.op('Mov', dst=raw_theirs, src=theirs)
     fb.op('JSLte', a=jh, b=zero, offset='jdone')
     jf = fb.reg(cx.t('f64'))
     fb.op('Mul', dst=jf, a=theirs, b=_ratio(fb, b, PARTNER_FLOOR))
@@ -185,6 +188,7 @@ def build_forecast(cx, helpers, pw, threat, cover, terrain, eta, militia, missio
     fb.label('noterr')
     b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'fco'), fb.dyn(0), fb.dyn(ours))
     b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'fct'), fb.dyn(0), fb.dyn(theirs))
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, 'fct_raw'), fb.dyn(0), fb.dyn(raw_theirs))
     fb.op('JSLte', a=theirs, b=zero, offset='end')
     fb.op('SDiv', dst=res, a=ours, b=theirs)
     fb.label('end')

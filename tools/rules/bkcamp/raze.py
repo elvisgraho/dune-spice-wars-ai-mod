@@ -385,10 +385,11 @@ def _emit_raze(c):
     # still ours before the strike / worm skip below: a worm-held army (waiting on rock) kept its claim lapsing and
     # dropped out of the campaign after BC_CLAIM_KEEP (match 54: Fremen's 10 walkers 10 -> 0 on its own sand, 118
     # worm holds, none dead)
-    b.call('haxe.ds.ObjectMap.set', bcmc, fb.dyn(dx_), fb.dyn(t))
-    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, bks.SENT), fb.dyn(dx_), fb.dyn(t))  # stays in garr
     drc = fb.reg(cx.t('bool'))
     fb.op('Call2', dst=drc, fun=helpers['claim'], arg0=dx_, arg1=b.const('f64', P_RAZE))
+    fb.op('JFalse', cond=drc, offset='dr')
+    b.call('haxe.ds.ObjectMap.set', bcmc, fb.dyn(dx_), fb.dyn(t))
+    b.call('haxe.ds.ObjectMap.set', _global_map(fb, b, cx, bks.SENT), fb.dyn(dx_), fb.dyn(t))  # stays in garr
     _skip_striking(fb, b, cx, helpers, dx_, 'dr')  # in an en-route strike, or waiting out a worm: not moved now
     fb.op('Mov', dst=dq, src=b.call('ent.Entity.getDistTo', dx_, be))
     fb.op('JSGte', a=dq, b=dmn, offset='dr_mn')
@@ -488,7 +489,7 @@ def _emit_raze(c):
     fb.label('dr_cc')
     # ahead of the column: wait for it (counted as acting: the go holds), only on our own land (match 66: Fremen's 11
     # armies waited 110 s in Atreides' land, supply 274 -> 94, and starved home 30 s after they left) and at most
-    # BC_COH_WAIT s per army (map `bccw` army -> since; a wait older than 2 x that is a new one)
+    # BC_COH_WAIT s per army per go (map `bccw` army -> since; only a new go renews the budget)
     fb.op('Sub', dst=dwq, a=drear, b=dq)
     fb.op('JSLte', a=dwq, b=b.const('f64', BC_COH), offset='dr_mv')
     dcz = b.call('ent.Entity.get_zone', dx_)
@@ -499,8 +500,8 @@ def _emit_raze(c):
     dcwq = fb.reg(cx.t('f64'))
     fb.op('JNull', reg=dcwv, offset='dr_cw_n')
     fb.op('SafeCast', dst=dcwq, src=dcwv)
+    fb.op('JSLt', a=dcwq, b=gt, offset='dr_cw_n')  # a new go gets one new wait
     fb.op('Sub', dst=dcwq, a=t, b=dcwq)
-    fb.op('JSGt', a=dcwq, b=b.const('f64', 2 * BC_COH_WAIT), offset='dr_cw_n')
     fb.op('JSGt', a=dcwq, b=b.const('f64', BC_COH_WAIT), offset='dr_mv')  # waited enough: on
     fb.op('JAlways', offset='dr_actn')
     fb.label('dr_cw_n')
