@@ -31,8 +31,22 @@ Use `raze`, `mod match 20`. Pass: remove the row. Fail: retain one evidence-link
 | Defense Breaches | `opcast` at the base coincides with the attack; damage per second improves during its effect |
 | Far members | `farstage` members capture/stage rather than walk alone from more than 500 away |
 
+## Active validation
+
+- Fixed in source: minor-raid defense respects live claims on orderless campaign armies; the base Supply Drop
+  step-in respects the selected wave objective. Both compiled-bytecode regressions fail before and pass after;
+  42 tool tests pass, `bcheck` reports zero issues. Follow-up: 55:08 game time, 73,324 fully parsed events, no
+  game exceptions or rule failures. No `dkeep` case or assault window occurred; Altar was taken by Fremen first,
+  so capture/raid behavior and base-damage improvement remain unverified. Evidence:
+  [campaign-capture-ownership.json](validation/campaign-capture-ownership.json).
+- Altar reproduction: `testbed on --scenario altar`, `match 14`, map seed 5705907. Same geography does not guarantee
+  identical combat. Check `dkeep` while Harkonnen occupies Altar, capture completion, and idle defenders remaining usable.
+
 ## Open issues: campaign and fights
 
+- [ ] O-waz: the director canceled Harkonnen's liberation at 48:20 after counting about 230k nearby renegade
+  raiders that were not targeting Harkonnen (179k reach vs 324k opposition). Check whether neutral-raid threat is
+  too conservative before changing shared queries; the follow-up archive is in the capture-ownership record.
 - [ ] Base damage remains too low. Diagnose time under the guns, Siege mix, operations and supply before adding
   attack exceptions. Main-base damage mechanics are in REVERSING.
 - [ ] Defense estimate fluctuates with fog, including a 455k -> 979k reading, reopening/closing attack windows.

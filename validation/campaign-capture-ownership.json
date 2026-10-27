@@ -1,0 +1,433 @@
+{
+  "purpose": "Campaign capture ownership and objective precedence",
+  "baseline": {
+    "archive": "work\\logs\\20261027-062525-844a7329-d139b4c3fc.log",
+    "source_sha256": "d139b4c3fc26679cb29077131f4b2024a21ffbc4ccdfc888e6a593a5a6f0aa94",
+    "seed": 5705907,
+    "events": 131006,
+    "game_time_end_s": 4470.188491155342,
+    "health": "HEALTH OK: no game exceptions in game.log",
+    "parse": {
+      "full": 131006
+    },
+    "source_map_available": false,
+    "campaigns": [
+      {
+        "target": "Arrakeen",
+        "owner": "Atreides",
+        "first_hp": 100.0,
+        "last_hp": 99.0,
+        "min_hp": 99.0,
+        "go_windows": [
+          {
+            "start_game_s": 1110.0103473663219,
+            "end_game_s": 1500.0339870929295,
+            "start_hp": 100.0,
+            "min_hp": 100.0,
+            "start_line": 28044,
+            "end_line": 40508,
+            "damage_percentage_points": 0
+          },
+          {
+            "start_game_s": 2660.14986224186,
+            "end_game_s": 2955.0199483397428,
+            "start_hp": 100.0,
+            "min_hp": 99.0,
+            "start_line": 73664,
+            "end_line": 83609,
+            "damage_percentage_points": 1.0
+          },
+          {
+            "start_game_s": 3950.180441666501,
+            "end_game_s": 4250.18654165401,
+            "start_hp": 99.0,
+            "min_hp": 99.0,
+            "start_line": 113681,
+            "end_line": 123497,
+            "damage_percentage_points": 0
+          },
+          {
+            "start_game_s": 4430.037660123457,
+            "end_game_s": null,
+            "start_hp": 99.0,
+            "min_hp": 99.0,
+            "start_line": 129775,
+            "end_line": null,
+            "damage_percentage_points": 0
+          }
+        ]
+      }
+    ]
+  },
+  "altar": {
+    "faction": "Harkonnen",
+    "village": "Altar",
+    "village_id": 1122,
+    "annex_start_game_s": 2740.030953359735,
+    "defense_recall_game_s": 2740.515852244826,
+    "defense_order_id": 44632,
+    "recalled_armies": 13,
+    "defended_village": "Gur-lon",
+    "enemy_kind": "Rebels",
+    "root_cause": "Minor-raid defense protected Military orders but ignored live claims on direct, orderless campaign armies",
+    "timeline": [
+      {
+        "e": "bcamp",
+        "f": "Harkonnen",
+        "act": "footann",
+        "tgt": {
+          "id": 1122.0,
+          "k": "Village",
+          "o": null,
+          "p": "Altar",
+          "x": 928.1587117533352,
+          "y": 689.1076393009268
+        },
+        "r": "Success",
+        "g": 2740.030953359735,
+        "_line": 75591
+      },
+      {
+        "e": "order",
+        "oid": 44632.0,
+        "f": "Harkonnen",
+        "type": "Defense(ent.Structure)",
+        "prio": 10.0,
+        "n": 13.0,
+        "tgt": {
+          "id": 44630.0,
+          "k": null,
+          "o": null,
+          "p": null,
+          "x": 1558.3523274041797,
+          "y": 1073.0253722354828
+        },
+        "act": "ArmyFight",
+        "sa": null,
+        "ax": 930.2514357223348,
+        "ay": 702.1350344641065,
+        "g": 2740.515852244826,
+        "_line": 75612
+      },
+      {
+        "e": "order",
+        "oid": 44888.0,
+        "f": "Harkonnen",
+        "type": "Resupply(1,1)",
+        "prio": 0.0,
+        "n": 12.0,
+        "tgt": {
+          "id": 901.0,
+          "k": "Village",
+          "o": "Harkonnen",
+          "p": "Eshsud",
+          "x": 1326.913640920106,
+          "y": 851.5592308040622
+        },
+        "act": "Move",
+        "sa": null,
+        "ax": 968.001747244918,
+        "ay": 750.8420067858193,
+        "g": 2763.510258817806,
+        "_line": 76052
+      },
+      {
+        "e": "dact",
+        "a": {
+          "id": 7609.0,
+          "k": "H_Hero_1",
+          "o": "Harkonnen",
+          "p": null,
+          "x": 949.1311089907377,
+          "y": 749.0753961836735
+        },
+        "k": "Move",
+        "src": "rsguard.build_rsguard",
+        "tx": 1175.0,
+        "ty": 1005.0,
+        "f": "Harkonnen",
+        "g": 2764.0019542218583,
+        "_line": 76078
+      },
+      {
+        "e": "order",
+        "oid": 44918.0,
+        "f": "Harkonnen",
+        "type": "Resupply(1,1)",
+        "prio": 0.0,
+        "n": 12.0,
+        "tgt": {
+          "id": 901.0,
+          "k": "Village",
+          "o": "Harkonnen",
+          "p": "Eshsud",
+          "x": 1326.913640920106,
+          "y": 851.5592308040622
+        },
+        "act": "Move",
+        "sa": null,
+        "ax": 968.001747244918,
+        "ay": 750.8420067858193,
+        "g": 2764.508887116248,
+        "_line": 76087
+      },
+      {
+        "e": "dact",
+        "a": {
+          "id": 24339.0,
+          "k": "H_Demo",
+          "o": "Harkonnen",
+          "p": null,
+          "x": 955.1155102301908,
+          "y": 748.6350082577493
+        },
+        "k": "Move",
+        "src": "rsguard.build_rsguard",
+        "tx": 1175.0,
+        "ty": 1005.0,
+        "f": "Harkonnen",
+        "g": 2766.0186769009956,
+        "_line": 76128
+      },
+      {
+        "e": "order",
+        "oid": 45200.0,
+        "f": "Harkonnen",
+        "type": "Resupply(1,1)",
+        "prio": 0.0,
+        "n": 12.0,
+        "tgt": {
+          "id": 901.0,
+          "k": "Village",
+          "o": "Harkonnen",
+          "p": "Eshsud",
+          "x": 1326.913640920106,
+          "y": 851.5592308040622
+        },
+        "act": "Move",
+        "sa": null,
+        "ax": 968.001747244918,
+        "ay": 750.8420067858193,
+        "g": 2766.5069409848575,
+        "_line": 76149
+      },
+      {
+        "e": "dact",
+        "a": {
+          "id": 32306.0,
+          "k": "H_Demo",
+          "o": "Harkonnen",
+          "p": null,
+          "x": 1054.0835057473512,
+          "y": 809.0063052872308
+        },
+        "k": "Move",
+        "src": "rsguard.build_rsguard",
+        "tx": 1175.0,
+        "ty": 1005.0,
+        "f": "Harkonnen",
+        "g": 2768.003723669186,
+        "_line": 76181
+      },
+      {
+        "e": "order",
+        "oid": 45237.0,
+        "f": "Harkonnen",
+        "type": "Resupply(1,1)",
+        "prio": 0.0,
+        "n": 12.0,
+        "tgt": {
+          "id": 901.0,
+          "k": "Village",
+          "o": "Harkonnen",
+          "p": "Eshsud",
+          "x": 1326.913640920106,
+          "y": 851.5592308040622
+        },
+        "act": "Move",
+        "sa": null,
+        "ax": 968.001747244918,
+        "ay": 750.8420067858193,
+        "g": 2768.503723669188,
+        "_line": 76192
+      }
+    ]
+  },
+  "fixes": [
+    "Minor-raid/pillage defense checks existing claims above P_DEFENSE before searching for a Military order",
+    "Base Supply Drop step-in requires the wave objective to be the base"
+  ],
+  "regressions": {
+    "tests": 42,
+    "before": "Both compiled-bytecode regressions fail",
+    "after": "42 tests pass; 239 appended functions, zero bcheck issues; 82 accepted unassigned reads unchanged"
+  },
+  "followup": {
+    "status": "closed_normally",
+    "scenario": "altar",
+    "seed_requested": 5705907,
+    "seed_observed": 5705907,
+    "real_minutes": 14.2,
+    "game_time_end_s": 3308.5108563903505,
+    "events": 73324,
+    "parse": {
+      "full": 73324
+    },
+    "invalid_events": 0,
+    "health": "HEALTH OK: no game exceptions in game.log",
+    "strict_exit": 0,
+    "source_map_available": true,
+    "archive": "work\\logs\\20261027-064513-9cb557d1-f609859851.log",
+    "source_sha256": "f6098598513531fde8d1978ab4b9179261064306635fa951cebb394ced8947d9",
+    "campaigns": [
+      {
+        "target": "Arrakeen",
+        "owner": "Atreides",
+        "first_hp": 100.0,
+        "last_hp": 100.0,
+        "min_hp": 100.0,
+        "go_windows": []
+      }
+    ],
+    "minor_raid_filter_rows": 0,
+    "altar_capture_reproduced": false,
+    "altar_result": "Fremen took Altar before Harkonnen attempted it; capture/raid interaction not exercised"
+  },
+  "limitations": [
+    "One random baseline; fixed map does not make combat deterministic",
+    "Supply Drop diversion reproduced in emitted bytecode, not established as the cause of baseline base damage",
+    "Runtime validation does not prove improved AI strength",
+    "No dkeep branch exercised in the follow-up; the claim fix is proven by the emitted-bytecode regression, not a repeated Altar capture",
+    "Follow-up remained in attrition; no assault window, so no before/after base-damage claim"
+  ],
+  "owaz": {
+    "faction": "Harkonnen",
+    "village": "O-waz",
+    "order_id": 48124,
+    "launch_game_s": 2860.0133592607367,
+    "cancel_game_s": 2900.0460339548117,
+    "logged_reason": "strat drop weak",
+    "our_reach": 179246,
+    "opposition": 324307,
+    "neutral_raiders": 229861,
+    "raiders_target_harkonnen": false,
+    "interpretation": "Director includes nearby Renegade_Pillagers not targeting Harkonnen; investigate whether this is too conservative, no change made",
+    "timeline": [
+      {
+        "e": "order",
+        "oid": 48124.0,
+        "f": "Harkonnen",
+        "type": "Military",
+        "prio": 1.0,
+        "n": 6.0,
+        "tgt": {
+          "id": 668.0,
+          "k": "Village",
+          "o": "Atreides",
+          "p": "O-waz",
+          "x": 833.1046197349356,
+          "y": 876.9883054518087
+        },
+        "act": "ArmySiege",
+        "sa": "Liberate",
+        "ax": 960.589026270794,
+        "ay": 907.8379032658636,
+        "g": 2860.0133592607367,
+        "_line": 63565
+      },
+      {
+        "e": "tval",
+        "f": "Harkonnen",
+        "k": "Liberate",
+        "tgt": {
+          "id": 668.0,
+          "k": "Village",
+          "o": "Atreides",
+          "p": "O-waz",
+          "x": 833.1046197349356,
+          "y": 876.9883054518087
+        },
+        "V": 3200.0,
+        "A": 2198.0,
+        "fc": 404.0,
+        "n": 6.0,
+        "g": 2862.019871139705,
+        "_line": 63610
+      },
+      {
+        "e": "strat",
+        "f": "Harkonnen",
+        "post": "press",
+        "S": 0.0,
+        "need": 0.0,
+        "cv": 102718.0,
+        "T": 349533.0,
+        "tgt": {
+          "id": 668.0,
+          "k": "Village",
+          "o": "Atreides",
+          "p": "O-waz",
+          "x": 833.1046197349356,
+          "y": 876.9883054518087
+        },
+        "mode": "pillage",
+        "hold": 94445.0,
+        "reach": 279626.0,
+        "war": [
+          {
+            "f": "Atreides",
+            "ds": 1.0,
+            "pw": 989387.0
+          }
+        ],
+        "g": 2890.0398841859733,
+        "_line": 64236
+      },
+      {
+        "e": "end",
+        "oid": 48124.0,
+        "f": "Harkonnen",
+        "tgt": {
+          "id": 668.0,
+          "k": "Village",
+          "o": "Atreides",
+          "p": "O-waz",
+          "x": 833.1046197349356,
+          "y": 876.9883054518087
+        },
+        "type": "Military",
+        "act": "ArmySiege",
+        "sa": "Liberate",
+        "tf": "Atreides",
+        "n": 6.0,
+        "ph": 4.0,
+        "why": "Cancel",
+        "g": 2900.0460339548117,
+        "_line": 64573
+      },
+      {
+        "e": "strat",
+        "f": "Harkonnen",
+        "act": "drop",
+        "why": "weak",
+        "tgt": {
+          "id": 668.0,
+          "k": "Village",
+          "o": "Atreides",
+          "p": "O-waz",
+          "x": 833.1046197349356,
+          "y": 876.9883054518087
+        },
+        "age": 70.0,
+        "hold": 324307.0,
+        "reach": 179246.0,
+        "hn": 229861.0,
+        "pr": 0.0,
+        "rem": -1.0,
+        "g": 2900.0460339548117,
+        "_line": 64574
+      }
+    ]
+  },
+  "installed_boots_match_state": true
+}

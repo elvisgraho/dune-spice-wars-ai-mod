@@ -516,10 +516,10 @@ def _emit_raze(c):
     fb.op('JAlways', offset='dr')
     # ---- in a wave, inside BC_DR_AT: the field army first (above), else the base
     fb.label('dr_in')
-    # the drop on the base's zone runs (above) and this army stands outside that zone: walk in (a Move toward the base:
-    # its zone is around it), then attack from there (BC_SD_IN_T: re-sent at most this often)
+    # Enter the base's drop zone only while the base is the wave's objective. Field targets and turret captures
+    # keep their own approach; a supply effect must not pull their armies off the selected objective.
     fb.op('JNull', reg=bdz, offset='dr_in2')
-    fb.op('JNotNull', reg=fte, offset='dr_in2')  # the field army first: no tug between it and the zone
+    fb.op('JNotEq', a=dob, b=be, offset='dr_in2')
     fb.op('JEq', a=b.call('ent.Entity.get_zone', dx_), b=bdz, offset='dr_in2')
     _throttle(fb, b, cx, 'bcsdi', dx_, BC_SD_IN_T, 'dr_actn')
     _move_to(fb, b, cx, dx_, b.field(be, 'posx'), b.field(be, 'posy'), fac)

@@ -282,9 +282,15 @@ def _defense_extras(cx, helpers, idle, new_ids):
     fb.op('Sub', dst=kk, a=kk, b=b.const('i32', 1))
     ku = b.cast(b.call('hl.types.ArrayObj.getDyn', kcand, kk), 'ent.Army')
     fb.op('JNull', reg=ku, offset='dk')
+    # Direct campaign attacks have claims but no Military order. Minor raids must not take those armies either
+    # (Altar: a priority-10 rebel defense recalled the capture's 13 armies just after Annex began).
+    kh = fb.reg(cx.t('bool'))
+    fb.op('Call2', dst=kh, fun=helpers['held'], arg0=ku, arg1=b.const('f64', P_DEFENSE))
+    fb.op('JTrue', cond=kh, offset='dk_rm')
     _order_of(fb, b, cx, kfac, ku, ko, 'dk')
     fb.op('EnumIndex', dst=kix, value=b.field(ko, 'type'))
     fb.op('JNotEq', a=kix, b=b.const('i32', MILITARY), offset='dk')
+    fb.label('dk_rm')
     b.call('hl.types.ArrayObj.splice', kcand, kk, b.const('i32', 1))
     fb.op('Incr', dst=krm)
     fb.op('JAlways', offset='dk')

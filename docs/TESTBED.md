@@ -48,6 +48,7 @@ Top-level keys replace; later builds and `match` keep the selected variant until
 
 | Variant | Use |
 |---|---|
+| `altar` | Altar capture-ownership reproduction, based on `raze` with map seed 5705907. Use `mod match 14`; verify claims against minor-raid defense. Combat timing can differ |
 | `late` | Late-game leader containment; L boost after `lateMinutes` real minutes, normally 6 |
 | `raze` | Short campaign test; boost after 1 real minute, larger armies and forced wars against the boosted leader. Use `mod match 20` to cover multiple attack windows; not an economy/expansion test |
 
