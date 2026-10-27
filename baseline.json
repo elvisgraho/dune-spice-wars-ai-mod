@@ -1,0 +1,11 @@
+{
+  "_doc": "Pinned vanilla build. All tooling refuses to patch files that don't match. Update only after re-verifying patches on a new build.",
+  "steam_build_id": "26131664",
+  "game_version": "2.2.8.33024",
+  "files": {
+    "hlboot.dat": "9c7c1044d7c6b63647fb3f1435b8eb99f6b22dbf31997fc1db6f5a43a0e360cd",
+    "hlbootdx.dat": "4cbadecc1160618369482acec3133ad21e109f11ce492cebca72027a68848703",
+    "D4X.exe": "df815a3f426d0f383fbbe77cbffa6ee34f4d66d535a97711c8c4553c2bc8219f"
+  },
+  "database_sha256": "0656693e0ddd51f9442316c1b750c0a846095e7766b42d3db8e6d2ac6839e1e4"
+}

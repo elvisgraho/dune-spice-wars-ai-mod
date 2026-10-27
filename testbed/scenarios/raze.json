@@ -1,0 +1,125 @@
+{
+  "_doc": "Short base-kill test (Raze mechanics in ~8 real minutes instead of 25): the late scenario with the L macro pressed lateMinutes 1 real minute in (game ~4 min at x4), the members starting with the late scenario's 12 units and the leader with 8 (24 overflowed the command points at match start, user 2026-10-25) and the L macro also forcing War between the boosted leader and each member (the start-of-game peace grace would delay the coalition's own declarations). The leader is the faction in view after the match script's Tab (Atreides in every late match so far; check `bthreat` / scorecard 'base-kill plan'). `mod testbed on --scenario raze`, `mod match 8`. Tests the campaign (muster, strike, direct raze, base damage), not the economy or the expansion.",
+  "startResources": {
+    "Solari": 25000,
+    "Plascrete": 6000,
+    "Manpower": 1500,
+    "Authority": 1500,
+    "Influence": 1200,
+    "Intel": 1500,
+    "Agent": 12,
+    "GuildFavor": 300
+  },
+  "armies": {
+    "Atreides": [
+      "A_Trooper",
+      "A_Trooper",
+      "A_Trooper",
+      "A_Trooper",
+      "A_Soldier",
+      "A_Soldier",
+      "A_Soldier",
+      "A_Soldier"
+    ],
+    "Harkonnen": [
+      "H_Trooper",
+      "H_Trooper",
+      "H_Trooper",
+      "H_Trooper",
+      "H_Soldier",
+      "H_Soldier",
+      "H_Soldier",
+      "H_Demo",
+      "H_Demo",
+      "H_Demo",
+      "H_Elite",
+      "H_Elite"
+    ],
+    "Smugglers": [
+      "S_Trooper",
+      "S_Trooper",
+      "S_Trooper",
+      "S_Trooper",
+      "S_Sneak",
+      "S_Sneak",
+      "S_Sneak",
+      "S_Sneak",
+      "S_Demo",
+      "S_Demo",
+      "S_Elite",
+      "S_Elite"
+    ],
+    "Fremen": [
+      "F_Trooper",
+      "F_Trooper",
+      "F_Trooper",
+      "F_Trooper",
+      "F_Sneak",
+      "F_Sneak",
+      "F_Sneak",
+      "F_Special",
+      "F_Special",
+      "F_Demo",
+      "F_Elite",
+      "F_Elite"
+    ],
+    "Corrino": [
+      "C_Trooper",
+      "C_Trooper",
+      "C_Trooper",
+      "C_Soldier",
+      "C_Soldier",
+      "C_Soldier",
+      "C_Special",
+      "C_Elite"
+    ],
+    "Ecaz": [
+      "E_Trooper",
+      "E_Trooper",
+      "E_Trooper",
+      "E_Soldier",
+      "E_Soldier",
+      "E_Soldier",
+      "E_Special",
+      "E_Elite"
+    ],
+    "Vernius": [
+      "V_Soldier",
+      "V_Soldier",
+      "V_Soldier",
+      "V_Trooper",
+      "V_Trooper",
+      "V_Special",
+      "V_Elite",
+      "V_Elite"
+    ]
+  },
+  "humanSlot": 1,
+  "macros": {
+    "O": [
+      "allFactionsNewGame {humanSlot}"
+    ],
+    "P": [
+      "ai true",
+      "speed 4"
+    ],
+    "K": [
+      "fog"
+    ],
+    "L": [
+      "resAll Hegemony 8000",
+      "res Hegemony 14000",
+      "relationship Atreides Harkonnen War",
+      "relationship Atreides Smugglers War",
+      "relationship Atreides Fremen War",
+      "speed 4"
+    ],
+    "F9": [
+      "speed 2"
+    ],
+    "F10": [
+      "speed 4"
+    ]
+  },
+  "lateMinutes": 1
+}

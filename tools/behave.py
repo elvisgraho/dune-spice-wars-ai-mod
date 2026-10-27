@@ -1,0 +1,342 @@
+"""AI rules built on the enemy army awareness scan (testbed patch `aware-ai`, installed with `ai-log`): wiring only.
+The code lives in tools/rules/: common (thresholds, bytecode helpers), world (shared queries), heal, hunt, siege, raid, strat, strand (+ patrol gate), memory, deploy, peace (+ treaty scope, force peace), build (turret steering), uhq (Underworld HQ cap, placement, extensions), orni (ornithopter count, harvester escorts, safe mode), army (army size: CP overflow, Manpower pick gate).
+Thresholds and rationale: docs/AI-POLICY.md §4; mechanics and hook points: docs/REVERSING.md "AI rules".
+
+Shared queries (appended functions): aimod_pw, aimod_threat(fac, p, r) (at-war power + neutral raiders targeting fac
+within r, + movers heading there and arriving within HORIZON s; diplomacy read live), aimod_threat_now (FLEE_ETA
+horizon), aimod_neutral (other neutral raiders), aimod_own(fac, p, r, exclude), aimod_terrain(fac,
+zone), aimod_land (distance to our land), aimod_supok / aimod_short (supply budget for the way back), aimod_sieged,
+aimod_free, aimod_unsafe, aimod_forecast (rules/forecast.py: the one fight measure; sizing via common._fc_theirs), aimod_hthreat (hunt: around the prey's faction; its rivals
+skipped, its allies only if they arrive before the kill).
+Rules: retreat-terrain (fight retreat balance x terrain x supply), safe-heal (healing-structure key penalties), hunt
+(attack exposed at-war armies near our land, contest sieges near it, then neutral raiders; judged at the group's
+core, early Engage),
+annex-spacing (no parallel sieges on adjacent structures), turret/third-party-aware vanilla sizing, discovery-gate (no
+lone world-event trips into superior at-war armies), siege-join (neutral targets need 1.25; the nearest idle armies
+join a siege launch until 3x the defense), siege-engage (our siege orders leave Regroup once the armies near the
+target suffice), strat (director: posture per faction, presses weak enemy villages next to us), raid (pillage with idle armies), strand (idle armies on hostile land walk home), undeploy (an
+installed Fremen turret starving on hostile land gets mobile again), ability-gate (no emergency order abilities
+without enemy power), memory (zone danger with cooldown; harvester field choice),
+busy-siege
+(vanilla null fix in the getUnits busy filter), shuttle-null (vanilla null fix in the order-termination Shuttle loop). Each logs its decisions: retreat, heal, hunt, space, bunker, disc, join, sengage, raid.
+Entry and exit conditions of a rule measure the same quantity at the same place and are set apart (hysteresis), so a
+plan can't start and stop on alternate checks."""
+from rules.common import *  # noqa: F401,F403
+from rules.world import *  # noqa: F401,F403
+from rules.heal import (
+    build_mission, fix_retreat_all, build_retreat, build_unsafe,
+    safe_heal, build_flee_stamp, pick_life, no_regen_heal,
+)
+from rules.hunt import build_hunt
+from rules.siege import *  # noqa: F401,F403
+from rules.annex import build_supply_block, build_scoring
+from rules.join import *  # noqa: F401,F403
+from rules.disc import *  # noqa: F401,F403
+from rules.raid import *  # noqa: F401,F403
+from rules.strat import *  # noqa: F401,F403
+from rules.strand import *  # noqa: F401,F403
+from rules.memory import *  # noqa: F401,F403
+from rules.deploy import *  # noqa: F401,F403
+from rules.peace import *  # noqa: F401,F403
+from rules.worm import *  # noqa: F401,F403
+from rules.desert import *  # noqa: F401,F403
+from rules.stage import *  # noqa: F401,F403
+from rules.gather import *  # noqa: F401,F403
+from rules.rally import *  # noqa: F401,F403
+from rules.spos import *  # noqa: F401,F403
+from rules.tension import *  # noqa: F401,F403
+from rules.build import *  # noqa: F401,F403
+from rules.uhq import *  # noqa: F401,F403
+from rules.sdiag import *  # noqa: F401,F403
+from rules.release import *  # noqa: F401,F403
+from rules.bunker import *  # noqa: F401,F403
+from rules.pannex import *  # noqa: F401,F403
+from rules.sdrop import *  # noqa: F401,F403
+from rules.intel import build_intel
+from rules.bkill import build_bkill_tick  # noqa: E402
+from rules.bkcamp import build_bk_campaign  # noqa: E402
+from rules.micro import fix_micro_inputs  # noqa: E402
+from rules.opsbrain import build_ops, build_ops_buy, build_agent_steer
+from rules.drain import build_drain
+from rules.sqlaw import build_sqr
+from rules.orni import build_orni
+from rules.rsguard import build_rsguard
+from rules.leash import build_leash
+from rules.travel import build_eta, build_trip, build_route, build_ddline
+from rules.forecast import build_forecast
+from rules.value import build_sval, build_aval
+from rules.board import build_board
+from rules.tasks import build_claim, build_held, build_tasks_tick
+from rules.econ import build_econ_score, build_bres, build_demo_gate, build_goal_smooth, build_pcdump
+from rules.ride import build_wplan, build_wride, build_ride_tick
+from rules.ops import *  # noqa: F401,F403
+from rules.fopen import *  # noqa: F401,F403
+from rules.isai import *  # noqa: F401,F403
+from rules.dmz import *  # noqa: F401,F403
+from rules.claim import *  # noqa: F401,F403
+from rules.strike import *  # noqa: F401,F403
+from rules.sweep import *  # noqa: F401,F403
+from rules.army import *  # noqa: F401,F403
+from rules.doctrine import build_doctrine  # noqa: E402
+from rules.oppress import build_oppress
+from rules.orders import *  # noqa: F401,F403
+
+
+def install(cx, helpers, new_ids):
+    """Rule builds with logging trap handlers (rules.common.make_trap_hook); the hook is cleared after, so the next
+    boot file (other function ids) and inject's own wrappers never get it."""
+    FB.trap_hook = make_trap_hook(helpers) if TRAP_LOG else None
+    CRUMBS.clear()
+    import rules.worm as _worm
+    _worm.DACT = helpers  # our doAction sends log `dact` (docs/INPUT-SPAM-TODO.md 1)
+    try:
+        return _install(cx, helpers, new_ids)
+    finally:
+        _worm.DACT = None
+        FB.trap_hook = None
+        import json
+        from pathlib import Path
+        import os
+        out = Path(__file__).resolve().parents[1] / 'work' / 'crumbs.json'
+        # `rfail` at -> source line (tools/aireport.py). Both boot files build the same table, in parallel processes
+        # (mod.patch_boots): write a private temp file and swap it in; a swap blocked by the other writer is fine
+        tmp = out.with_name(f'crumbs.{os.getpid()}.tmp')
+        tmp.write_text(json.dumps(CRUMBS), encoding='utf-8')
+        try:
+            os.replace(tmp, out)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+
+
+def _install(cx, helpers, new_ids):
+    """Build the queries, the redirects and the per-faction tick. Returns (report, tick findex): tick(mil, dt) runs
+    memory (record danger events first), strat (posture / press), hunt, raid, siege-engage, undeploy, then strand (a new hunt / raid claims its armies
+    before idle ones are sent home)."""
+    busy = fix_busy_siege(cx)
+    busy.update(fix_shuttle_null(cx))  # rules/orders.py: vanilla null fix in the order-termination Shuttle loop
+    busy.update(fix_micro_inputs(cx, helpers, new_ids))  # rules/micro.py: vanilla micro re-sends every tick
+    pw = build_pw(cx)
+    threat = build_threat(cx, pw)
+    neutral = build_neutral(cx, pw)
+    own = build_own(cx, pw)
+    free = build_free(cx, pw, min_supply=0)  # supply: the hunt's trip budget (absolute), not a share
+    terrain = build_terrain(cx)
+    # heal / retreat / strand safety: full threat, no busy / outside discounts (an army rests there)
+    hsafe = build_threat(cx, pw, discount=False)
+    threat_now = build_threat(cx, pw, FLEE_ETA, discount=False)
+    unsafe = build_unsafe(cx, hsafe, own, pw, terrain)
+    land = build_land(cx)
+    supok = build_supok(cx)
+    short = build_short(cx, land, supok)
+    helpers['short'] = short  # vanilla Defense picks: absolute supply test (rules/heal.py pick-life)
+    sieged = build_sieged(cx)
+    cover = build_cover(cx, helpers)
+    new_ids.add(helpers['cover1'])
+    # the battle forecast and its inputs first: aimod_defend's hopeless test reads it (rules/forecast.py)
+    mission = build_mission(cx)
+    new_ids.add(mission)
+    militia = build_militia(cx)
+    owner_pw = build_owner_pw(cx, pw)  # rules/siege.py: an at-war village owner's armies by our knowledge
+    new_ids.add(owner_pw)
+    eta = build_eta(cx)  # rules/travel.py: travel time walking or via our airfields
+    new_ids.add(eta)
+    helpers['eta'] = eta
+    forecast = build_forecast(cx, helpers, pw, threat, cover, terrain, eta, militia, mission, owner_pw)  # rules/forecast.py
+    new_ids.add(forecast)
+    helpers['forecast'] = forecast
+    helpers['forecast_c'] = build_forecast(cx, helpers, pw, threat, cover, terrain, eta, militia, mission, owner_pw,
+                                           contest=True)  # the hunt's contest sizing (rules/forecast.py)
+    new_ids.add(helpers['forecast_c'])
+    silence = build_silence(cx)
+    defend = build_defend(cx, sieged, helpers, threat, neutral, own, cover, terrain)
+    new_ids.update({pw, threat, hsafe, neutral, own, free, unsafe, land, terrain, threat_now, supok, short, sieged, cover, silence,
+                    defend})
+    report = safe_heal(cx, unsafe, new_ids, threat_now, own, pw, hsafe, helpers)
+    report.update(build_retreat(cx, terrain, new_ids, helpers, pw, short, mission, land))
+    report.update(fix_retreat_all(cx))  # rules/heal.py: vanilla retreat checks every fight, not only gathered orders
+    report.update(busy)
+    helpers['ddclean'] = build_ddclean(cx, threat=threat)  # Fremen ring test: raid / pillage-press exclusion
+    helpers['ddhold'] = build_ddclean(cx, strict=True, threat=threat)  # ... strict: Annex hold, launch-gate tries
+    new_ids.update({helpers['ddclean'], helpers['ddhold']})
+    home = build_home(cx, pw, land)
+    homeown = build_home(cx, pw, land, own=True)
+    helpers['fopen'] = build_fopen(cx, helpers)  # rules/fopen.py: Fremen opening scout hold (read by the launch gate)
+    new_ids.add(helpers['fopen'])
+    spacing = build_spacing(cx, helpers, defend, land, home, homeown)
+    new_ids.add(spacing)
+    report['annex-spacing'] = 1
+    threat_stats = build_threat(cx, pw, stats=True)
+    new_ids.add(threat_stats)
+    report.update(build_turret_stats(cx, cover, silence, threat_stats, new_ids, pw))
+    report['discovery-gate'] = build_discovery(cx, helpers, threat, pw, terrain, land, supok, new_ids)
+    threat_far = build_threat(cx, pw, DISC_HORIZON)
+    discabort = build_disc_abort(cx, helpers, pw, threat_far, terrain)
+    sqr = build_sqr(cx)  # rules/sqlaw.py: square-law ratio vs a village's militia
+    new_ids.add(sqr)
+    helpers['claim'], helpers['held'] = build_claim(cx), build_held(cx)  # rules/tasks.py: task claims
+    new_ids.update({helpers['claim'], helpers['held']})
+    helpers['trip'] = build_trip(cx)  # rules/travel.py: supply distance, deep desert at its real drain
+    new_ids.add(helpers['trip'])
+    helpers['route'] = build_route(cx)  # rules/travel.py: next zone on a path around the deep desert
+    helpers['route_nw'] = build_route(cx, worm=False)  # ... the same without the worm-activity pass
+    helpers['ddline'] = build_ddline(cx)  # rules/travel.py: a straight line crosses deep desert
+    new_ids.update({helpers['route'], helpers['route_nw'], helpers['ddline']})
+    helpers['sval'], helpers['aval'] = build_sval(cx), build_aval(cx, pw)  # rules/value.py: task values (step 2 stage 2)
+    new_ids.update({helpers['sval'], helpers['aval']})
+    helpers['board'] = build_board(cx, helpers)  # rules/board.py: task board, shadow gate (step 2 stage 3b)
+    new_ids.add(helpers['board'])
+    report.update(build_join(cx, helpers, supok, land, pw, threat, cover, militia, terrain, new_ids, neutral, sqr))
+    helpers['tension'] = build_tension(cx)  # contact tension query (rules/tension.py): scoring, hunt, strat
+    new_ids.add(helpers['tension'])
+    helpers['dmzv'] = build_dmzv(cx)  # DMZ village test (rules/dmz.py): scoring, raid, strat
+    helpers['dmzin'] = build_dmzin(cx)  # DMZ village inside our side (rules/dmz.py): annex, else liberate
+    helpers['encl'] = build_encl(cx)  # enclave test (rules/dmz.py): dmzv, strat press
+    new_ids.add(helpers['dmzv'])
+    helpers['fclaim'] = build_fclaim(cx, forecast)  # free Annex gate (rules/claim.py): scoring
+    new_ids.add(helpers['fclaim'])
+    helpers['threat'] = threat  # Annex value: a missing ring village under at-war threat (rules/annex/valuation.py)
+    helpers['land'] = land  # Liberate reach in the target scores (rules/annex/scoring.py)
+    report.update(build_scoring(cx, new_ids, helpers))
+    report.update(build_supply_block(cx, helpers, new_ids))  # rules/annex/scoring.py: no target right after InsufficientSupply
+    hthreat = build_threat(cx, pw, prey=True)
+    ttick = build_tension_tick(cx, helpers, threat)
+    new_ids.add(ttick)
+    hunt = build_hunt(cx, helpers, pw, free, hthreat, land, terrain, supok, short, sieged, cover, defend, neutral,
+                      owner_pw)
+    raidable = build_free(cx, pw, RAID_LIFE, 0, resupply_ok=True)
+    raidsup = build_raidsup(cx)
+    relunits = build_relunits(cx, pw)  # rules/release.py: who leaves an occupation under way (release, raid split)
+    new_ids.add(relunits)
+    raid = build_raid(cx, helpers, pw, raidable, land, terrain, raidsup, cover, defend, militia, threat, free,
+                      home, homeown, helpers['scores'], neutral, relunits, sqr)
+    fpow = build_fpow(cx, pw)
+    helpers['fpow'] = fpow  # rules/opsbrain/casting.py: the leader's army after a wipe (Administrative Burden)
+    threat_in = build_threat(cx, pw, 0)  # strat keep: armies within r only (r = what arrives before our capture ends)
+    new_ids.add(threat_in)
+    strat = build_strat(cx, helpers, pw, fpow, raidable, land, terrain, cover, defend, home,
+                        short, neutral, threat)
+    report.update(strat_levers(cx, new_ids))
+    dmz = build_dmz(cx, helpers, fpow, defend)  # rules/dmz.py: border counts, truce break
+    pguard = build_pguard(cx, helpers, fpow, defend, pw)  # rules/dmz.py: truce break over our next Annex
+    report.update(build_peace_gate(cx, helpers, defend, new_ids))
+    report.update(build_treaty_scope(cx, helpers, new_ids))
+    # Underworld HQs (rules/uhq.py): cap, placement, extension scores (under turret-steer on the same scoring call)
+    uhqval, uhqgain = build_uhq_value(cx), build_uhq_best_gain(cx)
+    new_ids.update({uhqval, uhqgain})
+    report.update(build_uhq_cap(cx, helpers, new_ids))
+    report.update(build_orni(cx, helpers, new_ids, land))  # rules/orni.py: 4+ ornithopters, harvester escorts in safe mode
+    report.update(build_uhq_place(cx, helpers, uhqgain, new_ids))
+    uhqx = build_uhq_ext(cx, helpers, uhqval, new_ids)
+    report['uhq-ext'] = 1
+    spf = build_spice_first(cx, helpers, new_ids, uhqx)  # Refinery first on a spice village (rules/build.py)
+    report['spice-first'] = 1
+    eco = build_econ_score(cx, helpers, new_ids, spf)  # stall bans, water need, extractor / intel (rules/econ.py)
+    report['econ-score'] = 1
+    wnd = build_wonder(cx, helpers, new_ids, eco)  # wonders: near our base, away from the middle, on discounts (rules/build.py)
+    report['wonder-steer'] = 1
+    afw = build_airfield(cx, helpers, threat, new_ids, wnd)  # remote villages: Airfield first, spaced (rules/build.py)
+    report.update(build_turret_steer(cx, helpers, threat, cover, new_ids, inner=afw))
+    report['airfield-steer'] = 1
+    report.update(build_bpick(cx, helpers, new_ids))  # diagnostics: the building pair vanilla picks (rules/build.py)
+    report.update(build_bres(cx, helpers, new_ids))  # picked-building results, stall bans (rules/econ.py)
+    sengage = build_siege_engage(cx, helpers, pw, threat, cover, militia, terrain, neutral)
+    idle = build_free(cx, pw, 0, 0, patrol_ok=False)
+    helpers['wormheld'] = build_wormheld(cx)  # worm-flee hold: out of vanilla's Resupply / mission picks
+    helpers['wormonly'] = build_wormheld(cx, rally=False)  # ... worm part only: march skips (strike.py, _skip_striking)
+    new_ids.update({helpers['wormheld'], helpers['wormonly']})
+    report.update(pick_life(cx, helpers, idle, new_ids))
+    report.update(build_flee_stamp(cx, helpers, new_ids))  # rules/heal.py: map `fled` for the retreat lock
+    report.update(no_regen_heal(cx, helpers, new_ids))
+    report.update(build_cp_overflow(cx, helpers, new_ids))  # rules/army.py: CP overflow disbands temporaries first
+    report.update(build_mp_gate(cx, helpers, new_ids))  # ... unit picks ignore the Manpower goals
+    report.update(build_cp_need(cx, helpers, new_ids))  # ... CP building scored when the army is capped
+    report.update(build_cp_defense(cx, helpers, new_ids))  # ... no all-in defense because CP is full
+    report.update(build_buy_log(cx, helpers, new_ids))  # ... `buyx`: why a unit buy failed (diagnostic)
+    report.update(build_doctrine(cx, helpers, new_ids))  # rules/doctrine.py: unit mixes + gear sets from docs/strategy
+    report.update(build_oppress(cx, helpers, new_ids))  # Harkonnen oppress when Manpower >= OPP_MP
+    report.update(build_term_probe(cx, helpers, new_ids))  # rules/orders.py (before order-keep, which redirects the closure's removeUnits): logs why an order dies at once (refused Shuttle step)
+    report.update(build_siege_keep(cx, helpers, new_ids))  # rules/orders.py: a dead lone besieger doesn't scrap the siege (before order-keep: it finds the closure by its removeUnits call)
+    report.update(build_order_keep(cx, helpers, new_ids))  # rules/orders.py: one dead unit doesn't scrap a siege before Action
+    report.update(build_take_keep(cx, helpers, new_ids))  # rules/orders.py: one army taken by another order doesn't scrap it
+    strand = build_strand(cx, helpers, idle, unsafe)
+    report.update(build_patrol_gate(cx, helpers, hsafe, own, pw, new_ids))
+    report.update(build_rpoint(cx, helpers, threat, new_ids))  # rules/rally.py: recruits not delivered into a lost fight
+    air = build_air(cx)  # rules/deploy.py: at-war flying armies near a unit (what an installed F_Special_2 can hit)
+    new_ids.add(air)
+    undeploy = build_undeploy(cx, helpers, air)
+    report.update(build_ability_gate(cx, new_ids))
+    report.update(build_aa_gate(cx, helpers, air, new_ids))
+    report.update(build_pannex_gate(cx, helpers, new_ids))  # rules/pannex.py: vanilla's PeacefullyAnnex gated
+    report.update(build_ops_block(cx, helpers, new_ids))  # rules/ops.py: vanilla launches no military op
+    report.update(build_ops_gate(cx, helpers, new_ids))  # rules/ops.py: siege orders carry no op lists
+    report.update(build_ops_buy(cx, helpers, new_ids))  # rules/opsbrain/buying.py: buy candidates = loadout wants
+    report.update(build_agent_steer(cx, helpers, new_ids))  # rules/opsbrain/agents.py: agents fill the loadout infiltrations
+    report.update(build_isai_guard(cx, helpers, new_ids))  # rules/isai.py: `ai true` leaves running AIs alone
+    sdrop = build_sdrop(cx, helpers, pw, land, supok, threat)  # rules/sdrop.py: our Supply Drop use (task lock, emergency)
+    report.update(build_sdrop_buy(cx, helpers, new_ids))  # rules/sdrop.py: no second unlocked drop bought
+    report.update(build_sdrop_trip(cx, helpers, new_ids))  # rules/sdrop.py: a locked drop lifts vanilla's InsufficientSupply cancel
+    report.update(build_wplan(cx, helpers, new_ids))  # rules/ride.py: worm or walk plan (thumpers claimed at once)
+    report.update(build_wride(cx, helpers, new_ids))  # rules/ride.py: ride results, stalled Worm steps walk
+    ride = build_ride_tick(cx, helpers)  # rules/ride.py: map `wfree` (reach, trip budgets, contest ETA), `tstk`
+    danger = build_danger(cx)
+    memory = build_memory(cx, helpers, danger, threat, own)
+    report.update(harvest_fields(cx, danger, helpers, new_ids))
+    report.update(harvest_flee(cx, danger, threat, helpers, new_ids))
+    wormflee = build_worm_flee(cx, helpers)
+    wormrel = build_worm_release(cx, helpers)  # rules/worm.py: re-send a siege army whose worm hold ended
+    striking = build_striking(cx)  # en-route strike state (rules/strike.py): read by dstep / stage / gather / spos
+    helpers['striking'] = striking
+    report.update(strike_skip(cx, new_ids, striking, helpers['wormonly']))
+    strike = build_strike(cx, helpers, pw, threat, cover, striking)
+    new_ids.update({striking, strike})
+    dstep = build_desert_step(cx, helpers)
+    stage = build_stage(cx, helpers)
+    gather = build_gather(cx, helpers)
+    # rally: active threat at D and rally-point safety count movers only when they arrive there (not border shuffles)
+    threat_arrive = build_threat(cx, pw, arrive=True)
+    rally = build_rally(cx, helpers, pw, threat_arrive, mission, forecast)
+    fpeace = build_force_peace(cx, helpers)
+    spos = build_spos(cx, helpers, cover)
+    report.update(build_keep_capture(cx, helpers, new_ids))
+    report.update(gather_busy(cx, new_ids))
+    sact = build_sact(cx, helpers, pw, militia)  # diagnostics only (rules/sdiag.py)
+    release = build_release(cx, helpers, relunits, threat, neutral, cover)  # rules/release.py
+    bunker = build_bunker(cx, helpers, pw, militia)  # rules/bunker.py: silence a capture's bunker partner
+    sweep = sweep_stub(cx)  # the map sweep: swapped for the real one at the end (every map exists by then)
+    new_ids.add(sweep)
+    # next Annex choices kept from raid and vanilla's Pillage gauge (rules/raid.py; before raid, which reads them)
+    akeep = build_annex_keep(cx, helpers, helpers['scores'])
+    new_ids.add(akeep)
+    ops = build_ops(cx, helpers, pw, threat, cover, militia, land)  # rules/opsbrain/casting.py: our operation casts
+    drain = build_drain(cx, helpers, militia, cover)  # rules/drain.py: worn-down sieges called off
+    rsguard = build_rsguard(cx, helpers)  # rules/rsguard.py: a resupply walk away from its target turned around
+    pcdump = build_pcdump(cx, helpers)  # rules/econ.py: late plascrete factories out of full villages
+    leash = build_leash(cx, helpers, cover, pw)  # rules/leash.py: worn chase armies out of enemy land / guns
+    intel = build_intel(cx, helpers, pw, land)  # rules/intel.py: fog of war, sightings first
+    tasks = build_tasks_tick(cx, helpers)  # rules/tasks.py: claims refreshed from our orders
+    new_ids.add(tasks)
+    bkill = build_bkill_tick(cx, helpers)  # rules/bkill.py: base-kill plan stage 1 (threat picture, leader, levels)
+    bkcamp = build_bk_campaign(cx, helpers, pw, free)  # rules/bkcamp/: stage 3 campaign (muster / go / regroup)
+    new_ids.add(bkcamp)
+    new_ids.add(bkill)
+    tick = build_chain(cx, [intel, tasks, ride, memory, wormflee, wormrel, ttick, dmz, pguard, bkill, bkcamp, strat, hunt, leash, pcdump, akeep, sdrop, raid, rally, ops, drain, rsguard, fpeace, sengage, strike, stage, gather, spos, dstep, discabort, undeploy, strand, release, bunker, sact, sweep])
+    new_ids.update({bunker, drain, rsguard, leash, pcdump, ride, sdrop, dmz, pguard, sact, release, hthreat, hunt, raidable, raidsup, militia, home, homeown, raid, fpow, strat, sengage, threat_far, discabort, idle, strand, undeploy, danger, wormflee, wormrel, dstep, stage, gather, rally, threat_arrive, fpeace, spos,
+                    memory, intel, ops, tick})
+    report['strand'] = 1
+    report['worm-flee'] = 1
+    report['desert-step'] = 1
+    report['stage'] = 1
+    report.update(log_worm_kill(cx, helpers, new_ids))
+    report.update(build_wind_fallback(cx, helpers, new_ids))  # last: also redirects our own rules' calls
+    report['undeploy'] = 1
+    report['raid'] = 1
+    report['bunker-split'] = 1
+    report['annex-wait'] = build_annex_wait(cx, helpers, new_ids)
+    report.update(build_heal_dead(cx, helpers, new_ids))
+    report.update(build_empty_resupply(cx, helpers, new_ids))  # rules/orders.py: no empty retreat Resupply orders
+    report.update(build_dead_resupply(cx, helpers, new_ids))  # rules/orders.py: no Resupply to a dead heal target
+    report['strat'] = 1
+    report.update(install_sweep(cx, helpers, new_ids, tick, sweep))  # last: sees every added map
+    report.update(build_demo_gate(cx, helpers, new_ids))  # rules/econ.py: vanilla surplus demolition only when it lasts
+    report.update(build_goal_smooth(cx, helpers, new_ids))  # ... over / under-producing readings averaged (after cp-need)
+    return report, tick

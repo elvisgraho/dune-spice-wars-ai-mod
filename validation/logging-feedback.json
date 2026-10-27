@@ -1,0 +1,22 @@
+{
+  "purpose": "Logging-only change, AI decisions unchanged",
+  "archive": "work\\logs\\20261026-171749-3ec8651f1c.log",
+  "scenario": "raze",
+  "real_minutes": 5,
+  "game_time_end_s": 1207.1719526767358,
+  "events": 31520,
+  "parse": {
+    "full": 31520
+  },
+  "health": "HEALTH OK: no game exceptions in game.log",
+  "source_map_available": true,
+  "tests": 24,
+  "bcheck_issues": 0,
+  "feedback_lines": 27,
+  "details_lines": 612,
+  "observed_finding": "Harkonnen hero #7729: Move and ArmyFight within 0.5 s, 6 observations from 06:59 to 12:38",
+  "limitations": [
+    "One short match; no claim of AI-strength improvement",
+    "micro changes are observations; dact remains command-attempt evidence"
+  ]
+}

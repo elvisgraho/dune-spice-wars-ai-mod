@@ -1,0 +1,39 @@
+bkcamp.build_bk_campaign  Field (ptr) unassigned on some path | self.fb.op('Field', dst=dst, obj=obj, field=self.cx.field(t, name)) <- fb.op('Mov', dst=apx, src=b.field(sge, 'posx'))
+bkcamp.build_bk_campaign  Field (ptr) unassigned on some path | self.fb.op('Field', dst=dst, obj=obj, field=self.cx.field(t, name)) <- fb.op('Mov', dst=apy, src=b.field(sge, 'posy'))
+bkcamp.build_bk_campaign  JSGt (f6) unassigned on some path | fb.op('JSGt', a=asd, b=b.const('f64', BC_FOOT_NEAR), offset='ap_ft')
+disc.build_discovery  Mov (ptr) unassigned on some path | fb.op('Mov', dst=ue, src=u)
+disc.build_discovery  Mul (f6) unassigned on some path | fb.op('Mul', dst=x, a=r, b=b.const('f64', 100)) <- _log_ev(fb, b, cx, helpers, 'disc', [('f', fb.get(owner, 'kind')), ('tgt', tgt), ('army', ue), ('H', h),
+disc.build_discovery  ToInt (f6) unassigned on some path | self.fb.op('ToInt', dst=dst, src=f) <- b.put(d, k, b.to_int(r)) <- _log_ev(fb, b, cx, helpers, 'disc', [('f', fb.get(owner, 'kind')), ('tgt', tgt), ('army', ue), ('H', h),
+forecast.build_forecast  JSGte (i3) unassigned on some path | fb.op('JSGte', a=i, b=alen, offset=done) <- a = _army_loop(fb, b, arr, b.field(arr, 'length'), j, 'a', 'adone')
+forecast.build_forecast  JSGte (i3) unassigned on some path | fb.op('JSGte', a=i, b=alen, offset=done) <- a2 = _army_loop(fb, b, arr, b.field(arr, 'length'), j, 'g', 'adone')
+hunt.build_hunt  Field (ptr) unassigned on some path | self.fb.op('Field', dst=dst, obj=obj, field=self.cx.field(t, name)) <- sg = b.field(s, 'siege') <- _pillaging(fb, b, cx, v, 'scpil')
+hunt.build_hunt  Field (ptr) unassigned on some path | self.fb.op('Field', dst=dst, obj=obj, field=self.cx.field(t, name)) <- sg = b.field(v, 'siege') <- lrem, lp = _cap_rem(fb, b, cx, v, t, u + 'ok')  # stalled / no siege: never late, worth contesting
+hunt.build_hunt  Mov (ptr) unassigned on some path | b.call('haxe.ds.ObjectMap.set', cpgp, fb.dyn(v), fb.dyn(lp)) <- lrem, lp = _cap_rem(fb, b, cx, v, t, u + 'ok')  # stalled / no siege: never late, worth contesting
+hunt.build_hunt  Mov (ptr) unassigned on some path | b.call('haxe.ds.ObjectMap.set', cpgt, fb.dyn(v), fb.dyn(t)) <- lrem, lp = _cap_rem(fb, b, cx, v, t, u + 'ok')  # stalled / no siege: never late, worth contesting
+hunt.build_hunt  Mov (ptr) unassigned on some path | b.call('haxe.ds.ObjectMap.set', mp, fb.dyn(key), fb.dyn(t)) <- _throttle(fb, b, cx, 'hlate', v, 30, 'next')
+hunt.build_hunt  Mov (ptr) unassigned on some path | fb.op('Call1', dst=er, fun=helpers['ent'], arg0=fb.dyn(r))
+hunt.build_hunt  Mov (ptr) unassigned on some path | fb.op('Mov', dst=ve, src=v)
+hunt.build_hunt  Mov (ptr) unassigned on some path | fb.op('SafeCast', dst=lp0, src=b.call('haxe.ds.ObjectMap.get', cpgp, fb.dyn(v))) <- lrem, lp = _cap_rem(fb, b, cx, v, t, u + 'ok')  # stalled / no siege: never late, worth contesting
+hunt.build_hunt  Mov (ptr) unassigned on some path | last = b.call('haxe.ds.ObjectMap.get', mp, fb.dyn(key)) <- _throttle(fb, b, cx, 'hlate', v, 30, 'next')
+hunt.build_hunt  Mov (ptr) unassigned on some path | vt = b.call('haxe.ds.ObjectMap.get', cpgt, fb.dyn(v)) <- lrem, lp = _cap_rem(fb, b, cx, v, t, u + 'ok')  # stalled / no siege: never late, worth contesting
+hunt.build_hunt  ToInt (f6) unassigned on some path | self.fb.op('ToInt', dst=dst, src=f) <- b.put(d, 'H', b.to_int(h))
+hunt.build_hunt  ToInt (f6) unassigned on some path | self.fb.op('ToInt', dst=dst, src=f) <- b.put(d, k, b.to_int(r) if fb.regs[r] == cx.t('f64') else r)
+orders.build_empty_resupply  Mov (ptr) unassigned on some path | fb.op('Mov', dst=src, src=r) <- _log_ev(fb, b, cx, helpers, 'rsfull', [('a', a), ('n', b.field(3, 'length'))])
+orders.build_order_keep  Call1 (ptr) unassigned on some path | self.fb.op(f'Call{n}', dst=dst, fun=f.findex.value, **{f'arg{i}': a for i, a in enumerate(conv)}) <- _log_ev(fb, b, cx, helpers, 'okeep', [('f', fb.get(b.call('ent.Entity.get_owner', ue), 'kind')), ('n', fb.dyn(left)),
+peace.build_peace_gate  Ret (ptr) unassigned on some path | fb.op('Ret', ret=res)
+raid.build_raid  ToInt (f6) unassigned on some path | self.fb.op('ToInt', dst=dst, src=f) <- b.put(d, k, b.to_int(r)) <- _log_ev(fb, b, cx, helpers, 'raid', [('f', fb.get(fac, 'kind')), ('act', 'abort'), ('why', why),
+rally.build_rally  SDiv (f6) unassigned on some path | fb.op('SDiv', dst=rbf, a=bm, b=bh)
+rally.build_rally  ToInt (f6) unassigned on some path | self.fb.op('ToInt', dst=dst, src=f) <- b.put(d, k, b.to_int(r)) <- _log_ev(fb, b, cx, helpers, 'rally', [('f', fb.get(fac, 'kind')), ('act', 'giveup'), ('s', dz), ('H', bh),
+rally.build_rally  ToInt (f6) unassigned on some path | self.fb.op('ToInt', dst=dst, src=f) <- b.put(d, k, b.to_int(r)) <- _log_ev(fb, b, cx, helpers, 'rally', [('f', fb.get(fac, 'kind')), ('act', 'here'), ('s', dz), ('H', bh),
+rally.build_rally  ToInt (f6) unassigned on some path | self.fb.op('ToInt', dst=dst, src=f) <- b.put(d, k, b.to_int(r)) <- _log_ev(fb, b, cx, helpers, 'rally', [('f', fb.get(fac, 'kind')), ('act', 'rally'), ('s', dz), ('r', rp),
+ride.build_wride  ToInt (f6) unassigned on some path | self.fb.op('ToInt', dst=dst, src=f) <- b.put(d, k, b.to_int(r)) <- _log_ev(fb, b, cx, helpers, 'wstall', [('f', fb.get(sfac, 'kind')), ('tgt', _otgt(fb, b, cx, o)), ('why', 'short'),
+sdrop.build_sdrop  ToInt (f6) unassigned on some path | self.fb.op('ToInt', dst=dst, src=f) <- b.put(d, k, b.to_int(r)) <- _log_ev(fb, b, cx, helpers, 'sdrop', [('f', fb.get(fac, 'kind')), ('act', 'cast'), ('why', 'emerg'), ('a', ba),
+strand.build_strand  JSGt (f6) unassigned on some path | fb.op('JSGt', a=bd, b=b.const('f64', AT_HOME_R), offset='patrol')
+strand.build_strand  ToInt (f6) unassigned on some path | self.fb.op('ToInt', dst=dst, src=f) <- b.put(d, k, b.to_int(r)) <- _log_ev(fb, b, cx, helpers, 'strand', [('f', fb.get(fac, 'kind')), ('a', a), ('s', se), ('d', bd), ('ok', mok),
+strand.build_strand  ToInt (f6) unassigned on some path | self.fb.op('ToInt', dst=dst, src=f) <- b.put(d, k, b.to_int(r)) <- _log_ev(fb, b, cx, helpers, 'strand', [('f', fb.get(fac, 'kind')), ('a', a), ('s', tgt), ('d', bd), ('ok', ok)])
+strat.build_strat  Mov (ptr) unassigned on some path | self.fb.op('DynSet', obj=d, field=self.cx.s(key), src=self.fb.dyn(reg)) <- b.put(d, k, r) <- _log_ev(fb, b, cx, helpers, 'strat', [('f', fb.get(fac, 'kind')), ('post', ps), ('S', S), ('need', need), ('cv', cvc),
+world.build_defend  ToInt (f6) unassigned on some path | self.fb.op('ToInt', dst=dst, src=f) <- b.put(d, k, b.to_int(r)) <- _log_ev(fb, b, cx, helpers, 'dhope', [('f', fb.get(0, 'kind')), ('s', he), ('H', hh), ('M', hm)])
+worm.build_worm_flee  Mov (f6) unassigned on some path | fb.op('Mov', dst=px, src=bx)
+worm.build_worm_flee  Mov (f6) unassigned on some path | fb.op('Mov', dst=py, src=by)
+worm.build_worm_flee  Sub (f6) unassigned on some path | fb.op('Sub', dst=d, a=py, b=ty)
+worm.build_worm_flee  Sub (f6) unassigned on some path | fb.op('Sub', dst=q, a=px, b=tx)

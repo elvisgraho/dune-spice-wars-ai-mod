@@ -1,0 +1,126 @@
+{
+  "_doc": "Late-game start for the base-kill plan (docs/BASEKILL-PLAN.md): the match plays out normally (scouting, expansion) and lateMinutes real minutes in the match script presses L: everyone gets +8000 hegemony, the faction in view +22000 (`res` follows game.me, which the match script's Tab moves to the faction after the human slot: Smugglers here) (a smaller shared boost: at +12000 everyone passed 30k in a match that never ends), making it the clear late-game leader with real territory and a real hegemony rate (hegemony as a start resource is ignored by the game). Everyone starts with Authority / Influence / Solari to expand fast and bigger armies. `mod testbed on --scenario late`; overlays testbed/scenario.json (top-level keys replace).",
+  "startResources": {
+    "Solari": 25000,
+    "Plascrete": 6000,
+    "Manpower": 1500,
+    "Authority": 1500,
+    "Influence": 1200,
+    "Intel": 1500,
+    "Agent": 12,
+    "GuildFavor": 300
+  },
+  "armies": {
+    "Atreides": [
+      "A_Trooper",
+      "A_Trooper",
+      "A_Trooper",
+      "A_Trooper",
+      "A_Soldier",
+      "A_Soldier",
+      "A_Soldier",
+      "A_Soldier",
+      "A_Demo",
+      "A_Demo",
+      "A_Elite",
+      "A_Elite"
+    ],
+    "Harkonnen": [
+      "H_Trooper",
+      "H_Trooper",
+      "H_Trooper",
+      "H_Trooper",
+      "H_Soldier",
+      "H_Soldier",
+      "H_Soldier",
+      "H_Demo",
+      "H_Demo",
+      "H_Demo",
+      "H_Elite",
+      "H_Elite"
+    ],
+    "Smugglers": [
+      "S_Trooper",
+      "S_Trooper",
+      "S_Trooper",
+      "S_Trooper",
+      "S_Sneak",
+      "S_Sneak",
+      "S_Sneak",
+      "S_Sneak",
+      "S_Demo",
+      "S_Demo",
+      "S_Elite",
+      "S_Elite"
+    ],
+    "Fremen": [
+      "F_Trooper",
+      "F_Trooper",
+      "F_Trooper",
+      "F_Trooper",
+      "F_Sneak",
+      "F_Sneak",
+      "F_Sneak",
+      "F_Special",
+      "F_Special",
+      "F_Demo",
+      "F_Elite",
+      "F_Elite"
+    ],
+    "Corrino": [
+      "C_Trooper",
+      "C_Trooper",
+      "C_Trooper",
+      "C_Soldier",
+      "C_Soldier",
+      "C_Soldier",
+      "C_Special",
+      "C_Elite"
+    ],
+    "Ecaz": [
+      "E_Trooper",
+      "E_Trooper",
+      "E_Trooper",
+      "E_Soldier",
+      "E_Soldier",
+      "E_Soldier",
+      "E_Special",
+      "E_Elite"
+    ],
+    "Vernius": [
+      "V_Soldier",
+      "V_Soldier",
+      "V_Soldier",
+      "V_Trooper",
+      "V_Trooper",
+      "V_Special",
+      "V_Elite",
+      "V_Elite"
+    ]
+  },
+  "humanSlot": 1,
+  "macros": {
+    "O": [
+      "allFactionsNewGame {humanSlot}"
+    ],
+    "P": [
+      "ai true",
+      "speed 4"
+    ],
+    "K": [
+      "fog"
+    ],
+    "L": [
+      "resAll Hegemony 8000",
+      "res Hegemony 14000",
+      "speed 4"
+    ],
+    "F9": [
+      "speed 2"
+    ],
+    "F10": [
+      "speed 4"
+    ]
+  },
+  "lateMinutes": 6
+}
